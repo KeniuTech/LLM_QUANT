@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass
-from typing import Iterable
+from dataclasses import dataclass, field
+from typing import Iterable, List
 
 from app.utils.db import db_session
 
@@ -86,9 +86,10 @@ SCHEMA_STATEMENTS: Iterable[str] = (
     """
     CREATE TABLE IF NOT EXISTS trade_calendar (
       exchange TEXT,
-      cal_date TEXT PRIMARY KEY,
+      cal_date TEXT,
       is_open INTEGER,
-      pretrade_date TEXT
+      pretrade_date TEXT,
+      PRIMARY KEY (exchange, cal_date)
     );
     """,
     """
@@ -203,29 +204,49 @@ SCHEMA_STATEMENTS: Iterable[str] = (
     """
 )
 
+REQUIRED_TABLES = (
+    "stock_basic",
+    "daily",
+    "daily_basic",
+    "adj_factor",
+    "suspend",
+    "trade_calendar",
+    "stk_limit",
+    "news",
+    "heat_daily",
+    "bt_config",
+    "bt_trades",
+    "bt_nav",
+    "bt_report",
+    "run_log",
+    "agent_utils",
+    "alloc_log",
+)
+
 
 @dataclass
 class MigrationResult:
     executed: int
     skipped: bool = False
+    missing_tables: List[str] = field(default_factory=list)
 
 
-def _schema_exists() -> bool:
+def _missing_tables() -> List[str]:
     try:
         with db_session(read_only=True) as conn:
-            cursor = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='news'"
-            )
-            return cursor.fetchone() is not None
+            rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
     except sqlite3.OperationalError:
-        return False
+        return list(REQUIRED_TABLES)
+    existing = {row["name"] for row in rows}
+    return [name for name in REQUIRED_TABLES if name not in existing]
 
 
 def initialize_database() -> MigrationResult:
     """Create tables and indexes required by the application."""
 
-    if _schema_exists():
-        return MigrationResult(executed=0, skipped=True)
+    missing = _missing_tables()
+    if not missing:
+        return MigrationResult(executed=0, skipped=True, missing_tables=[])
 
     executed = 0
     with db_session() as conn:
@@ -233,4 +254,4 @@ def initialize_database() -> MigrationResult:
         for statement in SCHEMA_STATEMENTS:
             cursor.executescript(statement)
             executed += 1
-    return MigrationResult(executed=executed)
+    return MigrationResult(executed=executed, skipped=False, missing_tables=missing)
