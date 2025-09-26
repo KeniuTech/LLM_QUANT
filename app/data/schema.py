@@ -5,11 +5,101 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Iterable
 
-from app.utils.config import get_config
 from app.utils.db import db_session
 
 
 SCHEMA_STATEMENTS: Iterable[str] = (
+    """
+    CREATE TABLE IF NOT EXISTS stock_basic (
+      ts_code TEXT PRIMARY KEY,
+      symbol TEXT,
+      name TEXT,
+      area TEXT,
+      industry TEXT,
+      market TEXT,
+      exchange TEXT,
+      list_status TEXT,
+      list_date TEXT,
+      delist_date TEXT
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS daily (
+      ts_code TEXT,
+      trade_date TEXT,
+      open REAL,
+      high REAL,
+      low REAL,
+      close REAL,
+      pre_close REAL,
+      change REAL,
+      pct_chg REAL,
+      vol REAL,
+      amount REAL,
+      PRIMARY KEY (ts_code, trade_date)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS daily_basic (
+      ts_code TEXT,
+      trade_date TEXT,
+      close REAL,
+      turnover_rate REAL,
+      turnover_rate_f REAL,
+      volume_ratio REAL,
+      pe REAL,
+      pe_ttm REAL,
+      pb REAL,
+      ps REAL,
+      ps_ttm REAL,
+      dv_ratio REAL,
+      dv_ttm REAL,
+      total_share REAL,
+      float_share REAL,
+      free_share REAL,
+      total_mv REAL,
+      circ_mv REAL,
+      PRIMARY KEY (ts_code, trade_date)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS adj_factor (
+      ts_code TEXT,
+      trade_date TEXT,
+      adj_factor REAL,
+      PRIMARY KEY (ts_code, trade_date)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS suspend (
+      ts_code TEXT,
+      suspend_date TEXT,
+      resume_date TEXT,
+      suspend_type TEXT,
+      ann_date TEXT,
+      suspend_timing TEXT,
+      resume_timing TEXT,
+      reason TEXT,
+      PRIMARY KEY (ts_code, suspend_date)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS trade_calendar (
+      exchange TEXT,
+      cal_date TEXT PRIMARY KEY,
+      is_open INTEGER,
+      pretrade_date TEXT
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS stk_limit (
+      ts_code TEXT,
+      trade_date TEXT,
+      up_limit REAL,
+      down_limit REAL,
+      PRIMARY KEY (ts_code, trade_date)
+    );
+    """,
     """
     CREATE TABLE IF NOT EXISTS news (
       id TEXT PRIMARY KEY,

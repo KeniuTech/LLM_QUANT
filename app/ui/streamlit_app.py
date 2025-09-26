@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
 import streamlit as st
 
 from app.data.schema import initialize_database
+from app.ingest.checker import run_boot_check
 from app.ingest.tushare import FetchJob, run_ingestion
 from app.llm.explain import make_human_card
 
@@ -66,6 +67,17 @@ def render_tests() -> None:
                 st.error(f"拉取失败：{exc}")
 
     st.info("注意：TuShare 拉取依赖网络与 Token，若环境未配置将出现错误提示。")
+
+    st.divider()
+    days = int(st.number_input("检查窗口（天数）", min_value=30, max_value=1095, value=365, step=30))
+    if st.button("执行开机检查"):
+        with st.spinner("正在执行开机检查..."):
+            try:
+                report = run_boot_check(days=days)
+                st.success("开机检查完成，以下为数据覆盖摘要。")
+                st.json(report.to_dict())
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"开机检查失败：{exc}")
 
 
 def main() -> None:
