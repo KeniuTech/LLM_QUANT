@@ -10,6 +10,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 from app.backtest.engine import BtConfig, run_backtest
@@ -248,10 +250,65 @@ def render_tests() -> None:
     metric_col2.metric("区间涨跌幅", f"{delta_pct:+.2f}%")
     metric_col3.metric("平均成交量", f"{volume_sampled['成交量(手)'].mean():.0f}")
 
-    st.line_chart(sampled, width='stretch')
-    st.bar_chart(volume_sampled, width='stretch')
-    st.caption("提示：成交量单位为手，若需更长区间请调整日期后重新加载。")
-    st.dataframe(df.reset_index().tail(10), width='stretch')
+    df_reset = df.reset_index().rename(columns={
+        "trade_date": "交易日",
+        "open": "开盘价",
+        "high": "最高价",
+        "low": "最低价",
+        "close": "收盘价",
+        "vol": "成交量(手)",
+        "amount": "成交额(千元)",
+    })
+    df_reset["成交额(千元)"] = df_reset["成交额(千元)"] / 1000
+
+    candle_fig = go.Figure(
+        data=[
+            go.Candlestick(
+                x=df_reset["交易日"],
+                open=df_reset["开盘价"],
+                high=df_reset["最高价"],
+                low=df_reset["最低价"],
+                close=df_reset["收盘价"],
+                name="K线",
+            )
+        ]
+    )
+    candle_fig.update_layout(height=420, margin=dict(l=10, r=10, t=40, b=10))
+    st.plotly_chart(candle_fig, use_container_width=True)
+
+    vol_fig = px.bar(
+        df_reset,
+        x="交易日",
+        y="成交量(手)",
+        labels={"成交量(手)": "成交量(手)"},
+        title="成交量",
+    )
+    vol_fig.update_layout(height=280, margin=dict(l=10, r=10, t=40, b=10))
+    st.plotly_chart(vol_fig, use_container_width=True)
+
+    amt_fig = px.bar(
+        df_reset,
+        x="交易日",
+        y="成交额(千元)",
+        labels={"成交额(千元)": "成交额(千元)"},
+        title="成交额",
+    )
+    amt_fig.update_layout(height=280, margin=dict(l=10, r=10, t=40, b=10))
+    st.plotly_chart(amt_fig, use_container_width=True)
+
+    df_reset["月份"] = df_reset["交易日"].dt.to_period("M").astype(str)
+    box_fig = px.box(
+        df_reset,
+        x="月份",
+        y="收盘价",
+        points="outliers",
+        title="月度收盘价分布",
+    )
+    box_fig.update_layout(height=320, margin=dict(l=10, r=10, t=40, b=10))
+    st.plotly_chart(box_fig, use_container_width=True)
+
+    st.caption("提示：成交量单位为手，成交额以千元显示。箱线图按月展示收盘价分布。")
+    st.dataframe(df_reset.tail(20), width='stretch')
 
 
 def main() -> None:

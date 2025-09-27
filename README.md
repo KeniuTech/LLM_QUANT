@@ -1,6 +1,10 @@
 # 多智能体投资助理骨架
 
-本仓库提供一个基于多智能体博弈的 A 股日线投资助理代码框架，满足单机可运行、SQLite 存储和 Streamlit UI 的需求。核心模块划分如下：
+## 项目简介
+
+本仓库提供一个面向 A 股日线级别的多智能体投资助理原型，覆盖数据采集、特征抽取、策略博弈、回测展示和 LLM 解释链路。代码以模块化骨架形式呈现，方便在单机环境下快速搭建端到端的量化研究和可视化决策流程。
+
+## 核心模块
 
 - `app/data`：数据库初始化与 Schema 定义。
 - `app/utils`：配置、数据库连接、日志和交易日历工具。
@@ -10,6 +14,36 @@
 - `app/backtest`：日线回测引擎与指标计算的占位实现。
 - `app/llm`：人类可读卡片与摘要生成入口（仅构建提示，不直接交易）。
 - `app/ui`：Streamlit 四页界面骨架，含“自检测试”页。
+
+## 核心技术原理
+
+- **多智能体博弈**：通过 `app/agents` 定义六类风格化代理，利用纳什谈判与加权投票在 `app/agents/game.py` 中聚合交易动作与信心水平。
+- **数据覆盖自检**：`app/ingest/tushare.py` 封装 TuShare 拉取、增量更新与覆盖统计，`app/ingest/checker.py` 提供强制补数与窗口化覆盖报告。
+- **事件驱动回测**：`app/backtest/engine.py` 构建日频回测循环，将代理决策与投资组合状态解耦，便于扩展成交撮合与绩效统计。
+- **可视化与解释**：`app/ui/streamlit_app.py` 提供四大页签（今日计划、回测与复盘、数据与设置、自检测试），结合 Plotly 图形展示和 `app/llm` 提示卡片生成器，支撑人机协作分析。
+
+## 环境依赖与安装
+
+建议使用 Python 3.10+，并在虚拟环境中安装依赖。
+
+```bash
+# 1. 创建并激活虚拟环境（示例使用 venv）
+python -m venv .venv
+source .venv/bin/activate  # Windows 使用 .venv\Scripts\activate
+
+# 2. 安装项目依赖
+pip install -r requirements.txt
+
+# 3. 设置 TuShare Token（可写入环境变量或在 UI 中配置）
+export TUSHARE_TOKEN="<your-token>"
+```
+
+`requirements.txt` 当前涵盖运行框架所需的核心三方库：
+
+- Pandas：数据表结构与指标处理
+- Streamlit：交互式前端
+- Plotly：行情与指标可视化
+- TuShare：行情与基础面数据源
 
 ## 快速开始
 
