@@ -44,6 +44,17 @@ class AgentWeights:
             "A_macro": self.macro,
         }
 
+@dataclass
+class LLMConfig:
+    """Configuration for LLM providers (Ollama / OpenAI-compatible)."""
+
+    provider: str = "ollama"  # Options: "ollama", "openai"
+    model: str = "llama3"
+    base_url: Optional[str] = None  # Defaults resolved per provider
+    api_key: Optional[str] = None
+    temperature: float = 0.2
+    timeout: float = 30.0
+
 
 @dataclass
 class AppConfig:
@@ -55,6 +66,7 @@ class AppConfig:
     data_paths: DataPaths = field(default_factory=DataPaths)
     agent_weights: AgentWeights = field(default_factory=AgentWeights)
     force_refresh: bool = False
+    llm: LLMConfig = field(default_factory=LLMConfig)
 
 
 CONFIG = AppConfig()

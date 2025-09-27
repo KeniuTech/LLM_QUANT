@@ -1,0 +1,27 @@
+LLM Quant Framework License v1.0
+
+Copyright (c) 2025, Qiang
+
+Permission is hereby granted, free of charge, to any individual obtaining a copy
+of this software and associated documentation files (the "Software"), to use,
+copy, modify, and distribute the Software for personal, non-commercial purposes,
+subject to the following conditions:
+
+1. Attribution. Any redistribution or derivative work must include a prominent
+   notice acknowledging the original source:
+   "Based on the LLM Quant Framework by Qiang" and provide a link to the
+   original repository if distributed electronically.
+
+2. Commercial Use. Any use of the Software, in whole or in part, for commercial
+   purposes requires prior written permission and a separate licensing agreement
+   with the copyright holder. Commercial purposes include, but are not limited
+   to, selling, licensing, offering as a hosted service, or integrating into a
+   commercial product.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

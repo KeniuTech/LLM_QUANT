@@ -54,6 +54,13 @@ export TUSHARE_TOKEN="<your-token>"
 - Streamlit：交互式前端
 - Plotly：行情与指标可视化
 - TuShare：行情与基础面数据源
+- Requests：统一访问 Ollama / OpenAI 兼容 API
+
+### LLM 配置与测试
+
+- 默认使用本地 Ollama（`http://localhost:11434`），可在 Streamlit 的 “数据与设置” 页签切换到 OpenAI 兼容接口。
+- 修改 Provider/模型/Base URL/API Key 后点击 “保存 LLM 设置”，更新内容仅在当前会话生效。
+- 在 “自检测试” 页新增 “LLM 接口测试”，可输入 Prompt 快速验证调用结果，日志会记录限频与错误信息便于排查。
 
 ## 快速开始
 
@@ -77,3 +84,7 @@ Streamlit `自检测试` 页签提供：
 2. 将代理效用写入 SQLite 的 `agent_utils` 和 `alloc_log` 表，驱动 UI 决策解释。
 3. 使用轻量情感分析与热度计算填充 `news`、`heat_daily` 与热点指数。
 4. 接入本地小模型或 API 完成人类可读的策略建议卡片，形成端到端体验。
+
+## License
+
+本项目采用定制的 “LLM Quant Framework License v1.0”。个人使用、修改与分发需保留出处，任何商业用途须事先与版权方协商并签署付费协议。详情参见仓库根目录的 `LICENSE` 文件。

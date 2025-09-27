@@ -18,6 +18,7 @@ from app.backtest.engine import BtConfig, run_backtest
 from app.data.schema import initialize_database
 from app.ingest.checker import run_boot_check
 from app.ingest.tushare import FetchJob, run_ingestion
+from app.llm.client import llm_config_snapshot, run_llm
 from app.llm.explain import make_human_card
 from app.utils.config import get_config
 from app.utils.db import db_session
@@ -189,6 +190,32 @@ def render_settings() -> None:
         st.success("设置已保存，仅在当前会话生效。")
 
     st.write("新闻源开关与数据库备份将在此配置。")
+
+    st.divider()
+    st.subheader("LLM 设置")
+    llm_cfg = cfg.llm
+    providers = ["ollama", "openai"]
+    try:
+        provider_index = providers.index((llm_cfg.provider or "ollama").lower())
+    except ValueError:
+        provider_index = 0
+    selected_provider = st.selectbox("LLM Provider", providers, index=provider_index)
+    llm_model = st.text_input("LLM 模型", value=llm_cfg.model)
+    llm_base = st.text_input("LLM Base URL (可选)", value=llm_cfg.base_url or "")
+    llm_api_key = st.text_input("LLM API Key (OpenAI 类需要)", value=llm_cfg.api_key or "", type="password")
+    llm_temperature = st.slider("LLM 温度", min_value=0.0, max_value=2.0, value=float(llm_cfg.temperature), step=0.05)
+    llm_timeout = st.number_input("请求超时时间 (秒)", min_value=5.0, max_value=120.0, value=float(llm_cfg.timeout), step=5.0)
+
+    if st.button("保存 LLM 设置"):
+        llm_cfg.provider = selected_provider
+        llm_cfg.model = llm_model.strip() or llm_cfg.model
+        llm_cfg.base_url = llm_base.strip() or None
+        llm_cfg.api_key = llm_api_key.strip() or None
+        llm_cfg.temperature = llm_temperature
+        llm_cfg.timeout = llm_timeout
+        LOGGER.info("LLM 配置已更新：%s", llm_config_snapshot(), extra=LOG_EXTRA)
+        st.success("LLM 设置已保存，仅在当前会话生效。")
+        st.json(llm_config_snapshot())
 
 
 def render_tests() -> None:
@@ -396,6 +423,27 @@ def render_tests() -> None:
     st.caption("提示：成交量单位为手，成交额以千元显示。箱线图按月展示收盘价分布。")
     st.dataframe(df_reset.tail(20), width='stretch')
     LOGGER.info("行情可视化完成，展示行数=%s", len(df_reset), extra=LOG_EXTRA)
+
+    st.divider()
+    st.subheader("LLM 接口测试")
+    st.json(llm_config_snapshot())
+    llm_prompt = st.text_area("测试 Prompt", value="请概述今天的市场重点。", height=160)
+    system_prompt = st.text_area(
+        "System Prompt (可选)",
+        value="你是一名量化策略研究助手，用简洁中文回答。",
+        height=100,
+    )
+    if st.button("执行 LLM 测试"):
+        with st.spinner("正在调用 LLM..."):
+            try:
+                response = run_llm(llm_prompt, system=system_prompt or None)
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.exception("LLM 测试失败", extra=LOG_EXTRA)
+                st.error(f"LLM 调用失败：{exc}")
+            else:
+                LOGGER.info("LLM 测试成功", extra=LOG_EXTRA)
+                st.success("LLM 调用成功，以下为返回内容：")
+                st.write(response)
 
 
 def main() -> None:
