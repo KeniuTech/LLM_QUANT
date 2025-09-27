@@ -58,10 +58,13 @@ export TUSHARE_TOKEN="<your-token>"
 
 ### LLM 配置与测试
 
-- 支持本地 Ollama（`http://localhost:11434`）与多家 OpenAI 兼容云端供应商（如 DeepSeek、文心一言、OpenAI 等），可在 Streamlit 的 “数据与设置” 页签切换 Provider 并配置模型、Base URL、API Key。不同 Provider 默认映射的模型示例：Ollama → `llama3`，OpenAI → `gpt-4o-mini`，DeepSeek → `deepseek-chat`，文心一言 → `ERNIE-Speed`。
+- 支持本地 Ollama 与多家 OpenAI 兼容云端供应商（如 DeepSeek、文心一言、OpenAI 等），可在 “数据与设置” 页签切换 Provider 并自动加载该 Provider 的候选模型、推荐 Base URL、默认温度与超时时间，亦可切换为自定义值。所有修改会持久化到 `app/data/config.json`，下次启动自动加载。
 - 修改 Provider/模型/Base URL/API Key 后点击 “保存 LLM 设置”，更新内容仅在当前会话生效。
 - 在 “自检测试” 页新增 “LLM 接口测试”，可输入 Prompt 快速验证调用结果，日志会记录限频与错误信息便于排查。
 - 未来可对同一功能的智能体并行调用多个 LLM，采用多数投票等策略增强鲁棒性，当前代码结构已为此预留扩展空间。
+- 若使用环境变量自动注入配置，可设置：
+  - `TUSHARE_TOKEN`
+  - `LLM_API_KEY`
 
 ## 快速开始
 

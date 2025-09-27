@@ -19,6 +19,8 @@ env/
 app/data/*.db*
 app/data/backups/
 app/data/logs/
+app/data/*.json
+.json
 *.log
 
 # Streamlit temporary files

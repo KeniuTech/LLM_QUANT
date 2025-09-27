@@ -23,7 +23,14 @@ from app.ingest.checker import run_boot_check
 from app.ingest.tushare import FetchJob, run_ingestion
 from app.llm.client import llm_config_snapshot, run_llm
 from app.llm.explain import make_human_card
-from app.utils.config import DEFAULT_LLM_MODELS, LLMEndpoint, get_config
+from app.utils.config import (
+    DEFAULT_LLM_BASE_URLS,
+    DEFAULT_LLM_MODEL_OPTIONS,
+    DEFAULT_LLM_MODELS,
+    LLMEndpoint,
+    get_config,
+    save_config,
+)
 from app.utils.db import db_session
 from app.utils.logging import get_logger
 
@@ -190,6 +197,7 @@ def render_settings() -> None:
         LOGGER.info("保存设置按钮被点击", extra=LOG_EXTRA)
         cfg.tushare_token = token.strip() or None
         LOGGER.info("TuShare Token 更新，是否为空=%s", cfg.tushare_token is None, extra=LOG_EXTRA)
+        save_config()
         st.success("设置已保存，仅在当前会话生效。")
 
     st.write("新闻源开关与数据库备份将在此配置。")
@@ -198,25 +206,76 @@ def render_settings() -> None:
     st.subheader("LLM 设置")
     llm_cfg = cfg.llm
     primary = llm_cfg.primary
-    providers = ["ollama", "openai"]
+    providers = sorted(DEFAULT_LLM_MODELS.keys())
     try:
         provider_index = providers.index((primary.provider or "ollama").lower())
     except ValueError:
         provider_index = 0
     selected_provider = st.selectbox("LLM Provider", providers, index=provider_index)
+    provider_info = DEFAULT_LLM_MODEL_OPTIONS.get(selected_provider, {})
+    model_options = provider_info.get("models", [])
+    custom_model_label = "自定义模型"
     default_model_hint = DEFAULT_LLM_MODELS.get(selected_provider, DEFAULT_LLM_MODELS["ollama"])
-    llm_model = st.text_input("LLM 模型", value=primary.model, help=f"默认推荐：{default_model_hint}")
-    base_hints = {
-        "ollama": "http://localhost:11434",
-        "openai": "https://api.openai.com",
-        "deepseek": "https://api.deepseek.com",
-        "wenxin": "https://aip.baidubce.com",
-    }
-    default_base_hint = base_hints.get(selected_provider, "")
-    llm_base = st.text_input("LLM Base URL (可选)", value=primary.base_url or "", help=f"默认推荐：{default_base_hint or '按供应商要求填写'}")
+
+    if model_options:
+        options_with_custom = model_options + [custom_model_label]
+        if primary.model in model_options:
+            model_index = options_with_custom.index(primary.model)
+        else:
+            model_index = len(options_with_custom) - 1
+        selected_model_option = st.selectbox(
+            "LLM 模型",
+            options_with_custom,
+            index=model_index,
+            help=f"可选模型：{', '.join(model_options)}",
+        )
+        if selected_model_option == custom_model_label:
+            custom_model_value = st.text_input(
+                "自定义模型名称",
+                value=primary.model if primary.model not in model_options else "",
+            )
+        else:
+            custom_model_value = selected_model_option
+    else:
+        custom_model_value = st.text_input(
+            "LLM 模型",
+            value=primary.model or default_model_hint,
+            help="未预设该 Provider 的模型列表，请手动填写",
+        )
+        selected_model_option = custom_model_label
+    default_base_hint = DEFAULT_LLM_BASE_URLS.get(selected_provider, "")
+    provider_default_temp = float(provider_info.get("temperature", 0.2))
+    provider_default_timeout = int(provider_info.get("timeout", 30.0))
+
+    if primary.provider == selected_provider:
+        base_value = primary.base_url or default_base_hint or ""
+        temp_value = float(primary.temperature)
+        timeout_value = int(primary.timeout)
+    else:
+        base_value = default_base_hint or ""
+        temp_value = provider_default_temp
+        timeout_value = provider_default_timeout
+
+    llm_base = st.text_input(
+        "LLM Base URL (可选)",
+        value=base_value,
+        help=f"默认推荐：{default_base_hint or '按供应商要求填写'}",
+    )
     llm_api_key = st.text_input("LLM API Key (OpenAI 类需要)", value=primary.api_key or "", type="password")
-    llm_temperature = st.slider("LLM 温度", min_value=0.0, max_value=2.0, value=float(primary.temperature), step=0.05)
-    llm_timeout = st.number_input("请求超时时间 (秒)", min_value=5.0, max_value=120.0, value=float(primary.timeout), step=5.0, format="%d")
+    llm_temperature = st.slider(
+        "LLM 温度",
+        min_value=0.0,
+        max_value=2.0,
+        value=temp_value,
+        step=0.05,
+    )
+    llm_timeout = st.number_input(
+        "请求超时时间 (秒)",
+        min_value=5,
+        max_value=120,
+        value=timeout_value,
+        step=5,
+    )
 
     strategy_options = ["single", "majority"]
     try:
@@ -249,13 +308,18 @@ def render_settings() -> None:
         original_provider = primary.provider
         original_model = primary.model
         primary.provider = selected_provider
-        model_input = llm_model.strip()
-        if not model_input:
-            primary.model = DEFAULT_LLM_MODELS.get(selected_provider, DEFAULT_LLM_MODELS["ollama"])
-        elif selected_provider != original_provider and model_input == original_model:
-            primary.model = DEFAULT_LLM_MODELS.get(selected_provider, DEFAULT_LLM_MODELS["ollama"])
+        if model_options:
+            if selected_model_option == custom_model_label:
+                model_input = custom_model_value.strip()
+                primary.model = model_input or DEFAULT_LLM_MODELS.get(
+                    selected_provider, DEFAULT_LLM_MODELS["ollama"]
+                )
+            else:
+                primary.model = selected_model_option
         else:
-            primary.model = model_input
+            primary.model = custom_model_value.strip() or DEFAULT_LLM_MODELS.get(
+                selected_provider, DEFAULT_LLM_MODELS["ollama"]
+            )
         primary.base_url = llm_base.strip() or None
         primary.temperature = llm_temperature
         primary.timeout = llm_timeout
@@ -286,6 +350,7 @@ def render_settings() -> None:
                 llm_cfg.ensemble = new_ensemble
                 llm_cfg.strategy = selected_strategy
                 llm_cfg.majority_threshold = int(majority_threshold)
+                save_config()
                 LOGGER.info("LLM 配置已更新：%s", llm_config_snapshot(), extra=LOG_EXTRA)
                 st.success("LLM 设置已保存，仅在当前会话生效。")
                 st.json(llm_config_snapshot())
@@ -342,6 +407,7 @@ def render_tests() -> None:
     if force_refresh != cfg.force_refresh:
         cfg.force_refresh = force_refresh
         LOGGER.info("更新 force_refresh=%s", force_refresh, extra=LOG_EXTRA)
+        save_config()
 
     if st.button("执行开机检查"):
         LOGGER.info("点击执行开机检查按钮", extra=LOG_EXTRA)

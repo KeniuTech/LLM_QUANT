@@ -8,7 +8,7 @@ from typing import Dict, Iterable, List, Optional
 
 import requests
 
-from app.utils.config import DEFAULT_LLM_MODELS, LLMEndpoint, get_config
+from app.utils.config import DEFAULT_LLM_BASE_URLS, DEFAULT_LLM_MODELS, LLMEndpoint, get_config
 from app.utils.logging import get_logger
 
 LOGGER = get_logger(__name__)
@@ -19,13 +19,8 @@ class LLMError(RuntimeError):
 
 
 def _default_base_url(provider: str) -> str:
-    if provider == "ollama":
-        return "http://localhost:11434"
-    if provider == "deepseek":
-        return "https://api.deepseek.com"
-    if provider == "wenxin":
-        return "https://aip.baidubce.com"
-    return "https://api.openai.com"
+    provider = (provider or "openai").lower()
+    return DEFAULT_LLM_BASE_URLS.get(provider, DEFAULT_LLM_BASE_URLS["openai"])
 
 
 def _default_model(provider: str) -> str:
