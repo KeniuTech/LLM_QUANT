@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+import time
+from collections import deque
 from dataclasses import dataclass
 from datetime import date
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -23,6 +25,23 @@ LOGGER = get_logger(__name__)
 
 API_DEFAULT_LIMIT = 5000
 LOG_EXTRA = {"stage": "data_ingest"}
+
+_CALL_QUEUE = deque()
+
+
+def _respect_rate_limit(cfg) -> None:
+    max_calls = cfg.max_calls_per_minute
+    if max_calls <= 0:
+        return
+    now = time.time()
+    window = 60.0
+    while _CALL_QUEUE and now - _CALL_QUEUE[0] > window:
+        _CALL_QUEUE.popleft()
+    if len(_CALL_QUEUE) >= max_calls:
+        sleep_time = window - (now - _CALL_QUEUE[0]) + 0.1
+        LOGGER.debug("触发限频控制，休眠 %.2f 秒", sleep_time, extra=LOG_EXTRA)
+        time.sleep(max(0.1, sleep_time))
+    _CALL_QUEUE.append(time.time())
 
 
 def _existing_date_range(
@@ -63,6 +82,7 @@ def _fetch_paginated(endpoint: str, params: Dict[str, object], limit: int | None
         extra=LOG_EXTRA,
     )
     while True:
+        _respect_rate_limit(get_config())
         call = getattr(client, endpoint)
         try:
             df = call(limit=limit, offset=offset, **clean_params)
@@ -608,6 +628,8 @@ def fetch_trade_calendar(start: date, end: date, exchange: str = "SSE") -> Itera
     end_date = _format_date(end)
     LOGGER.info("拉取交易日历（交易所：%s，区间：%s-%s）", exchange, start_date, end_date)
     df = client.trade_cal(exchange=exchange, start_date=start_date, end_date=end_date)
+    if df is not None and not df.empty and "is_open" in df.columns:
+        df["is_open"] = pd.to_numeric(df["is_open"], errors="coerce").fillna(0).astype(int)
     return _df_to_records(df, _TABLE_COLUMNS["trade_calendar"])
 
 

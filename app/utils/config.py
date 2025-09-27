@@ -55,6 +55,7 @@ class AppConfig:
     data_paths: DataPaths = field(default_factory=DataPaths)
     agent_weights: AgentWeights = field(default_factory=AgentWeights)
     force_refresh: bool = False
+    max_calls_per_minute: int = 180
 
 
 CONFIG = AppConfig()

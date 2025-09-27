@@ -73,9 +73,10 @@ def setup_logging(
             level = logging.DEBUG
 
     cfg = get_config()
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
     log_dir: Path = cfg.data_paths.root / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
-    logfile = log_dir / "app.log"
+    logfile = log_dir / f"app_{timestamp}.log"
 
     root = logging.getLogger()
     root.setLevel(level)
@@ -98,6 +99,21 @@ def setup_logging(
     root.addHandler(db_handler)
 
     _IS_CONFIGURED = True
+
+    cfg = get_config()
+    root.info(
+        "日志系统初始化完成",
+        extra={
+            "stage": "config",
+            "config": {
+                "tushare_token_set": bool(cfg.tushare_token),
+                "force_refresh": cfg.force_refresh,
+                "data_root": str(cfg.data_paths.root),
+                "logfile": str(logfile),
+                "max_calls_per_minute": cfg.max_calls_per_minute,
+            },
+        },
+    )
     return root
 
 
