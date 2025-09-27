@@ -102,6 +102,167 @@ SCHEMA_STATEMENTS: Iterable[str] = (
     );
     """,
     """
+    CREATE TABLE IF NOT EXISTS index_basic (
+      ts_code TEXT PRIMARY KEY,
+      name TEXT,
+      fullname TEXT,
+      market TEXT,
+      publisher TEXT,
+      index_type TEXT,
+      category TEXT,
+      base_date TEXT,
+      base_point REAL,
+      list_date TEXT,
+      weight_rule TEXT,
+      desc TEXT,
+      exp_date TEXT
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS index_daily (
+      ts_code TEXT,
+      trade_date TEXT,
+      close REAL,
+      open REAL,
+      high REAL,
+      low REAL,
+      pre_close REAL,
+      change REAL,
+      pct_chg REAL,
+      vol REAL,
+      amount REAL,
+      PRIMARY KEY (ts_code, trade_date)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS fund_basic (
+      ts_code TEXT PRIMARY KEY,
+      name TEXT,
+      management TEXT,
+      custodian TEXT,
+      fund_type TEXT,
+      found_date TEXT,
+      due_date TEXT,
+      list_date TEXT,
+      issue_date TEXT,
+      delist_date TEXT,
+      issue_amount REAL,
+      m_fee REAL,
+      c_fee REAL,
+      benchmark TEXT,
+      status TEXT,
+      invest_type TEXT,
+      type TEXT,
+      trustee TEXT,
+      purc_start_date TEXT,
+      redm_start_date TEXT,
+      market TEXT
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS fund_nav (
+      ts_code TEXT,
+      nav_date TEXT,
+      ann_date TEXT,
+      unit_nav REAL,
+      accum_nav REAL,
+      accum_div REAL,
+      net_asset REAL,
+      total_netasset REAL,
+      adj_nav REAL,
+      update_flag TEXT,
+      PRIMARY KEY (ts_code, nav_date)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS fut_basic (
+      ts_code TEXT PRIMARY KEY,
+      symbol TEXT,
+      name TEXT,
+      exchange TEXT,
+      exchange_full_name TEXT,
+      product TEXT,
+      product_name TEXT,
+      variety TEXT,
+      list_date TEXT,
+      delist_date TEXT,
+      trade_unit REAL,
+      per_unit REAL,
+      quote_unit TEXT,
+      settle_month TEXT,
+      contract_size REAL,
+      tick_size REAL,
+      margin_rate REAL,
+      margin_ratio REAL,
+      delivery_month TEXT,
+      delivery_day TEXT
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS fut_daily (
+      ts_code TEXT,
+      trade_date TEXT,
+      pre_settle REAL,
+      open REAL,
+      high REAL,
+      low REAL,
+      close REAL,
+      settle REAL,
+      change1 REAL,
+      change2 REAL,
+      vol REAL,
+      amount REAL,
+      oi REAL,
+      oi_chg REAL,
+      PRIMARY KEY (ts_code, trade_date)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS fx_daily (
+      ts_code TEXT,
+      trade_date TEXT,
+      bid REAL,
+      ask REAL,
+      mid REAL,
+      high REAL,
+      low REAL,
+      PRIMARY KEY (ts_code, trade_date)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS hk_daily (
+      ts_code TEXT,
+      trade_date TEXT,
+      close REAL,
+      open REAL,
+      high REAL,
+      low REAL,
+      pre_close REAL,
+      change REAL,
+      pct_chg REAL,
+      vol REAL,
+      amount REAL,
+      exchange TEXT,
+      PRIMARY KEY (ts_code, trade_date)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS us_daily (
+      ts_code TEXT,
+      trade_date TEXT,
+      close REAL,
+      open REAL,
+      high REAL,
+      low REAL,
+      pre_close REAL,
+      change REAL,
+      pct_chg REAL,
+      vol REAL,
+      amount REAL,
+      PRIMARY KEY (ts_code, trade_date)
+    );
+    """,
+    """
     CREATE TABLE IF NOT EXISTS news (
       id TEXT PRIMARY KEY,
       ts_code TEXT,
@@ -212,6 +373,15 @@ REQUIRED_TABLES = (
     "suspend",
     "trade_calendar",
     "stk_limit",
+    "index_basic",
+    "index_daily",
+    "fund_basic",
+    "fund_nav",
+    "fut_basic",
+    "fut_daily",
+    "fx_daily",
+    "hk_daily",
+    "us_daily",
     "news",
     "heat_daily",
     "bt_config",
