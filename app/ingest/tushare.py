@@ -29,6 +29,13 @@ LOG_EXTRA = {"stage": "data_ingest"}
 _CALL_QUEUE = deque()
 
 
+def _normalize_date_str(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 def _respect_rate_limit(cfg) -> None:
     max_calls = cfg.max_calls_per_minute
     if max_calls <= 0:
@@ -42,23 +49,6 @@ def _respect_rate_limit(cfg) -> None:
         LOGGER.debug("触发限频控制，休眠 %.2f 秒", sleep_time, extra=LOG_EXTRA)
         time.sleep(max(0.1, sleep_time))
     _CALL_QUEUE.append(time.time())
-
-
-def _existing_date_range(
-    table: str,
-    date_col: str,
-    ts_code: str | None = None,
-) -> Tuple[str | None, str | None]:
-    query = f"SELECT MIN({date_col}) AS min_d, MAX({date_col}) AS max_d FROM {table}"
-    params: Tuple = ()
-    if ts_code:
-        query += " WHERE ts_code = ?"
-        params = (ts_code,)
-    with db_session(read_only=True) as conn:
-        row = conn.execute(query, params).fetchone()
-    if row is None:
-        return None, None
-    return row["min_d"], row["max_d"]
 
 
 def _df_to_records(df: pd.DataFrame, allowed_cols: List[str]) -> List[Dict]:
@@ -352,25 +342,63 @@ def _record_exists(
 
 
 def _should_skip_range(table: str, date_col: str, start: date, end: date, ts_code: str | None = None) -> bool:
-    min_d, max_d = _existing_date_range(table, date_col, ts_code)
-    if min_d is None or max_d is None:
-        return False
     start_str = _format_date(start)
     end_str = _format_date(end)
-    return min_d <= start_str and max_d >= end_str
+
+    effective_start = start_str
+    effective_end = end_str
+
+    if ts_code:
+        list_date, delist_date = _listing_window(ts_code)
+        if list_date:
+            effective_start = max(effective_start, list_date)
+        if delist_date:
+            effective_end = min(effective_end, delist_date)
+        if effective_start > effective_end:
+            LOGGER.debug(
+                "股票 %s 在目标区间之外，跳过补数",
+                ts_code,
+                extra=LOG_EXTRA,
+            )
+            return True
+        stats = _range_stats(table, date_col, effective_start, effective_end, ts_code=ts_code)
+    else:
+        stats = _range_stats(table, date_col, effective_start, effective_end)
+
+    if stats["min"] is None or stats["max"] is None:
+        return False
+    if stats["min"] > effective_start or stats["max"] < effective_end:
+        return False
+
+    if ts_code is None:
+        expected_days = _expected_trading_days(effective_start, effective_end)
+        if expected_days and (stats["distinct"] or 0) < expected_days:
+            return False
+
+    return True
 
 
-def _range_stats(table: str, date_col: str, start_str: str, end_str: str) -> Dict[str, Optional[str]]:
+def _range_stats(
+    table: str,
+    date_col: str,
+    start_str: str,
+    end_str: str,
+    ts_code: str | None = None,
+) -> Dict[str, Optional[str]]:
     sql = (
         f"SELECT MIN({date_col}) AS min_d, MAX({date_col}) AS max_d, "
         f"COUNT(DISTINCT {date_col}) AS distinct_days FROM {table} "
         f"WHERE {date_col} BETWEEN ? AND ?"
     )
+    params: List[object] = [start_str, end_str]
+    if ts_code:
+        sql += " AND ts_code = ?"
+        params.append(ts_code)
     with db_session(read_only=True) as conn:
-        row = conn.execute(sql, (start_str, end_str)).fetchone()
+        row = conn.execute(sql, tuple(params)).fetchone()
     return {
-        "min": row["min_d"],
-        "max": row["max_d"],
+        "min": row["min_d"] if row else None,
+        "max": row["max_d"] if row else None,
         "distinct": row["distinct_days"] if row else 0,
     }
 
@@ -390,6 +418,17 @@ def _range_needs_refresh(
     if expected_days and (stats["distinct"] or 0) < expected_days:
         return True
     return False
+
+
+def _listing_window(ts_code: str) -> Tuple[Optional[str], Optional[str]]:
+    with db_session(read_only=True) as conn:
+        row = conn.execute(
+            "SELECT list_date, delist_date FROM stock_basic WHERE ts_code = ?",
+            (ts_code,),
+        ).fetchone()
+    if not row:
+        return None, None
+    return _normalize_date_str(row["list_date"]), _normalize_date_str(row["delist_date"])  # type: ignore[index]
 
 
 def _calendar_needs_refresh(exchange: str, start_str: str, end_str: str) -> bool:
@@ -421,7 +460,12 @@ def _expected_trading_days(start_str: str, end_str: str, exchange: str = "SSE") 
 
 def fetch_stock_basic(exchange: Optional[str] = None, list_status: str = "L") -> Iterable[Dict]:
     client = _ensure_client()
-    LOGGER.info("拉取股票基础信息（交易所：%s，状态：%s）", exchange or "全部", list_status)
+    LOGGER.info(
+        "拉取股票基础信息（交易所：%s，状态：%s）",
+        exchange or "全部",
+        list_status,
+        extra=LOG_EXTRA,
+    )
     fields = "ts_code,symbol,name,area,industry,market,exchange,list_status,list_date,delist_date"
     df = client.stock_basic(exchange=exchange, list_status=list_status, fields=fields)
     return _df_to_records(df, _TABLE_COLUMNS["stock_basic"])
@@ -626,7 +670,13 @@ def fetch_trade_calendar(start: date, end: date, exchange: str = "SSE") -> Itera
     client = _ensure_client()
     start_date = _format_date(start)
     end_date = _format_date(end)
-    LOGGER.info("拉取交易日历（交易所：%s，区间：%s-%s）", exchange, start_date, end_date)
+    LOGGER.info(
+        "拉取交易日历（交易所：%s，区间：%s-%s）",
+        exchange,
+        start_date,
+        end_date,
+        extra=LOG_EXTRA,
+    )
     df = client.trade_cal(exchange=exchange, start_date=start_date, end_date=end_date)
     if df is not None and not df.empty and "is_open" in df.columns:
         df["is_open"] = pd.to_numeric(df["is_open"], errors="coerce").fillna(0).astype(int)
@@ -672,7 +722,7 @@ def fetch_stk_limit(
 def save_records(table: str, rows: Iterable[Dict]) -> None:
     items = list(rows)
     if not items:
-        LOGGER.info("表 %s 没有新增记录，跳过写入", table)
+        LOGGER.info("表 %s 没有新增记录，跳过写入", table, extra=LOG_EXTRA)
         return
 
     schema = _TABLE_SCHEMAS.get(table)
@@ -683,7 +733,7 @@ def save_records(table: str, rows: Iterable[Dict]) -> None:
     placeholders = ",".join([f":{col}" for col in columns])
     col_clause = ",".join(columns)
 
-    LOGGER.info("表 %s 写入 %d 条记录", table, len(items))
+    LOGGER.info("表 %s 写入 %d 条记录", table, len(items), extra=LOG_EXTRA)
     with db_session() as conn:
         conn.executescript(schema)
         conn.executemany(
@@ -700,7 +750,11 @@ def ensure_stock_basic(list_status: str = "L") -> None:
             (*exchanges, list_status),
         ).fetchone()
     if row and row["cnt"]:
-        LOGGER.info("股票基础信息已存在 %d 条记录，跳过拉取", row["cnt"])
+        LOGGER.info(
+            "股票基础信息已存在 %d 条记录，跳过拉取",
+            row["cnt"],
+            extra=LOG_EXTRA,
+        )
         return
 
     for exch in exchanges:
@@ -736,7 +790,7 @@ def ensure_data_coverage(
         progress = min(current_step / total_steps, 1.0)
         if progress_hook:
             progress_hook(message, progress)
-        LOGGER.info(message)
+        LOGGER.info(message, extra=LOG_EXTRA)
 
     advance("准备股票基础信息与交易日历")
     ensure_stock_basic()
@@ -824,6 +878,8 @@ def ensure_data_coverage(
 
     if progress_hook:
         progress_hook("数据覆盖检查完成", 1.0)
+
+
 def collect_data_coverage(start: date, end: date) -> Dict[str, Dict[str, object]]:
     start_str = _format_date(start)
     end_str = _format_date(end)
@@ -876,7 +932,7 @@ def collect_data_coverage(start: date, end: date) -> Dict[str, Dict[str, object]
 
 
 def run_ingestion(job: FetchJob, include_limits: bool = True) -> None:
-    LOGGER.info("启动 TuShare 拉取任务：%s", job.name)
+    LOGGER.info("启动 TuShare 拉取任务：%s", job.name, extra=LOG_EXTRA)
     ensure_data_coverage(
         job.start,
         job.end,
@@ -884,4 +940,4 @@ def run_ingestion(job: FetchJob, include_limits: bool = True) -> None:
         include_limits=include_limits,
         force=True,
     )
-    LOGGER.info("任务 %s 完成", job.name)
+    LOGGER.info("任务 %s 完成", job.name, extra=LOG_EXTRA)
