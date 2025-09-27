@@ -37,6 +37,7 @@ from app.data.schema import initialize_database
 LOGGER = logging.getLogger(__name__)
 
 API_DEFAULT_LIMIT = 5000
+LOG_EXTRA = {"stage": "data_ingest"}
 
 
 def _fetch_paginated(endpoint: str, params: Dict[str, object], limit: int | None = None) -> pd.DataFrame:
@@ -45,18 +46,41 @@ def _fetch_paginated(endpoint: str, params: Dict[str, object], limit: int | None
     frames: List[pd.DataFrame] = []
     offset = 0
     clean_params = {k: v for k, v in params.items() if v is not None}
-    LOGGER.info("开始调用 TuShare 接口：%s，参数=%s，limit=%s", endpoint, clean_params, limit)
+    LOGGER.info(
+        "开始调用 TuShare 接口：%s，参数=%s，limit=%s",
+        endpoint,
+        clean_params,
+        limit,
+        extra=LOG_EXTRA,
+    )
     while True:
         call = getattr(client, endpoint)
         try:
             df = call(limit=limit, offset=offset, **clean_params)
         except Exception:  # noqa: BLE001
-            LOGGER.exception("TuShare 接口调用异常：endpoint=%s offset=%s params=%s", endpoint, offset, clean_params)
+            LOGGER.exception(
+                "TuShare 接口调用异常：endpoint=%s offset=%s params=%s",
+                endpoint,
+                offset,
+                clean_params,
+                extra=LOG_EXTRA,
+            )
             raise
         if df is None or df.empty:
-            LOGGER.info("TuShare 返回空数据：endpoint=%s offset=%s", endpoint, offset)
+            LOGGER.debug(
+                "TuShare 返回空数据：endpoint=%s offset=%s",
+                endpoint,
+                offset,
+                extra=LOG_EXTRA,
+            )
             break
-        LOGGER.info("TuShare 返回 %s 行：endpoint=%s offset=%s", len(df), endpoint, offset)
+        LOGGER.debug(
+            "TuShare 返回 %s 行：endpoint=%s offset=%s",
+            len(df),
+            endpoint,
+            offset,
+            extra=LOG_EXTRA,
+        )
         frames.append(df)
         if len(df) < limit:
             break
@@ -64,7 +88,12 @@ def _fetch_paginated(endpoint: str, params: Dict[str, object], limit: int | None
     if not frames:
         return pd.DataFrame()
     merged = pd.concat(frames, ignore_index=True)
-    LOGGER.info("TuShare 调用完成：endpoint=%s 总行数=%s", endpoint, len(merged))
+    LOGGER.info(
+        "TuShare 调用完成：endpoint=%s 总行数=%s",
+        endpoint,
+        len(merged),
+        extra=LOG_EXTRA,
+    )
     return merged
 
 
@@ -265,6 +294,13 @@ def _format_date(value: date) -> str:
     return value.strftime("%Y%m%d")
 
 
+def _df_to_records(df: pd.DataFrame, allowed_cols: List[str]) -> List[Dict]:
+    if df is None or df.empty:
+        return []
+    reindexed = df.reindex(columns=allowed_cols)
+    return reindexed.where(pd.notnull(reindexed), None).to_dict("records")
+
+
 def _load_trade_dates(start: date, end: date, exchange: str = "SSE") -> List[str]:
     start_str = _format_date(start)
     end_str = _format_date(end)
@@ -277,6 +313,16 @@ def _load_trade_dates(start: date, end: date, exchange: str = "SSE") -> List[str
     return [row["cal_date"] for row in rows]
 
 
+def _daily_basic_exists(trade_date: str, ts_code: Optional[str] = None) -> bool:
+    query = "SELECT 1 FROM daily_basic WHERE trade_date = ?"
+    params: Tuple = (trade_date,)
+    if ts_code:
+        query += " AND ts_code = ?"
+        params = (trade_date, ts_code)
+    with db_session(read_only=True) as conn:
+        row = conn.execute(query, params).fetchone()
+    return row is not None
+
 
 def _should_skip_range(table: str, date_col: str, start: date, end: date, ts_code: str | None = None) -> bool:
     min_d, max_d = _existing_date_range(table, date_col, ts_code)
@@ -285,22 +331,6 @@ def _should_skip_range(table: str, date_col: str, start: date, end: date, ts_cod
     start_str = _format_date(start)
     end_str = _format_date(end)
     return min_d <= start_str and max_d >= end_str
-
-
-def _should_skip_range(table: str, date_col: str, start: date, end: date, ts_code: str | None = None) -> bool:
-    min_d, max_d = _existing_date_range(table, date_col, ts_code)
-    if min_d is None or max_d is None:
-        return False
-    start_str = _format_date(start)
-    end_str = _format_date(end)
-    return min_d <= start_str and max_d >= end_str
-
-
-def _df_to_records(df: pd.DataFrame, allowed_cols: List[str]) -> List[Dict]:
-    if df is None or df.empty:
-        return []
-    reindexed = df.reindex(columns=allowed_cols)
-    return reindexed.where(pd.notnull(reindexed), None).to_dict("records")
 
 
 def _range_stats(table: str, date_col: str, start_str: str, end_str: str) -> Dict[str, Optional[str]]:
@@ -408,17 +438,58 @@ def fetch_daily_bars(job: FetchJob) -> Iterable[Dict]:
     return _df_to_records(df, _TABLE_COLUMNS["daily"])
 
 
-def fetch_daily_basic(start: date, end: date, ts_code: Optional[str] = None) -> Iterable[Dict]:
+def fetch_daily_basic(
+    start: date,
+    end: date,
+    ts_code: Optional[str] = None,
+    skip_existing: bool = True,
+) -> Iterable[Dict]:
     client = _ensure_client()
     start_date = _format_date(start)
     end_date = _format_date(end)
-    LOGGER.info("拉取日线基础指标（%s-%s，股票：%s）", start_date, end_date, ts_code or "全部")
-    df = _fetch_paginated("daily_basic", {
-        "ts_code": ts_code,
-        "start_date": start_date,
-        "end_date": end_date,
-    })
-    return _df_to_records(df, _TABLE_COLUMNS["daily_basic"])
+    LOGGER.info(
+        "拉取日线基础指标（%s-%s，股票：%s）",
+        start_date,
+        end_date,
+        ts_code or "全部",
+        extra=LOG_EXTRA,
+    )
+
+    if ts_code:
+        df = _fetch_paginated(
+            "daily_basic",
+            {
+                "ts_code": ts_code,
+                "start_date": start_date,
+                "end_date": end_date,
+            },
+        )
+        return _df_to_records(df, _TABLE_COLUMNS["daily_basic"])
+
+    trade_dates = _load_trade_dates(start, end)
+    frames: List[pd.DataFrame] = []
+    for trade_date in trade_dates:
+        if skip_existing and _daily_basic_exists(trade_date):
+            LOGGER.info(
+                "日线基础指标已存在，跳过交易日 %s",
+                trade_date,
+                extra=LOG_EXTRA,
+            )
+            continue
+        LOGGER.debug(
+            "按交易日拉取日线基础指标：%s",
+            trade_date,
+            extra=LOG_EXTRA,
+        )
+        df = _fetch_paginated("daily_basic", {"trade_date": trade_date})
+        if not df.empty:
+            frames.append(df)
+
+    if not frames:
+        return []
+
+    merged = pd.concat(frames, ignore_index=True)
+    return _df_to_records(merged, _TABLE_COLUMNS["daily_basic"])
 
 
 def fetch_adj_factor(start: date, end: date, ts_code: Optional[str] = None) -> Iterable[Dict]:
@@ -582,7 +653,10 @@ def ensure_data_coverage(
                     continue
                 LOGGER.info("拉取 %s 表数据（股票：%s）%s-%s", table, code, start_str, end_str)
                 try:
-                    rows = fetch_fn(start, end, ts_code=code)
+                    kwargs = {"ts_code": code}
+                    if fetch_fn is fetch_daily_basic:
+                        kwargs["skip_existing"] = not force
+                    rows = fetch_fn(start, end, **kwargs)
                 except Exception:
                     LOGGER.exception("TuShare 拉取失败：table=%s code=%s", table, code)
                     raise
@@ -597,7 +671,10 @@ def ensure_data_coverage(
                 return
             LOGGER.info("拉取 %s 表数据（全市场）%s-%s", table, start_str, end_str)
             try:
-                rows = fetch_fn(start, end)
+                kwargs = {}
+                if fetch_fn is fetch_daily_basic:
+                    kwargs["skip_existing"] = not force
+                rows = fetch_fn(start, end, **kwargs)
             except Exception:
                 LOGGER.exception("TuShare 拉取失败：table=%s code=全部", table)
                 raise
