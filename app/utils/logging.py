@@ -110,7 +110,6 @@ def setup_logging(
                 "force_refresh": cfg.force_refresh,
                 "data_root": str(cfg.data_paths.root),
                 "logfile": str(logfile),
-                "max_calls_per_minute": cfg.max_calls_per_minute,
             },
         },
     )

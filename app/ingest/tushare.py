@@ -1536,25 +1536,7 @@ def ensure_data_coverage(
                 LOGGER.exception("外汇行情拉取失败：%s", code)
                 raise
 
-        advance("拉取港/美股行情数据")
-        for code in HK_CODES:
-            try:
-                if not force and _should_skip_range("hk_daily", "trade_date", start, end, code):
-                    LOGGER.info("港股 %s 已覆盖 %s-%s，跳过", code, start_str, end_str)
-                    continue
-                save_records("hk_daily", fetch_hk_daily(start, end, code))
-            except Exception:
-                LOGGER.exception("港股行情拉取失败：%s", code)
-                raise
-        for code in US_CODES:
-            try:
-                if not force and _should_skip_range("us_daily", "trade_date", start, end, code):
-                    LOGGER.info("美股 %s 已覆盖 %s-%s，跳过", code, start_str, end_str)
-                    continue
-                save_records("us_daily", fetch_us_daily(start, end, code))
-            except Exception:
-                LOGGER.exception("美股行情拉取失败：%s", code)
-                raise
+        advance("拉取港/美股行情数据（已暂时关闭）")
 
     if progress_hook:
         progress_hook("数据覆盖检查完成", 1.0)
