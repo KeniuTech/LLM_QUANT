@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 
 def _default_root() -> Path:
@@ -44,16 +44,39 @@ class AgentWeights:
             "A_macro": self.macro,
         }
 
-@dataclass
-class LLMConfig:
-    """Configuration for LLM providers (Ollama / OpenAI-compatible)."""
+DEFAULT_LLM_MODELS: Dict[str, str] = {
+    "ollama": "llama3",
+    "openai": "gpt-4o-mini",
+    "deepseek": "deepseek-chat",
+    "wenxin": "ERNIE-Speed",
+}
 
-    provider: str = "ollama"  # Options: "ollama", "openai"
-    model: str = "llama3"
-    base_url: Optional[str] = None  # Defaults resolved per provider
+
+@dataclass
+class LLMEndpoint:
+    """Single LLM endpoint configuration."""
+
+    provider: str = "ollama"
+    model: Optional[str] = None
+    base_url: Optional[str] = None
     api_key: Optional[str] = None
     temperature: float = 0.2
     timeout: float = 30.0
+
+    def __post_init__(self) -> None:
+        self.provider = (self.provider or "ollama").lower()
+        if not self.model:
+            self.model = DEFAULT_LLM_MODELS.get(self.provider, DEFAULT_LLM_MODELS["ollama"])
+
+
+@dataclass
+class LLMConfig:
+    """LLM configuration allowing single or ensemble strategies."""
+
+    primary: LLMEndpoint = field(default_factory=LLMEndpoint)
+    ensemble: List[LLMEndpoint] = field(default_factory=list)
+    strategy: str = "single"  # Options: single, majority
+    majority_threshold: int = 3
 
 
 @dataclass

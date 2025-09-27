@@ -1,9 +1,12 @@
 """Streamlit UI scaffold for the investment assistant."""
 from __future__ import annotations
 
+import json
 import sys
+from dataclasses import asdict
 from datetime import date, timedelta
 from pathlib import Path
+from typing import List
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -20,7 +23,7 @@ from app.ingest.checker import run_boot_check
 from app.ingest.tushare import FetchJob, run_ingestion
 from app.llm.client import llm_config_snapshot, run_llm
 from app.llm.explain import make_human_card
-from app.utils.config import get_config
+from app.utils.config import DEFAULT_LLM_MODELS, LLMEndpoint, get_config
 from app.utils.db import db_session
 from app.utils.logging import get_logger
 
@@ -194,28 +197,98 @@ def render_settings() -> None:
     st.divider()
     st.subheader("LLM 设置")
     llm_cfg = cfg.llm
+    primary = llm_cfg.primary
     providers = ["ollama", "openai"]
     try:
-        provider_index = providers.index((llm_cfg.provider or "ollama").lower())
+        provider_index = providers.index((primary.provider or "ollama").lower())
     except ValueError:
         provider_index = 0
     selected_provider = st.selectbox("LLM Provider", providers, index=provider_index)
-    llm_model = st.text_input("LLM 模型", value=llm_cfg.model)
-    llm_base = st.text_input("LLM Base URL (可选)", value=llm_cfg.base_url or "")
-    llm_api_key = st.text_input("LLM API Key (OpenAI 类需要)", value=llm_cfg.api_key or "", type="password")
-    llm_temperature = st.slider("LLM 温度", min_value=0.0, max_value=2.0, value=float(llm_cfg.temperature), step=0.05)
-    llm_timeout = st.number_input("请求超时时间 (秒)", min_value=5.0, max_value=120.0, value=float(llm_cfg.timeout), step=5.0)
+    default_model_hint = DEFAULT_LLM_MODELS.get(selected_provider, DEFAULT_LLM_MODELS["ollama"])
+    llm_model = st.text_input("LLM 模型", value=primary.model, help=f"默认推荐：{default_model_hint}")
+    base_hints = {
+        "ollama": "http://localhost:11434",
+        "openai": "https://api.openai.com",
+        "deepseek": "https://api.deepseek.com",
+        "wenxin": "https://aip.baidubce.com",
+    }
+    default_base_hint = base_hints.get(selected_provider, "")
+    llm_base = st.text_input("LLM Base URL (可选)", value=primary.base_url or "", help=f"默认推荐：{default_base_hint or '按供应商要求填写'}")
+    llm_api_key = st.text_input("LLM API Key (OpenAI 类需要)", value=primary.api_key or "", type="password")
+    llm_temperature = st.slider("LLM 温度", min_value=0.0, max_value=2.0, value=float(primary.temperature), step=0.05)
+    llm_timeout = st.number_input("请求超时时间 (秒)", min_value=5.0, max_value=120.0, value=float(primary.timeout), step=5.0, format="%d")
+
+    strategy_options = ["single", "majority"]
+    try:
+        strategy_index = strategy_options.index(llm_cfg.strategy)
+    except ValueError:
+        strategy_index = 0
+    selected_strategy = st.selectbox("LLM 推理策略", strategy_options, index=strategy_index)
+    majority_threshold = st.number_input(
+        "多数投票门槛",
+        min_value=1,
+        max_value=10,
+        value=int(llm_cfg.majority_threshold),
+        step=1,
+        format="%d",
+    )
+
+    ensemble_display = []
+    for endpoint in llm_cfg.ensemble:
+        data = asdict(endpoint)
+        if data.get("api_key"):
+            data["api_key"] = ""
+        ensemble_display.append(data)
+    ensemble_text = st.text_area(
+        "LLM 集群配置 (JSON 数组)",
+        value=json.dumps(ensemble_display or [], ensure_ascii=False, indent=2),
+        height=220,
+    )
 
     if st.button("保存 LLM 设置"):
-        llm_cfg.provider = selected_provider
-        llm_cfg.model = llm_model.strip() or llm_cfg.model
-        llm_cfg.base_url = llm_base.strip() or None
-        llm_cfg.api_key = llm_api_key.strip() or None
-        llm_cfg.temperature = llm_temperature
-        llm_cfg.timeout = llm_timeout
-        LOGGER.info("LLM 配置已更新：%s", llm_config_snapshot(), extra=LOG_EXTRA)
-        st.success("LLM 设置已保存，仅在当前会话生效。")
-        st.json(llm_config_snapshot())
+        original_provider = primary.provider
+        original_model = primary.model
+        primary.provider = selected_provider
+        model_input = llm_model.strip()
+        if not model_input:
+            primary.model = DEFAULT_LLM_MODELS.get(selected_provider, DEFAULT_LLM_MODELS["ollama"])
+        elif selected_provider != original_provider and model_input == original_model:
+            primary.model = DEFAULT_LLM_MODELS.get(selected_provider, DEFAULT_LLM_MODELS["ollama"])
+        else:
+            primary.model = model_input
+        primary.base_url = llm_base.strip() or None
+        primary.temperature = llm_temperature
+        primary.timeout = llm_timeout
+        api_key_value = llm_api_key.strip()
+        primary.api_key = api_key_value or None
+
+        try:
+            parsed = json.loads(ensemble_text or "[]")
+            if not isinstance(parsed, list):
+                raise ValueError("ensemble 配置必须是数组")
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("解析 LLM 集群配置失败", extra=LOG_EXTRA)
+            st.error(f"LLM 集群配置解析失败：{exc}")
+        else:
+            new_ensemble: List[LLMEndpoint] = []
+            invalid = False
+            for item in parsed:
+                if not isinstance(item, dict):
+                    st.error("LLM 集群配置中的每个元素都必须是对象")
+                    invalid = True
+                    break
+                fields = {key: item.get(key) for key in ("provider", "model", "base_url", "api_key", "temperature", "timeout")}
+                endpoint = LLMEndpoint(**{k: v for k, v in fields.items() if v not in (None, "")})
+                if not endpoint.provider:
+                    endpoint.provider = "ollama"
+                new_ensemble.append(endpoint)
+            if not invalid:
+                llm_cfg.ensemble = new_ensemble
+                llm_cfg.strategy = selected_strategy
+                llm_cfg.majority_threshold = int(majority_threshold)
+                LOGGER.info("LLM 配置已更新：%s", llm_config_snapshot(), extra=LOG_EXTRA)
+                st.success("LLM 设置已保存，仅在当前会话生效。")
+                st.json(llm_config_snapshot())
 
 
 def render_tests() -> None:
