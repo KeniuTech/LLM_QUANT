@@ -156,13 +156,29 @@ def render_tests() -> None:
     st.divider()
     days = int(st.number_input("检查窗口（天数）", min_value=30, max_value=1095, value=365, step=30))
     if st.button("执行开机检查"):
+        progress_bar = st.progress(0.0)
+        status_placeholder = st.empty()
+        log_placeholder = st.empty()
+        messages: list[str] = []
+
+        def hook(message: str, value: float) -> None:
+            progress_bar.progress(min(max(value, 0.0), 1.0))
+            status_placeholder.write(message)
+            messages.append(message)
+
         with st.spinner("正在执行开机检查..."):
             try:
-                report = run_boot_check(days=days)
+                report = run_boot_check(days=days, progress_hook=hook)
                 st.success("开机检查完成，以下为数据覆盖摘要。")
                 st.json(report.to_dict())
+                if messages:
+                    log_placeholder.markdown("\n".join(f"- {msg}" for msg in messages))
             except Exception as exc:  # noqa: BLE001
                 st.error(f"开机检查失败：{exc}")
+                if messages:
+                    log_placeholder.markdown("\n".join(f"- {msg}" for msg in messages))
+            finally:
+                progress_bar.progress(1.0)
 
     st.divider()
     st.subheader("股票行情可视化")

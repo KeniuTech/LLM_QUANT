@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Dict
+from typing import Callable, Dict
 
 from app.data.schema import initialize_database
 from app.ingest.tushare import collect_data_coverage, ensure_data_coverage
@@ -36,7 +36,11 @@ def _default_window(days: int = 365) -> tuple[date, date]:
     return start, end
 
 
-def run_boot_check(days: int = 365, auto_fetch: bool = True) -> CoverageReport:
+def run_boot_check(
+    days: int = 365,
+    auto_fetch: bool = True,
+    progress_hook: Callable[[str, float], None] | None = None,
+) -> CoverageReport:
     """执行开机自检，必要时自动补数据。"""
 
     initialize_database()
@@ -44,7 +48,7 @@ def run_boot_check(days: int = 365, auto_fetch: bool = True) -> CoverageReport:
     LOGGER.info("开机检查覆盖窗口：%s 至 %s", start, end)
 
     if auto_fetch:
-        ensure_data_coverage(start, end)
+        ensure_data_coverage(start, end, progress_hook=progress_hook)
 
     coverage = collect_data_coverage(start, end)
 
@@ -63,5 +67,7 @@ def run_boot_check(days: int = 365, auto_fetch: bool = True) -> CoverageReport:
         report.tables["daily"].get("distinct_days"),
         report.expected_trading_days,
     )
+    if progress_hook:
+        progress_hook("数据覆盖检查完成", 1.0)
 
     return report
