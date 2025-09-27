@@ -37,14 +37,14 @@
 建议使用 Python 3.10+，并在虚拟环境中安装依赖。
 
 ```bash
-# 1. 创建并激活虚拟环境（示例使用 venv）
-python -m venv .venv
-source .venv/bin/activate  # Windows 使用 .venv\Scripts\activate
+# 1. 创建并激活 Conda 环境
+conda create -n llm-quant python=3.11 -y
+conda activate llm-quant
 
 # 2. 安装项目依赖
 pip install -r requirements.txt
 
-# 3. 设置 TuShare Token（可写入环境变量或在 UI 中配置）
+# 3. 设置 TuShare Token
 export TUSHARE_TOKEN="<your-token>"
 ```
 
