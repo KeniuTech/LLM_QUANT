@@ -1,15 +1,16 @@
 """数据覆盖开机检查器。"""
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Callable, Dict
 
 from app.data.schema import initialize_database
 from app.ingest.tushare import collect_data_coverage, ensure_data_coverage
+from app.utils.config import get_config
+from app.utils.logging import get_logger
 
-LOGGER = logging.getLogger(__name__)
+LOGGER = get_logger(__name__)
 
 
 @dataclass
@@ -40,6 +41,7 @@ def run_boot_check(
     days: int = 365,
     auto_fetch: bool = True,
     progress_hook: Callable[[str, float], None] | None = None,
+    force_refresh: bool | None = None,
 ) -> CoverageReport:
     """执行开机自检，必要时自动补数据。"""
 
@@ -47,8 +49,17 @@ def run_boot_check(
     start, end = _default_window(days)
     LOGGER.info("开机检查覆盖窗口：%s 至 %s", start, end)
 
+    refresh = force_refresh
+    if refresh is None:
+        refresh = get_config().force_refresh
+
     if auto_fetch:
-        ensure_data_coverage(start, end, progress_hook=progress_hook)
+        ensure_data_coverage(
+            start,
+            end,
+            force=refresh,
+            progress_hook=progress_hook,
+        )
 
     coverage = collect_data_coverage(start, end)
 

@@ -54,6 +54,7 @@ class AppConfig:
     decision_method: str = "nash"
     data_paths: DataPaths = field(default_factory=DataPaths)
     agent_weights: AgentWeights = field(default_factory=AgentWeights)
+    force_refresh: bool = False
 
 
 CONFIG = AppConfig()

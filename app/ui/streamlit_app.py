@@ -114,9 +114,10 @@ def render_settings() -> None:
     st.header("数据与设置")
     cfg = get_config()
     token = st.text_input("TuShare Token", value=cfg.tushare_token or "", type="password")
-    if st.button("保存 Token"):
+
+    if st.button("保存设置"):
         cfg.tushare_token = token.strip() or None
-        st.success("TuShare Token 已更新，仅保存在当前会话。")
+        st.success("设置已保存，仅在当前会话生效。")
 
     st.write("新闻源开关与数据库备份将在此配置。")
 
@@ -155,6 +156,15 @@ def render_tests() -> None:
 
     st.divider()
     days = int(st.number_input("检查窗口（天数）", min_value=30, max_value=1095, value=365, step=30))
+    cfg = get_config()
+    force_refresh = st.checkbox(
+        "强制刷新数据（关闭增量跳过）",
+        value=cfg.force_refresh,
+        help="勾选后将重新拉取所选区间全部数据",
+    )
+    if force_refresh != cfg.force_refresh:
+        cfg.force_refresh = force_refresh
+
     if st.button("执行开机检查"):
         progress_bar = st.progress(0.0)
         status_placeholder = st.empty()
@@ -168,7 +178,11 @@ def render_tests() -> None:
 
         with st.spinner("正在执行开机检查..."):
             try:
-                report = run_boot_check(days=days, progress_hook=hook)
+                report = run_boot_check(
+                    days=days,
+                    progress_hook=hook,
+                    force_refresh=force_refresh,
+                )
                 st.success("开机检查完成，以下为数据覆盖摘要。")
                 st.json(report.to_dict())
                 if messages:
