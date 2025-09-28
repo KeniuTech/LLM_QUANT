@@ -17,6 +17,7 @@ from app.utils.config import (
     LLMEndpoint,
     get_config,
 )
+from app.llm.metrics import record_call
 from app.utils.logging import get_logger
 
 LOGGER = get_logger(__name__)
@@ -220,11 +221,12 @@ def call_endpoint_with_messages(
         )
         if response.status_code != 200:
             raise LLMError(f"Ollama 调用失败: {response.status_code} {response.text}")
+        record_call(provider_key, model)
         return response.json()
 
     if not api_key:
         raise LLMError(f"缺少 {provider_key} API Key (model={model})")
-    return _request_openai_chat(
+    data = _request_openai_chat(
         base_url=base_url,
         api_key=api_key,
         model=model,
@@ -234,6 +236,11 @@ def call_endpoint_with_messages(
         tools=tools,
         tool_choice=tool_choice,
     )
+    usage = data.get("usage", {}) if isinstance(data, dict) else {}
+    prompt_tokens = usage.get("prompt_tokens") or usage.get("prompt_tokens_total")
+    completion_tokens = usage.get("completion_tokens") or usage.get("completion_tokens_total")
+    record_call(provider_key, model, prompt_tokens, completion_tokens)
+    return data
 
 
 def _normalize_response(text: str) -> str:

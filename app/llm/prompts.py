@@ -62,7 +62,7 @@ def department_prompt(
   "risks": ["风险点", "..."]
 }}
 
-如需额外数据，请调用可用工具 `fetch_data` 并在参数中提供 `requests` 数组（元素包含 `field` 以及可选的 `window`）；`field` 必须符合【可用数据范围】，`window` 默认为 1。
+如需额外数据，请调用工具 `fetch_data`，仅支持请求 `daily` 或 `daily_basic` 表；在参数中填写 `tables` 数组，元素包含 `name`（表名）与可选的 `window`（向前回溯的条数，默认 1）及 `trade_date`（YYYYMMDD，默认本次交易日）。
 工具返回的数据会在后续消息中提供，请在获取所有必要信息后再给出最终 JSON 答复。
 
 请严格返回单个 JSON 对象，不要添加额外文本。

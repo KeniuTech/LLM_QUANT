@@ -20,11 +20,18 @@ import requests
 from requests.exceptions import RequestException
 import streamlit as st
 
+from app.agents.base import AgentContext
+from app.agents.game import Decision
 from app.backtest.engine import BtConfig, run_backtest
 from app.data.schema import initialize_database
 from app.ingest.checker import run_boot_check
 from app.ingest.tushare import FetchJob, run_ingestion
 from app.llm.client import llm_config_snapshot, run_llm
+from app.llm.metrics import (
+    reset as reset_llm_metrics,
+    snapshot as snapshot_llm_metrics,
+    recent_decisions as llm_recent_decisions,
+)
 from app.utils.config import (
     ALLOWED_LLM_STRATEGIES,
     DEFAULT_LLM_BASE_URLS,
@@ -152,6 +159,45 @@ def _load_daily_frame(ts_code: str, start: date, end: date) -> pd.DataFrame:
 def render_today_plan() -> None:
     LOGGER.info("渲染今日计划页面", extra=LOG_EXTRA)
     st.header("今日计划")
+    st.caption("统计数据基于最近一次渲染，刷新页面即可获取最新结果。")
+
+    metrics_state = snapshot_llm_metrics()
+    st.subheader("LLM 调用统计 (实时)")
+    stats_col1, stats_col2, stats_col3 = st.columns(3)
+    stats_col1.metric("总调用次数", metrics_state.get("total_calls", 0))
+    stats_col2.metric("Prompt Tokens", metrics_state.get("total_prompt_tokens", 0))
+    stats_col3.metric("Completion Tokens", metrics_state.get("total_completion_tokens", 0))
+    provider_calls = metrics_state.get("provider_calls", {})
+    model_calls = metrics_state.get("model_calls", {})
+    if provider_calls or model_calls:
+        with st.expander("调用明细", expanded=False):
+            if provider_calls:
+                st.write("按 Provider：")
+                st.json(provider_calls)
+            if model_calls:
+                st.write("按模型：")
+                st.json(model_calls)
+
+    st.subheader("最近决策 (全局)")
+    decision_feed = metrics_state.get("recent_decisions", []) or llm_recent_decisions(20)
+    if decision_feed:
+        for record in reversed(decision_feed[-20:]):
+            ts_code = record.get("ts_code")
+            trade_date = record.get("trade_date")
+            action = record.get("action")
+            confidence = record.get("confidence")
+            summary = record.get("summary")
+            departments = record.get("departments", {})
+            st.markdown(
+                f"**{trade_date} {ts_code}** → {action} (信心 {confidence:.2f})"
+            )
+            if summary:
+                st.caption(f"摘要：{summary}")
+            if departments:
+                st.json(departments)
+            st.divider()
+    else:
+        st.caption("暂无决策记录，执行回测或实时评估后可在此查看。")
     try:
         with db_session(read_only=True) as conn:
             date_rows = conn.execute(
@@ -323,7 +369,7 @@ def render_today_plan() -> None:
     st.subheader("部门意见")
     if dept_records:
         dept_df = pd.DataFrame(dept_records)
-        st.dataframe(dept_df, use_container_width=True, hide_index=True)
+        st.dataframe(dept_df, width='stretch', hide_index=True)
         for code, details in dept_details.items():
             with st.expander(f"{code} 补充详情", expanded=False):
                 supplements = details.get("supplements", [])
@@ -345,7 +391,7 @@ def render_today_plan() -> None:
     st.subheader("代理评分")
     if agent_records:
         agent_df = pd.DataFrame(agent_records)
-        st.dataframe(agent_df, use_container_width=True, hide_index=True)
+        st.dataframe(agent_df, width='stretch', hide_index=True)
     else:
         st.info("暂无基础代理评分。")
 
@@ -390,6 +436,41 @@ def render_backtest() -> None:
 
     if st.button("运行回测"):
         LOGGER.info("用户点击运行回测按钮", extra=LOG_EXTRA)
+        decision_log_container = st.container()
+        status_placeholder = st.empty()
+        llm_stats_placeholder = st.empty()
+        decision_entries: List[str] = []
+
+        def _decision_callback(ts_code: str, trade_dt: date, ctx: AgentContext, decision: Decision) -> None:
+            ts_label = trade_dt.isoformat()
+            summary = decision.summary
+            entry_lines = [
+                f"**{ts_label} {ts_code}** → {decision.action.value} (信心 {decision.confidence:.2f})",
+            ]
+            if summary:
+                entry_lines.append(f"摘要：{summary}")
+            dep_highlights = []
+            for dept_code, dept_decision in decision.department_decisions.items():
+                dep_highlights.append(
+                    f"{dept_code}:{dept_decision.action.value}({dept_decision.confidence:.2f})"
+                )
+            if dep_highlights:
+                entry_lines.append("部门意见：" + "；".join(dep_highlights))
+            decision_entries.append("  \n".join(entry_lines))
+            decision_log_container.markdown("\n\n".join(decision_entries[-50:]))
+            status_placeholder.info(
+                f"最新决策：{ts_code} -> {decision.action.value} ({decision.confidence:.2f})"
+            )
+            stats = snapshot_llm_metrics()
+            llm_stats_placeholder.json(
+                {
+                    "LLM 调用次数": stats.get("total_calls", 0),
+                    "Prompt Tokens": stats.get("total_prompt_tokens", 0),
+                    "Completion Tokens": stats.get("total_completion_tokens", 0),
+                }
+            )
+
+        reset_llm_metrics()
         with st.spinner("正在执行回测..."):
             try:
                 universe = [code.strip() for code in universe_text.split(',') if code.strip()]
@@ -415,14 +496,24 @@ def render_backtest() -> None:
                         "hold_days": int(hold_days),
                     },
                 )
-                result = run_backtest(cfg)
+                result = run_backtest(cfg, decision_callback=_decision_callback)
                 LOGGER.info(
                     "回测完成：nav_records=%s trades=%s",
                     len(result.nav_series),
                     len(result.trades),
                     extra=LOG_EXTRA,
                 )
-                st.success("回测执行完成，详见回测结果摘要。")
+                st.success("回测执行完成，详见下方结果与统计。")
+                metrics = snapshot_llm_metrics()
+                llm_stats_placeholder.json(
+                    {
+                        "LLM 调用次数": metrics.get("total_calls", 0),
+                        "Prompt Tokens": metrics.get("total_prompt_tokens", 0),
+                        "Completion Tokens": metrics.get("total_completion_tokens", 0),
+                        "按 Provider": metrics.get("provider_calls", {}),
+                        "按模型": metrics.get("model_calls", {}),
+                    }
+                )
                 st.json({"nav_records": result.nav_series, "trades": result.trades})
             except Exception as exc:  # noqa: BLE001
                 LOGGER.exception("回测执行失败", extra=LOG_EXTRA)
@@ -654,7 +745,7 @@ def render_settings() -> None:
                 ensemble_rows,
                 num_rows="dynamic",
                 key="global_ensemble_editor",
-                use_container_width=True,
+                width='stretch',
                 hide_index=True,
                 column_config={
                     "provider": st.column_config.SelectboxColumn("Provider", options=provider_keys),
@@ -735,7 +826,7 @@ def render_settings() -> None:
         dept_rows,
         num_rows="fixed",
         key="department_editor",
-        use_container_width=True,
+        width='stretch',
         hide_index=True,
         column_config={
             "code": st.column_config.TextColumn("编码", disabled=True),
@@ -998,7 +1089,7 @@ def render_tests() -> None:
         ]
     )
     candle_fig.update_layout(height=420, margin=dict(l=10, r=10, t=40, b=10))
-    st.plotly_chart(candle_fig, use_container_width=True)
+    st.plotly_chart(candle_fig, width='stretch')
 
     vol_fig = px.bar(
         df_reset,
@@ -1008,7 +1099,7 @@ def render_tests() -> None:
         title="成交量",
     )
     vol_fig.update_layout(height=280, margin=dict(l=10, r=10, t=40, b=10))
-    st.plotly_chart(vol_fig, use_container_width=True)
+    st.plotly_chart(vol_fig, width='stretch')
 
     amt_fig = px.bar(
         df_reset,
@@ -1018,7 +1109,7 @@ def render_tests() -> None:
         title="成交额",
     )
     amt_fig.update_layout(height=280, margin=dict(l=10, r=10, t=40, b=10))
-    st.plotly_chart(amt_fig, use_container_width=True)
+    st.plotly_chart(amt_fig, width='stretch')
 
     df_reset["月份"] = df_reset["交易日"].dt.to_period("M").astype(str)
     box_fig = px.box(
@@ -1029,7 +1120,7 @@ def render_tests() -> None:
         title="月度收盘价分布",
     )
     box_fig.update_layout(height=320, margin=dict(l=10, r=10, t=40, b=10))
-    st.plotly_chart(box_fig, use_container_width=True)
+    st.plotly_chart(box_fig, width='stretch')
 
     st.caption("提示：成交量单位为手，成交额以千元显示。箱线图按月展示收盘价分布。")
     st.dataframe(df_reset.tail(20), width='stretch')

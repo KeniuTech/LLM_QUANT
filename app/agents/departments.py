@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, ClassVar, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from app.agents.base import AgentAction
 from app.llm.client import call_endpoint_with_messages, run_llm_with_config, LLMError
@@ -17,9 +17,10 @@ LOG_EXTRA = {"stage": "department"}
 
 
 @dataclass
-class DataRequest:
-    field: str
+class TableRequest:
+    name: str
     window: int = 1
+    trade_date: Optional[str] = None
 
 
 @dataclass
@@ -64,6 +65,8 @@ class DepartmentDecision:
 class DepartmentAgent:
     """Wraps LLM ensemble logic for a single analytical department."""
 
+    ALLOWED_TABLES: ClassVar[List[str]] = ["daily", "daily_basic"]
+
     def __init__(
         self,
         settings: DepartmentSettings,
@@ -106,10 +109,7 @@ class DepartmentAgent:
         )
 
         transcript: List[str] = []
-        delivered_requests: set[Tuple[str, int]] = {
-            (field, 1)
-            for field in (mutable_context.raw.get("scope_values") or {}).keys()
-        }
+        delivered_requests: set[Tuple[str, int, str]] = set()
 
         primary_endpoint = llm_cfg.primary
         final_message: Optional[Dict[str, Any]] = None
@@ -135,6 +135,14 @@ class DepartmentAgent:
             message = choice.get("message", {})
             transcript.append(_message_to_text(message))
 
+            assistant_record: Dict[str, Any] = {
+                "role": "assistant",
+                "content": _extract_message_content(message),
+            }
+            if message.get("tool_calls"):
+                assistant_record["tool_calls"] = message.get("tool_calls")
+            messages.append(assistant_record)
+
             tool_calls = message.get("tool_calls") or []
             if tool_calls:
                 for call in tool_calls:
@@ -151,7 +159,6 @@ class DepartmentAgent:
                         {
                             "role": "tool",
                             "tool_call_id": call.get("id"),
-                            "name": call.get("function", {}).get("name"),
                             "content": json.dumps(tool_response, ensure_ascii=False),
                         }
                     )
@@ -213,165 +220,50 @@ class DepartmentAgent:
     def _fulfill_data_requests(
         self,
         context: DepartmentContext,
-        requests: Sequence[DataRequest],
-    ) -> Tuple[List[str], List[Dict[str, Any]], set[Tuple[str, int]]]:
+        requests: Sequence[TableRequest],
+    ) -> Tuple[List[str], List[Dict[str, Any]], set[Tuple[str, int, str]]]:
         lines: List[str] = []
         payload: List[Dict[str, Any]] = []
-        delivered: set[Tuple[str, int]] = set()
+        delivered: set[Tuple[str, int, str]] = set()
 
         ts_code = context.ts_code
-        trade_date = self._normalize_trade_date(context.trade_date)
-
-        latest_groups: Dict[str, List[str]] = {}
-        series_requests: List[Tuple[DataRequest, Tuple[str, str]]] = []
-        values_map, db_alias_map, series_map = _build_context_lookup(context)
+        default_trade_date = self._normalize_trade_date(context.trade_date)
 
         for req in requests:
-            field = req.field.strip()
-            if not field:
+            table = (req.name or "").strip().lower()
+            if not table:
                 continue
-            window = req.window
-            resolved: Optional[Tuple[str, str]] = None
-            if "." in field:
-                resolved = self._broker.resolve_field(field)
-            elif field in db_alias_map:
-                resolved = db_alias_map[field]
-
-            if resolved:
-                table, column = resolved
-                canonical = f"{table}.{column}"
-                if window <= 1:
-                    latest_groups.setdefault(canonical, []).append(field)
-                    delivered.add((field, 1))
-                    delivered.add((canonical, 1))
-                else:
-                    series_requests.append((req, resolved))
-                    delivered.add((field, window))
-                    delivered.add((canonical, window))
+            if table not in self.ALLOWED_TABLES:
+                lines.append(f"- {table}: 不在允许的表列表中")
+                continue
+            trade_date = self._normalize_trade_date(req.trade_date or default_trade_date)
+            window = max(1, min(req.window or 1, getattr(self._broker, "MAX_WINDOW", 120)))
+            key = (table, window, trade_date)
+            if key in delivered:
+                lines.append(f"- {table}: 已返回窗口 {window} 的数据，跳过重复请求")
                 continue
 
-            if field in values_map:
-                value = values_map[field]
-                if window <= 1:
-                    payload.append(
-                        {
-                            "field": field,
-                            "window": 1,
-                            "source": "context",
-                            "values": [
-                                {
-                                    "trade_date": context.trade_date,
-                                    "value": value,
-                                }
-                            ],
-                        }
-                    )
-                    lines.append(f"- {field}: {value} (来自上下文)")
-                else:
-                    series = series_map.get(field)
-                    if series:
-                        trimmed = series[: window]
-                        payload.append(
-                            {
-                                "field": field,
-                                "window": window,
-                                "source": "context_series",
-                                "values": [
-                                    {"trade_date": dt, "value": val}
-                                    for dt, val in trimmed
-                                ],
-                            }
-                        )
-                        preview = ", ".join(
-                            f"{dt}:{val:.4f}" for dt, val in trimmed[: min(len(trimmed), 5)]
-                        )
-                        lines.append(
-                            f"- {field} (window={window} 来自上下文序列): {preview}"
-                        )
-                    else:
-                        payload.append(
-                            {
-                                "field": field,
-                                "window": window,
-                                "source": "context",
-                                "values": [
-                                    {
-                                        "trade_date": context.trade_date,
-                                        "value": value,
-                                    }
-                                ],
-                                "warning": "仅提供当前值，缺少历史序列",
-                            }
-                        )
-                        lines.append(
-                            f"- {field} (window={window}): 仅有当前值 {value}, 无历史序列"
-                        )
-                delivered.add((field, window))
-                if field in db_alias_map:
-                    resolved = db_alias_map[field]
-                    canonical = f"{resolved[0]}.{resolved[1]}"
-                    delivered.add((canonical, window))
-                continue
-
-            lines.append(f"- {field}: 字段不存在或不可用")
-
-        if latest_groups:
-            latest_values = self._broker.fetch_latest(
-                ts_code, trade_date, list(latest_groups.keys())
-            )
-            for canonical, aliases in latest_groups.items():
-                value = latest_values.get(canonical)
-                if value is None:
-                    lines.append(f"- {canonical}: (数据缺失)")
-                else:
-                    lines.append(f"- {canonical}: {value}")
-                for alias in aliases:
-                    payload.append(
-                        {
-                            "field": alias,
-                            "window": 1,
-                            "source": "database",
-                            "values": [
-                                {
-                                    "trade_date": trade_date,
-                                    "value": value,
-                                }
-                            ],
-                        }
-                    )
-
-        for req, resolved in series_requests:
-            table, column = resolved
-            series = self._broker.fetch_series(
-                table,
-                column,
-                ts_code,
-                trade_date,
-                window=req.window,
-            )
-            if series:
+            rows = self._broker.fetch_table_rows(table, ts_code, trade_date, window)
+            if rows:
                 preview = ", ".join(
-                    f"{dt}:{val:.4f}"
-                    for dt, val in series[: min(len(series), 5)]
+                    f"{row.get('trade_date', 'NA')}" for row in rows[: min(len(rows), 5)]
                 )
                 lines.append(
-                    f"- {req.field} (window={req.window}): {preview}"
+                    f"- {table} (window={window} trade_date<= {trade_date}): 返回 {len(rows)} 行 {preview}"
                 )
             else:
                 lines.append(
-                    f"- {req.field} (window={req.window}): (数据缺失)"
+                    f"- {table} (window={window} trade_date<= {trade_date}): (数据缺失)"
                 )
             payload.append(
                 {
-                    "field": req.field,
-                    "window": req.window,
-                    "source": "database",
-                    "values": [
-                        {"trade_date": dt, "value": val}
-                        for dt, val in series
-                    ],
+                    "table": table,
+                    "window": window,
+                    "trade_date": trade_date,
+                    "rows": rows,
                 }
             )
+            delivered.add(key)
 
         return lines, payload, delivered
 
@@ -380,9 +272,9 @@ class DepartmentAgent:
         self,
         context: DepartmentContext,
         call: Mapping[str, Any],
-        delivered_requests: set[Tuple[str, int]],
+        delivered_requests: set[Tuple[str, int, str]],
         round_idx: int,
-    ) -> Tuple[Dict[str, Any], set[Tuple[str, int]]]:
+    ) -> Tuple[Dict[str, Any], set[Tuple[str, int, str]]]:
         function_block = call.get("function") or {}
         name = function_block.get("name") or ""
         if name != "fetch_data":
@@ -398,23 +290,29 @@ class DepartmentAgent:
             }, set()
 
         args = _parse_tool_arguments(function_block.get("arguments"))
-        raw_requests = args.get("requests") or []
-        requests: List[DataRequest] = []
+        base_trade_date = self._normalize_trade_date(
+            args.get("trade_date") or context.trade_date
+        )
+        raw_requests = args.get("tables") or []
+        requests: List[TableRequest] = []
         skipped: List[str] = []
         for item in raw_requests:
-            field = str(item.get("field", "")).strip()
-            if not field:
+            name = str(item.get("name", "")).strip().lower()
+            if not name:
                 continue
+            window_raw = item.get("window")
             try:
-                window = int(item.get("window", 1))
+                window = int(window_raw) if window_raw is not None else 1
             except (TypeError, ValueError):
                 window = 1
             window = max(1, min(window, getattr(self._broker, "MAX_WINDOW", 120)))
-            key = (field, window)
+            override_date = item.get("trade_date")
+            req_date = self._normalize_trade_date(override_date or base_trade_date)
+            key = (name, window, req_date)
             if key in delivered_requests:
-                skipped.append(field)
+                skipped.append(name)
                 continue
-            requests.append(DataRequest(field=field, window=window))
+            requests.append(TableRequest(name=name, window=window, trade_date=req_date))
 
         if not requests:
             return {
@@ -461,34 +359,44 @@ class DepartmentAgent:
                 "function": {
                     "name": "fetch_data",
                     "description": (
-                        "根据字段请求数据库中的最新值或时间序列。支持 table.column 格式的字段，"
-                        "window 表示希望返回的最近数据点数量。"
+                        "根据表名请求指定交易日及窗口的历史数据。当前仅支持 'daily' 与 'daily_basic' 表。"
                     ),
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "requests": {
+                            "tables": {
                                 "type": "array",
                                 "items": {
                                     "type": "object",
                                     "properties": {
-                                        "field": {
+                                        "name": {
                                             "type": "string",
-                                            "description": "数据字段，格式为 table.column",
+                                            "enum": self.ALLOWED_TABLES,
+                                            "description": "表名，例如 daily 或 daily_basic",
                                         },
                                         "window": {
                                             "type": "integer",
                                             "minimum": 1,
                                             "maximum": max_window,
-                                            "description": "返回最近多少个数据点，默认为 1",
+                                            "description": "向前回溯的记录条数，默认为 1",
+                                        },
+                                        "trade_date": {
+                                            "type": "string",
+                                            "pattern": r"^\\d{8}$",
+                                            "description": "覆盖默认交易日（格式 YYYYMMDD）",
                                         },
                                     },
-                                    "required": ["field"],
+                                    "required": ["name"],
                                 },
                                 "minItems": 1,
-                            }
+                            },
+                            "trade_date": {
+                                "type": "string",
+                                "pattern": r"^\\d{8}$",
+                                "description": "默认交易日（格式 YYYYMMDD）",
+                            },
                         },
-                        "required": ["requests"],
+                        "required": ["tables"],
                     },
                 },
             }
@@ -555,39 +463,6 @@ def _ensure_mutable_context(context: DepartmentContext) -> DepartmentContext:
     return context
 
 
-def _parse_data_requests(payload: Mapping[str, Any]) -> List[DataRequest]:
-    raw_requests = payload.get("data_requests")
-    requests: List[DataRequest] = []
-    if not isinstance(raw_requests, list):
-        return requests
-    seen: set[Tuple[str, int]] = set()
-    for item in raw_requests:
-        field = ""
-        window = 1
-        if isinstance(item, str):
-            field = item.strip()
-        elif isinstance(item, Mapping):
-            candidate = item.get("field")
-            if candidate is None:
-                continue
-            field = str(candidate).strip()
-            try:
-                window = int(item.get("window", 1))
-            except (TypeError, ValueError):
-                window = 1
-        else:
-            continue
-        if not field:
-            continue
-        window = max(1, window)
-        key = (field, window)
-        if key in seen:
-            continue
-        seen.add(key)
-        requests.append(DataRequest(field=field, window=window))
-    return requests
-
-
 def _parse_tool_arguments(payload: Any) -> Dict[str, Any]:
     if isinstance(payload, dict):
         return dict(payload)
@@ -636,38 +511,6 @@ def _extract_message_content(message: Mapping[str, Any]) -> str:
     return json.dumps(message, ensure_ascii=False)
 
 
-def _build_context_lookup(
-    context: DepartmentContext,
-) -> Tuple[Dict[str, Any], Dict[str, Tuple[str, str]], Dict[str, List[Tuple[str, float]]]]:
-    values: Dict[str, Any] = {}
-    db_alias: Dict[str, Tuple[str, str]] = {}
-    series_map: Dict[str, List[Tuple[str, float]]] = {}
-
-    for source in (context.features or {}, context.market_snapshot or {}):
-        for key, value in source.items():
-            values[str(key)] = value
-
-    scope_values = context.raw.get("scope_values") or {}
-    for key, value in scope_values.items():
-        key_str = str(key)
-        values[key_str] = value
-        if "." in key_str:
-            table, column = key_str.split(".", 1)
-            db_alias.setdefault(column, (table, column))
-            db_alias.setdefault(key_str, (table, column))
-            values.setdefault(column, value)
-
-    close_series = context.raw.get("close_series") or []
-    if isinstance(close_series, list) and close_series:
-        series_map["close"] = close_series
-        series_map["daily.close"] = close_series
-
-    turnover_series = context.raw.get("turnover_series") or []
-    if isinstance(turnover_series, list) and turnover_series:
-        series_map["turnover_rate"] = turnover_series
-        series_map["daily_basic.turnover_rate"] = turnover_series
-
-    return values, db_alias, series_map
 
 
 class DepartmentManager:

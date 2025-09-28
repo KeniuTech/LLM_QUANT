@@ -5,11 +5,12 @@ import json
 from dataclasses import dataclass, field
 from datetime import date
 from statistics import mean, pstdev
-from typing import Any, Dict, Iterable, List, Mapping
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
 
 from app.agents.base import AgentContext
 from app.agents.departments import DepartmentManager
 from app.agents.game import Decision, decide
+from app.llm.metrics import record_decision as metrics_record_decision
 from app.agents.registry import default_agents
 from app.utils.data_access import DataBroker
 from app.utils.config import get_config
@@ -224,7 +225,12 @@ class BacktestEngine:
 
         return feature_map
 
-    def simulate_day(self, trade_date: date, state: PortfolioState) -> List[Decision]:
+    def simulate_day(
+        self,
+        trade_date: date,
+        state: PortfolioState,
+        decision_callback: Optional[Callable[[str, date, AgentContext, Decision], None]] = None,
+    ) -> List[Decision]:
         feature_map = self.load_market_data(trade_date)
         decisions: List[Decision] = []
         for ts_code, payload in feature_map.items():
@@ -247,6 +253,26 @@ class BacktestEngine:
             )
             decisions.append(decision)
             self.record_agent_state(context, decision)
+            if decision_callback:
+                try:
+                    decision_callback(ts_code, trade_date, context, decision)
+                except Exception:  # noqa: BLE001
+                    LOGGER.exception("决策回调执行失败", extra=LOG_EXTRA)
+            try:
+                metrics_record_decision(
+                    ts_code=ts_code,
+                    trade_date=context.trade_date,
+                    action=decision.action.value,
+                    confidence=decision.confidence,
+                    summary=decision.summary,
+                    source="backtest",
+                    departments={
+                        code: dept.to_dict()
+                        for code, dept in decision.department_decisions.items()
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                LOGGER.debug("记录决策指标失败", extra=LOG_EXTRA)
         # TODO: translate decisions into fills, holdings, and NAV updates.
         _ = state
         return decisions
@@ -357,20 +383,27 @@ class BacktestEngine:
         _ = payload
         # TODO: persist payload into bt_trades / audit tables when schema is ready.
 
-    def run(self) -> BacktestResult:
+    def run(
+        self,
+        decision_callback: Optional[Callable[[str, date, AgentContext, Decision], None]] = None,
+    ) -> BacktestResult:
         state = PortfolioState()
         result = BacktestResult()
         current = self.cfg.start_date
         while current <= self.cfg.end_date:
-            decisions = self.simulate_day(current, state)
+            decisions = self.simulate_day(current, state, decision_callback)
             _ = decisions
             current = date.fromordinal(current.toordinal() + 1)
         return result
 
 
-def run_backtest(cfg: BtConfig) -> BacktestResult:
+def run_backtest(
+    cfg: BtConfig,
+    *,
+    decision_callback: Optional[Callable[[str, date, AgentContext, Decision], None]] = None,
+) -> BacktestResult:
     engine = BacktestEngine(cfg)
-    result = engine.run()
+    result = engine.run(decision_callback=decision_callback)
     with db_session() as conn:
         _ = conn
         # Implementation should persist bt_nav, bt_trades, and bt_report rows.

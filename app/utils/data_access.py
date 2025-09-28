@@ -199,6 +199,55 @@ class DataBroker:
                 return False
         return row is not None
 
+    def fetch_table_rows(
+        self,
+        table: str,
+        ts_code: str,
+        trade_date: str,
+        window: int,
+    ) -> List[Dict[str, object]]:
+        if window <= 0:
+            return []
+        window = min(window, self.MAX_WINDOW)
+        columns = self._get_table_columns(table)
+        if not columns:
+            LOGGER.debug("表不存在或无字段 table=%s", table, extra=LOG_EXTRA)
+            return []
+
+        column_list = ", ".join(columns)
+        has_trade_date = "trade_date" in columns
+        if has_trade_date:
+            query = (
+                f"SELECT {column_list} FROM {table} "
+                "WHERE ts_code = ? AND trade_date <= ? "
+                "ORDER BY trade_date DESC LIMIT ?"
+            )
+            params: Tuple[object, ...] = (ts_code, trade_date, window)
+        else:
+            query = (
+                f"SELECT {column_list} FROM {table} "
+                "WHERE ts_code = ? ORDER BY rowid DESC LIMIT ?"
+            )
+            params = (ts_code, window)
+
+        results: List[Dict[str, object]] = []
+        with db_session(read_only=True) as conn:
+            try:
+                rows = conn.execute(query, params).fetchall()
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.debug(
+                    "表查询失败 table=%s err=%s",
+                    table,
+                    exc,
+                    extra=LOG_EXTRA,
+                )
+                return []
+
+        for row in rows:
+            record = {col: row[col] for col in columns}
+            results.append(record)
+        return results
+
     def resolve_field(self, field: str) -> Optional[Tuple[str, str]]:
         normalized = _safe_split(field)
         if not normalized:
@@ -215,7 +264,7 @@ class DataBroker:
             return None
         return table, resolved
 
-    def _get_table_columns(self, table: str) -> Optional[set[str]]:
+    def _get_table_columns(self, table: str) -> Optional[List[str]]:
         if not _is_safe_identifier(table):
             return None
         cache = getattr(self, "_column_cache", None)
@@ -234,7 +283,7 @@ class DataBroker:
         if not rows:
             cache[table] = None
             return None
-        columns = {row["name"] for row in rows if row["name"]}
+        columns = [row["name"] for row in rows if row["name"]]
         cache[table] = columns
         return columns
 
