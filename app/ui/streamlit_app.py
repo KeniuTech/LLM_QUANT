@@ -51,6 +51,60 @@ LOGGER = get_logger(__name__)
 LOG_EXTRA = {"stage": "ui"}
 
 
+def render_global_dashboard() -> None:
+    """Render a persistent sidebar with realtime LLM stats and recent decisions."""
+
+    metrics_container = st.sidebar.container()
+    decisions_container = st.sidebar.container()
+    st.session_state["dashboard_placeholders"] = (metrics_container, decisions_container)
+    _update_dashboard_sidebar()
+
+
+def _update_dashboard_sidebar(metrics: Optional[Dict[str, object]] = None) -> None:
+    placeholders = st.session_state.get("dashboard_placeholders")
+    if not placeholders:
+        return
+    metrics_container, decisions_container = placeholders
+    metrics = metrics or snapshot_llm_metrics()
+
+    metrics_container.empty()
+    with metrics_container.container():
+        st.header("系统监控")
+        col_a, col_b, col_c = st.columns(3)
+        col_a.metric("LLM 调用", metrics.get("total_calls", 0))
+        col_b.metric("Prompt Tokens", metrics.get("total_prompt_tokens", 0))
+        col_c.metric("Completion Tokens", metrics.get("total_completion_tokens", 0))
+
+        provider_calls = metrics.get("provider_calls", {})
+        model_calls = metrics.get("model_calls", {})
+        if provider_calls or model_calls:
+            with st.expander("调用分布", expanded=False):
+                if provider_calls:
+                    st.write("按 Provider：")
+                    st.json(provider_calls)
+                if model_calls:
+                    st.write("按模型：")
+                    st.json(model_calls)
+
+    decisions_container.empty()
+    with decisions_container.container():
+        st.subheader("最新决策")
+        decisions = metrics.get("recent_decisions") or llm_recent_decisions(10)
+        if decisions:
+            for record in reversed(decisions[-10:]):
+                ts_code = record.get("ts_code")
+                trade_date = record.get("trade_date")
+                action = record.get("action")
+                confidence = record.get("confidence", 0.0)
+                summary = record.get("summary")
+                st.markdown(
+                    f"**{trade_date} {ts_code}** → {action} (置信度 {confidence:.2f})"
+                )
+                if summary:
+                    st.caption(summary)
+        else:
+            st.caption("暂无决策记录。执行回测或实时评估后可在此查看。")
+
 def _discover_provider_models(provider: LLMProvider, base_override: str = "", api_override: Optional[str] = None) -> tuple[list[str], Optional[str]]:
     """Attempt to query provider API and return available model ids."""
 
@@ -159,45 +213,7 @@ def _load_daily_frame(ts_code: str, start: date, end: date) -> pd.DataFrame:
 def render_today_plan() -> None:
     LOGGER.info("渲染今日计划页面", extra=LOG_EXTRA)
     st.header("今日计划")
-    st.caption("统计数据基于最近一次渲染，刷新页面即可获取最新结果。")
-
-    metrics_state = snapshot_llm_metrics()
-    st.subheader("LLM 调用统计 (实时)")
-    stats_col1, stats_col2, stats_col3 = st.columns(3)
-    stats_col1.metric("总调用次数", metrics_state.get("total_calls", 0))
-    stats_col2.metric("Prompt Tokens", metrics_state.get("total_prompt_tokens", 0))
-    stats_col3.metric("Completion Tokens", metrics_state.get("total_completion_tokens", 0))
-    provider_calls = metrics_state.get("provider_calls", {})
-    model_calls = metrics_state.get("model_calls", {})
-    if provider_calls or model_calls:
-        with st.expander("调用明细", expanded=False):
-            if provider_calls:
-                st.write("按 Provider：")
-                st.json(provider_calls)
-            if model_calls:
-                st.write("按模型：")
-                st.json(model_calls)
-
-    st.subheader("最近决策 (全局)")
-    decision_feed = metrics_state.get("recent_decisions", []) or llm_recent_decisions(20)
-    if decision_feed:
-        for record in reversed(decision_feed[-20:]):
-            ts_code = record.get("ts_code")
-            trade_date = record.get("trade_date")
-            action = record.get("action")
-            confidence = record.get("confidence")
-            summary = record.get("summary")
-            departments = record.get("departments", {})
-            st.markdown(
-                f"**{trade_date} {ts_code}** → {action} (信心 {confidence:.2f})"
-            )
-            if summary:
-                st.caption(f"摘要：{summary}")
-            if departments:
-                st.json(departments)
-            st.divider()
-    else:
-        st.caption("暂无决策记录，执行回测或实时评估后可在此查看。")
+    st.caption("统计与决策概览现已移至左侧“系统监控”侧栏。")
     try:
         with db_session(read_only=True) as conn:
             date_rows = conn.execute(
@@ -437,13 +453,17 @@ def render_backtest() -> None:
     if st.button("运行回测"):
         LOGGER.info("用户点击运行回测按钮", extra=LOG_EXTRA)
         decision_log_container = st.container()
-        status_placeholder = st.empty()
+        status_box = st.status("准备执行回测...", expanded=True)
         llm_stats_placeholder = st.empty()
         decision_entries: List[str] = []
 
         def _decision_callback(ts_code: str, trade_dt: date, ctx: AgentContext, decision: Decision) -> None:
             ts_label = trade_dt.isoformat()
-            summary = decision.summary
+            summary = ""
+            for dept_decision in decision.department_decisions.values():
+                if getattr(dept_decision, "summary", ""):
+                    summary = str(dept_decision.summary)
+                    break
             entry_lines = [
                 f"**{ts_label} {ts_code}** → {decision.action.value} (信心 {decision.confidence:.2f})",
             ]
@@ -457,67 +477,71 @@ def render_backtest() -> None:
             if dep_highlights:
                 entry_lines.append("部门意见：" + "；".join(dep_highlights))
             decision_entries.append("  \n".join(entry_lines))
-            decision_log_container.markdown("\n\n".join(decision_entries[-50:]))
-            status_placeholder.info(
-                f"最新决策：{ts_code} -> {decision.action.value} ({decision.confidence:.2f})"
-            )
+            decision_log_container.markdown("\n\n".join(decision_entries[-200:]))
+            status_box.write(f"{ts_label} {ts_code} → {decision.action.value} (信心 {decision.confidence:.2f})")
             stats = snapshot_llm_metrics()
             llm_stats_placeholder.json(
                 {
                     "LLM 调用次数": stats.get("total_calls", 0),
                     "Prompt Tokens": stats.get("total_prompt_tokens", 0),
                     "Completion Tokens": stats.get("total_completion_tokens", 0),
+                    "按 Provider": stats.get("provider_calls", {}),
+                    "按模型": stats.get("model_calls", {}),
                 }
             )
+            _update_dashboard_sidebar(stats)
 
         reset_llm_metrics()
-        with st.spinner("正在执行回测..."):
-            try:
-                universe = [code.strip() for code in universe_text.split(',') if code.strip()]
-                LOGGER.info(
-                    "回测参数：start=%s end=%s universe=%s target=%s stop=%s hold_days=%s",
-                    start_date,
-                    end_date,
-                    universe,
-                    target,
-                    stop,
-                    hold_days,
-                    extra=LOG_EXTRA,
-                )
-                cfg = BtConfig(
-                    id="streamlit_demo",
-                    name="Streamlit Demo Strategy",
-                    start_date=start_date,
-                    end_date=end_date,
-                    universe=universe,
-                    params={
-                        "target": target,
-                        "stop": stop,
-                        "hold_days": int(hold_days),
-                    },
-                )
-                result = run_backtest(cfg, decision_callback=_decision_callback)
-                LOGGER.info(
-                    "回测完成：nav_records=%s trades=%s",
-                    len(result.nav_series),
-                    len(result.trades),
-                    extra=LOG_EXTRA,
-                )
-                st.success("回测执行完成，详见下方结果与统计。")
-                metrics = snapshot_llm_metrics()
-                llm_stats_placeholder.json(
-                    {
-                        "LLM 调用次数": metrics.get("total_calls", 0),
-                        "Prompt Tokens": metrics.get("total_prompt_tokens", 0),
-                        "Completion Tokens": metrics.get("total_completion_tokens", 0),
-                        "按 Provider": metrics.get("provider_calls", {}),
-                        "按模型": metrics.get("model_calls", {}),
-                    }
-                )
-                st.json({"nav_records": result.nav_series, "trades": result.trades})
-            except Exception as exc:  # noqa: BLE001
-                LOGGER.exception("回测执行失败", extra=LOG_EXTRA)
-                st.error(f"回测执行失败：{exc}")
+        status_box.update(label="执行回测中...", state="running")
+        try:
+            universe = [code.strip() for code in universe_text.split(',') if code.strip()]
+            LOGGER.info(
+                "回测参数：start=%s end=%s universe=%s target=%s stop=%s hold_days=%s",
+                start_date,
+                end_date,
+                universe,
+                target,
+                stop,
+                hold_days,
+                extra=LOG_EXTRA,
+            )
+            cfg = BtConfig(
+                id="streamlit_demo",
+                name="Streamlit Demo Strategy",
+                start_date=start_date,
+                end_date=end_date,
+                universe=universe,
+                params={
+                    "target": target,
+                    "stop": stop,
+                    "hold_days": int(hold_days),
+                },
+            )
+            result = run_backtest(cfg, decision_callback=_decision_callback)
+            LOGGER.info(
+                "回测完成：nav_records=%s trades=%s",
+                len(result.nav_series),
+                len(result.trades),
+                extra=LOG_EXTRA,
+            )
+            status_box.update(label="回测执行完成", state="complete")
+            st.success("回测执行完成，详见下方结果与统计。")
+            metrics = snapshot_llm_metrics()
+            llm_stats_placeholder.json(
+                {
+                    "LLM 调用次数": metrics.get("total_calls", 0),
+                    "Prompt Tokens": metrics.get("total_prompt_tokens", 0),
+                    "Completion Tokens": metrics.get("total_completion_tokens", 0),
+                    "按 Provider": metrics.get("provider_calls", {}),
+                    "按模型": metrics.get("model_calls", {}),
+                }
+            )
+            _update_dashboard_sidebar(metrics)
+            st.json({"nav_records": result.nav_series, "trades": result.trades})
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("回测执行失败", extra=LOG_EXTRA)
+            status_box.update(label="回测执行失败", state="error")
+            st.error(f"回测执行失败：{exc}")
 
 
 def render_settings() -> None:
@@ -1151,6 +1175,7 @@ def render_tests() -> None:
 def main() -> None:
     LOGGER.info("初始化 Streamlit UI", extra=LOG_EXTRA)
     st.set_page_config(page_title="多智能体投资助理", layout="wide")
+    render_global_dashboard()
     tabs = st.tabs(["今日计划", "回测与复盘", "数据与设置", "自检测试"])
     LOGGER.debug("Tabs 初始化完成：%s", ["今日计划", "回测与复盘", "数据与设置", "自检测试"], extra=LOG_EXTRA)
     with tabs[0]:

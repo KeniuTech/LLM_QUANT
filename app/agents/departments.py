@@ -9,11 +9,12 @@ from app.agents.base import AgentAction
 from app.llm.client import call_endpoint_with_messages, run_llm_with_config, LLMError
 from app.llm.prompts import department_prompt
 from app.utils.config import AppConfig, DepartmentSettings, LLMConfig
-from app.utils.logging import get_logger
+from app.utils.logging import get_logger, get_conversation_logger
 from app.utils.data_access import DataBroker
 
 LOGGER = get_logger(__name__)
 LOG_EXTRA = {"stage": "department"}
+CONV_LOGGER = get_conversation_logger()
 
 
 @dataclass
@@ -113,6 +114,12 @@ class DepartmentAgent:
 
         primary_endpoint = llm_cfg.primary
         final_message: Optional[Dict[str, Any]] = None
+        CONV_LOGGER.info(
+            "dept=%s ts_code=%s trade_date=%s start",
+            self.settings.code,
+            context.ts_code,
+            context.trade_date,
+        )
 
         for round_idx in range(self._max_rounds):
             try:
@@ -142,6 +149,12 @@ class DepartmentAgent:
             if message.get("tool_calls"):
                 assistant_record["tool_calls"] = message.get("tool_calls")
             messages.append(assistant_record)
+            CONV_LOGGER.info(
+                "dept=%s round=%s assistant=%s",
+                self.settings.code,
+                round_idx + 1,
+                assistant_record,
+            )
 
             tool_calls = message.get("tool_calls") or []
             if tool_calls:
@@ -163,6 +176,13 @@ class DepartmentAgent:
                         }
                     )
                     delivered_requests.update(delivered)
+                    CONV_LOGGER.info(
+                        "dept=%s round=%s tool_call=%s response=%s",
+                        self.settings.code,
+                        round_idx + 1,
+                        call,
+                        tool_response,
+                    )
                 continue
 
             final_message = message
@@ -175,6 +195,11 @@ class DepartmentAgent:
                 extra=LOG_EXTRA,
             )
             final_message = message
+            CONV_LOGGER.warning(
+                "dept=%s rounds_exhausted last_message=%s",
+                self.settings.code,
+                final_message,
+            )
 
         mutable_context.raw["supplement_transcript"] = list(transcript)
 
@@ -208,6 +233,13 @@ class DepartmentAgent:
             decision.action.value,
             decision.confidence,
             extra=LOG_EXTRA,
+        )
+        CONV_LOGGER.info(
+            "dept=%s decision action=%s confidence=%.2f summary=%s",
+            self.settings.code,
+            decision.action.value,
+            decision.confidence,
+            summary or "",
         )
         return decision
 
@@ -418,6 +450,11 @@ class DepartmentAgent:
                 exc,
                 extra=LOG_EXTRA,
             )
+            CONV_LOGGER.error(
+                "dept=%s legacy_call_failed err=%s",
+                self.settings.code,
+                exc,
+            )
             return DepartmentDecision(
                 department=self.settings.code,
                 action=AgentAction.HOLD,
@@ -427,6 +464,7 @@ class DepartmentAgent:
             )
 
         context.raw["supplement_transcript"] = [response]
+        CONV_LOGGER.info("dept=%s legacy_response=%s", self.settings.code, response)
         decision_data = _parse_department_response(response)
         action = _normalize_action(decision_data.get("action"))
         confidence = _clamp_float(decision_data.get("confidence"), default=0.5)

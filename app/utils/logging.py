@@ -20,6 +20,9 @@ from .db import db_session
 
 _LOGGER_NAME = "app.logging"
 _IS_CONFIGURED = False
+_CONVERSATION_LOGGER_NAME = "app.conversation"
+_CONVERSATION_HANDLER: Optional[Handler] = None
+_CONVERSATION_LOGFILE: Optional[Path] = None
 
 
 class DatabaseLogHandler(Handler):
@@ -77,6 +80,7 @@ def setup_logging(
     log_dir: Path = cfg.data_paths.root / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     logfile = log_dir / f"app_{timestamp}.log"
+    conversation_logfile = log_dir / f"agent_{timestamp}.log"
 
     root = logging.getLogger()
     root.setLevel(level)
@@ -113,6 +117,19 @@ def setup_logging(
             },
         },
     )
+    conversation_logger = logging.getLogger(_CONVERSATION_LOGGER_NAME)
+    conversation_logger.setLevel(level)
+    conversation_logger.handlers.clear()
+    conversation_logger.propagate = False
+    conv_handler = logging.FileHandler(conversation_logfile, encoding="utf-8")
+    conv_handler.setLevel(level)
+    conv_handler.setFormatter(formatter)
+    conversation_logger.addHandler(conv_handler)
+
+    global _CONVERSATION_HANDLER, _CONVERSATION_LOGFILE
+    _CONVERSATION_HANDLER = conv_handler
+    _CONVERSATION_LOGFILE = conversation_logfile
+
     return root
 
 
@@ -125,6 +142,15 @@ def get_logger(name: Optional[str] = None) -> logging.Logger:
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
     logging.getLogger("requests.packages.urllib3").setLevel(logging.WARNING)
+    return logger
+
+
+def get_conversation_logger() -> logging.Logger:
+    """Return conversation logger for agent dialogues."""
+
+    setup_logging()
+    logger = logging.getLogger(_CONVERSATION_LOGGER_NAME)
+    logger.propagate = False
     return logger
 
 

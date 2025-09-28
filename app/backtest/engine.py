@@ -251,20 +251,13 @@ class BacktestEngine:
                 method=self.cfg.method,
                 department_manager=self.department_manager,
             )
-            decisions.append(decision)
-            self.record_agent_state(context, decision)
-            if decision_callback:
-                try:
-                    decision_callback(ts_code, trade_date, context, decision)
-                except Exception:  # noqa: BLE001
-                    LOGGER.exception("决策回调执行失败", extra=LOG_EXTRA)
             try:
                 metrics_record_decision(
                     ts_code=ts_code,
                     trade_date=context.trade_date,
                     action=decision.action.value,
                     confidence=decision.confidence,
-                    summary=decision.summary,
+                    summary=_extract_summary(decision),
                     source="backtest",
                     departments={
                         code: dept.to_dict()
@@ -273,6 +266,13 @@ class BacktestEngine:
                 )
             except Exception:  # noqa: BLE001
                 LOGGER.debug("记录决策指标失败", extra=LOG_EXTRA)
+            decisions.append(decision)
+            self.record_agent_state(context, decision)
+            if decision_callback:
+                try:
+                    decision_callback(ts_code, trade_date, context, decision)
+                except Exception:  # noqa: BLE001
+                    LOGGER.exception("决策回调执行失败", extra=LOG_EXTRA)
         # TODO: translate decisions into fills, holdings, and NAV updates.
         _ = state
         return decisions
@@ -408,3 +408,9 @@ def run_backtest(
         _ = conn
         # Implementation should persist bt_nav, bt_trades, and bt_report rows.
     return result
+def _extract_summary(decision: Decision) -> str:
+    for dept_decision in decision.department_decisions.values():
+        summary = getattr(dept_decision, "summary", "")
+        if summary:
+            return str(summary)
+    return ""
