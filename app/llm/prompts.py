@@ -24,11 +24,20 @@ def department_prompt(settings: "DepartmentSettings", context: "DepartmentContex
     market_lines = "\n".join(
         f"- {key}: {value}" for key, value in sorted(context.market_snapshot.items())
     )
+    scope_lines = "\n".join(f"- {item}" for item in settings.data_scope)
+    role_description = settings.description.strip()
+    role_instruction = settings.prompt.strip()
 
     instructions = f"""
 部门名称：{settings.title}
 股票代码：{context.ts_code}
 交易日：{context.trade_date}
+
+角色说明：{role_description or '未配置，默认沿用部门名称所代表的研究职责。'}
+职责指令：{role_instruction or '在保持部门风格的前提下，结合可用数据做出审慎判断。'}
+
+【可用数据范围】
+{scope_lines or '- 使用系统提供的全部上下文，必要时指出仍需的额外数据。'}
 
 【核心特征】
 {feature_lines or '- (无)'}

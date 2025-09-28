@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 import json
 import os
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional
 
 
 def _default_root() -> Path:
@@ -186,19 +186,102 @@ class DepartmentSettings:
     title: str
     description: str = ""
     weight: float = 1.0
+    data_scope: List[str] = field(default_factory=list)
+    prompt: str = ""
     llm: LLMConfig = field(default_factory=LLMConfig)
 
 
 def _default_departments() -> Dict[str, DepartmentSettings]:
     presets = [
-        ("momentum", "动量策略部门"),
-        ("value", "价值评估部门"),
-        ("news", "新闻情绪部门"),
-        ("liquidity", "流动性评估部门"),
-        ("macro", "宏观研究部门"),
-        ("risk", "风险控制部门"),
+        {
+            "code": "momentum",
+            "title": "动量策略部门",
+            "description": "跟踪价格动量与量价共振，评估短线趋势延续的概率。",
+            "data_scope": [
+                "daily.close",
+                "daily.open",
+                "daily_basic.turnover_rate",
+                "factors.mom_20",
+                "factors.mom_60",
+            ],
+            "prompt": "你主导动量风格研究，关注价格与成交量的加速变化，需在保持纪律的前提下判定短期多空倾向。",
+        },
+        {
+            "code": "value",
+            "title": "价值评估部门",
+            "description": "衡量估值水平与盈利质量，为中期配置提供性价比判断。",
+            "data_scope": [
+                "daily_basic.pe",
+                "daily_basic.pb",
+                "daily_basic.roe",
+                "fundamental.growth",
+            ],
+            "prompt": "你负责价值与质量评估，应结合估值分位、盈利持续性及安全边际给出配置建议。",
+        },
+        {
+            "code": "news",
+            "title": "新闻情绪部门",
+            "description": "监控舆情热度与事件影响，识别情绪驱动的短期风险与机会。",
+            "data_scope": [
+                "news.sentiment_index",
+                "news.heat_score",
+                "events.latest_headlines",
+            ],
+            "prompt": "你专注新闻和事件驱动，应评估正负面舆情对标的短线波动的可能影响。",
+        },
+        {
+            "code": "liquidity",
+            "title": "流动性评估部门",
+            "description": "衡量成交活跃度与交易成本，控制进出场的实现可能性。",
+            "data_scope": [
+                "daily_basic.volume_ratio",
+                "daily_basic.turnover_rate_f",
+                "market.spread_estimate",
+            ],
+            "prompt": "你负责评估该标的的流动性与滑点风险，需要提出可执行的仓位调整建议。",
+        },
+        {
+            "code": "macro",
+            "title": "宏观研究部门",
+            "description": "追踪宏观与行业景气度，为行业配置和风险偏好提供参考。",
+            "data_scope": [
+                "macro.industry_heat",
+                "macro.liquidity_cycle",
+                "index.performance_peers",
+            ],
+            "prompt": "你负责宏观与行业研判，应结合宏观周期、行业景气与相对强弱给出方向性意见。",
+        },
+        {
+            "code": "risk",
+            "title": "风险控制部门",
+            "description": "监控极端风险、合规与交易限制，必要时行使否决。",
+            "data_scope": [
+                "market.limit_flags",
+                "portfolio.position",
+                "risk.alerts",
+            ],
+            "prompt": "你负责风险控制，应识别停牌、涨跌停、持仓约束等因素，必要时提出减仓或观望建议。",
+        },
     ]
-    return {code: DepartmentSettings(code=code, title=title) for code, title in presets}
+    return {
+        item["code"]: DepartmentSettings(
+            code=item["code"],
+            title=item["title"],
+            description=item.get("description", ""),
+            data_scope=list(item.get("data_scope", [])),
+            prompt=item.get("prompt", ""),
+        )
+        for item in presets
+    }
+
+
+def _normalize_data_scope(raw: object) -> List[str]:
+    if isinstance(raw, str):
+        tokens = raw.replace(";", "\n").replace(",", "\n").splitlines()
+        return [token.strip() for token in tokens if token.strip()]
+    if isinstance(raw, Iterable) and not isinstance(raw, (bytes, bytearray, str)):
+        return [str(item).strip() for item in raw if str(item).strip()]
+    return []
 
 
 @dataclass
@@ -388,6 +471,8 @@ def _load_from_file(cfg: AppConfig) -> None:
             title = data.get("title") or code
             description = data.get("description") or ""
             weight = float(data.get("weight", 1.0))
+            prompt_text = str(data.get("prompt") or "")
+            data_scope = _normalize_data_scope(data.get("data_scope"))
             llm_cfg = LLMConfig()
             route_name = data.get("llm_route")
             resolved_cfg = None
@@ -420,6 +505,8 @@ def _load_from_file(cfg: AppConfig) -> None:
                 title=title,
                 description=description,
                 weight=weight,
+                data_scope=data_scope,
+                prompt=prompt_text,
                 llm=resolved_cfg,
             )
         if new_departments:
@@ -451,6 +538,8 @@ def save_config(cfg: AppConfig | None = None) -> None:
                 "title": dept.title,
                 "description": dept.description,
                 "weight": dept.weight,
+                "data_scope": list(dept.data_scope),
+                "prompt": dept.prompt,
                 "llm": {
                     "strategy": dept.llm.strategy if dept.llm.strategy in ALLOWED_LLM_STRATEGIES else "single",
                     "majority_threshold": dept.llm.majority_threshold,
