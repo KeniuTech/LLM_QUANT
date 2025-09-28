@@ -3,3 +3,4 @@ plotly>=5.18
 streamlit>=1.30
 tushare>=1.2
 requests>=2.31
+python-box>=7.0

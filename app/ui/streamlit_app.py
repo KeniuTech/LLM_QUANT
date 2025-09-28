@@ -5,11 +5,13 @@ import sys
 from dataclasses import asdict
 from datetime import date, timedelta
 from pathlib import Path
-from typing import List
+from typing import Dict, List
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+import json
 
 import pandas as pd
 import plotly.express as px
@@ -21,11 +23,12 @@ from app.data.schema import initialize_database
 from app.ingest.checker import run_boot_check
 from app.ingest.tushare import FetchJob, run_ingestion
 from app.llm.client import llm_config_snapshot, run_llm
-from app.llm.explain import make_human_card
 from app.utils.config import (
+    ALLOWED_LLM_STRATEGIES,
     DEFAULT_LLM_BASE_URLS,
     DEFAULT_LLM_MODEL_OPTIONS,
     DEFAULT_LLM_MODELS,
+    DepartmentSettings,
     LLMEndpoint,
     get_config,
     save_config,
@@ -102,10 +105,153 @@ def _load_daily_frame(ts_code: str, start: date, end: date) -> pd.DataFrame:
 def render_today_plan() -> None:
     LOGGER.info("渲染今日计划页面", extra=LOG_EXTRA)
     st.header("今日计划")
-    st.write("待接入候选池筛选与多智能体决策结果。")
-    sample = make_human_card("000001.SZ", "2025-01-01", {"decisions": []})
-    LOGGER.debug("示例卡片内容：%s", sample, extra=LOG_EXTRA)
-    st.json(sample)
+    try:
+        with db_session(read_only=True) as conn:
+            date_rows = conn.execute(
+                """
+                SELECT DISTINCT trade_date
+                FROM agent_utils
+                ORDER BY trade_date DESC
+                LIMIT 30
+                """
+            ).fetchall()
+    except Exception:  # noqa: BLE001
+        LOGGER.exception("加载 agent_utils 失败", extra=LOG_EXTRA)
+        st.warning("暂未写入部门/代理决策，请先运行回测或策略评估流程。")
+        return
+
+    trade_dates = [row["trade_date"] for row in date_rows]
+    if not trade_dates:
+        st.info("暂无决策记录，完成一次回测后即可在此查看部门意见与投票结果。")
+        return
+
+    trade_date = st.selectbox("交易日", trade_dates, index=0)
+
+    with db_session(read_only=True) as conn:
+        code_rows = conn.execute(
+            """
+            SELECT DISTINCT ts_code
+            FROM agent_utils
+            WHERE trade_date = ?
+            ORDER BY ts_code
+            """,
+            (trade_date,),
+        ).fetchall()
+    symbols = [row["ts_code"] for row in code_rows]
+    if not symbols:
+        st.info("所选交易日暂无 agent_utils 记录。")
+        return
+
+    ts_code = st.selectbox("标的", symbols, index=0)
+
+    with db_session(read_only=True) as conn:
+        rows = conn.execute(
+            """
+            SELECT agent, action, utils, feasible, weight
+            FROM agent_utils
+            WHERE trade_date = ? AND ts_code = ?
+            ORDER BY CASE WHEN agent = 'global' THEN 1 ELSE 0 END, agent
+            """,
+            (trade_date, ts_code),
+        ).fetchall()
+
+    if not rows:
+        st.info("未查询到详细决策记录，稍后再试。")
+        return
+
+    try:
+        feasible_actions = json.loads(rows[0]["feasible"] or "[]")
+    except (KeyError, TypeError, json.JSONDecodeError):
+        feasible_actions = []
+
+    global_info = None
+    dept_records: List[Dict[str, object]] = []
+    agent_records: List[Dict[str, object]] = []
+
+    for item in rows:
+        agent_name = item["agent"]
+        action = item["action"]
+        weight = float(item["weight"] or 0.0)
+        try:
+            utils = json.loads(item["utils"] or "{}")
+        except json.JSONDecodeError:
+            utils = {}
+
+        if agent_name == "global":
+            global_info = {
+                "action": action,
+                "confidence": float(utils.get("_confidence", 0.0)),
+                "target_weight": float(utils.get("_target_weight", 0.0)),
+                "department_votes": utils.get("_department_votes", {}),
+                "requires_review": bool(utils.get("_requires_review", False)),
+            }
+            continue
+
+        if agent_name.startswith("dept_"):
+            code = agent_name.split("dept_", 1)[-1]
+            signals = utils.get("_signals", [])
+            risks = utils.get("_risks", [])
+            dept_records.append(
+                {
+                    "部门": code,
+                    "行动": action,
+                    "信心": float(utils.get("_confidence", 0.0)),
+                    "权重": weight,
+                    "摘要": utils.get("_summary", ""),
+                    "核心信号": "；".join(signals) if isinstance(signals, list) else signals,
+                    "风险提示": "；".join(risks) if isinstance(risks, list) else risks,
+                }
+            )
+        else:
+            score_map = {
+                key: float(val)
+                for key, val in utils.items()
+                if not str(key).startswith("_")
+            }
+            agent_records.append(
+                {
+                    "代理": agent_name,
+                    "建议动作": action,
+                    "权重": weight,
+                    "SELL": score_map.get("SELL", 0.0),
+                    "HOLD": score_map.get("HOLD", 0.0),
+                    "BUY_S": score_map.get("BUY_S", 0.0),
+                    "BUY_M": score_map.get("BUY_M", 0.0),
+                    "BUY_L": score_map.get("BUY_L", 0.0),
+                }
+            )
+
+    if feasible_actions:
+        st.caption(f"可行操作集合：{', '.join(feasible_actions)}")
+
+    st.subheader("全局策略")
+    if global_info:
+        col1, col2, col3 = st.columns(3)
+        col1.metric("最终行动", global_info["action"])
+        col2.metric("信心", f"{global_info['confidence']:.2f}")
+        col3.metric("目标权重", f"{global_info['target_weight']:+.2%}")
+        if global_info["department_votes"]:
+            st.json(global_info["department_votes"])
+        if global_info["requires_review"]:
+            st.warning("部门分歧较大，已标记为需人工复核。")
+    else:
+        st.info("暂未写入全局策略摘要。")
+
+    st.subheader("部门意见")
+    if dept_records:
+        dept_df = pd.DataFrame(dept_records)
+        st.dataframe(dept_df, use_container_width=True, hide_index=True)
+    else:
+        st.info("暂无部门记录。")
+
+    st.subheader("代理评分")
+    if agent_records:
+        agent_df = pd.DataFrame(agent_records)
+        st.dataframe(agent_df, use_container_width=True, hide_index=True)
+    else:
+        st.info("暂无基础代理评分。")
+
+    st.caption("以上内容来源于 agent_utils 表，可通过回测或实时评估自动更新。")
 
 
 def render_backtest() -> None:
@@ -281,7 +427,7 @@ def render_settings() -> None:
         step=5,
     )
 
-    strategy_options = ["single", "majority"]
+    strategy_options = ["single", "majority", "leader"]
     try:
         strategy_index = strategy_options.index(llm_cfg.strategy)
     except ValueError:
@@ -392,6 +538,116 @@ def render_settings() -> None:
         LOGGER.info("LLM 配置已更新：%s", llm_config_snapshot(), extra=LOG_EXTRA)
         st.success("LLM 设置已保存，仅在当前会话生效。")
         st.json(llm_config_snapshot())
+
+    st.divider()
+    st.subheader("部门配置")
+
+    dept_settings = cfg.departments or {}
+    dept_rows = [
+        {
+            "code": code,
+            "title": dept.title,
+            "description": dept.description,
+            "weight": float(dept.weight),
+            "strategy": dept.llm.strategy,
+            "primary_provider": (dept.llm.primary.provider or "ollama"),
+            "primary_model": dept.llm.primary.model or "",
+            "ensemble_size": len(dept.llm.ensemble),
+        }
+        for code, dept in sorted(dept_settings.items())
+    ]
+
+    if not dept_rows:
+        st.info("当前未配置部门，可在 config.json 中添加。")
+        dept_rows = []
+
+    dept_editor = st.data_editor(
+        dept_rows,
+        num_rows="fixed",
+        key="department_editor",
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "code": st.column_config.TextColumn("编码", disabled=True),
+            "title": st.column_config.TextColumn("名称"),
+            "description": st.column_config.TextColumn("说明"),
+            "weight": st.column_config.NumberColumn("权重", min_value=0.0, max_value=10.0, step=0.1),
+            "strategy": st.column_config.SelectboxColumn(
+                "策略",
+                options=sorted(ALLOWED_LLM_STRATEGIES),
+                help="single=单模型, majority=多数投票, leader=顾问-决策者模式",
+            ),
+            "primary_provider": st.column_config.SelectboxColumn(
+                "主模型 Provider",
+                options=sorted(DEFAULT_LLM_MODEL_OPTIONS.keys()),
+            ),
+            "primary_model": st.column_config.TextColumn("主模型名称"),
+            "ensemble_size": st.column_config.NumberColumn(
+                "协作模型数量",
+                disabled=True,
+                help="在 config.json 中编辑 ensemble 详情",
+            ),
+        },
+    )
+
+    if hasattr(dept_editor, "to_dict"):
+        dept_rows = dept_editor.to_dict("records")
+    else:
+        dept_rows = dept_editor
+
+    col_reset, col_save = st.columns([1, 1])
+
+    if col_save.button("保存部门配置"):
+        updated_departments: Dict[str, DepartmentSettings] = {}
+        for row in dept_rows:
+            code = row.get("code")
+            if not code:
+                continue
+            existing = dept_settings.get(code) or DepartmentSettings(code=code, title=code)
+            existing.title = row.get("title") or existing.title
+            existing.description = row.get("description") or ""
+            try:
+                existing.weight = max(0.0, float(row.get("weight", existing.weight)))
+            except (TypeError, ValueError):
+                existing.weight = existing.weight
+
+            strategy_val = (row.get("strategy") or existing.llm.strategy).lower()
+            if strategy_val in ALLOWED_LLM_STRATEGIES:
+                existing.llm.strategy = strategy_val
+
+            provider_before = existing.llm.primary.provider or ""
+            provider_val = (row.get("primary_provider") or provider_before or "ollama").lower()
+            existing.llm.primary.provider = provider_val
+
+            model_val = (row.get("primary_model") or "").strip()
+            if model_val:
+                existing.llm.primary.model = model_val
+            else:
+                existing.llm.primary.model = DEFAULT_LLM_MODELS.get(provider_val, existing.llm.primary.model)
+
+            if provider_before != provider_val:
+                default_base = DEFAULT_LLM_BASE_URLS.get(provider_val)
+                existing.llm.primary.base_url = default_base or existing.llm.primary.base_url
+
+            existing.llm.primary.__post_init__()
+            updated_departments[code] = existing
+
+        if updated_departments:
+            cfg.departments = updated_departments
+            save_config()
+            st.success("部门配置已更新。")
+        else:
+            st.warning("未能解析部门配置输入。")
+
+    if col_reset.button("恢复默认部门"):
+        from app.utils.config import _default_departments
+
+        cfg.departments = _default_departments()
+        save_config()
+        st.success("已恢复默认部门配置。")
+        st.experimental_rerun()
+
+    st.caption("部门协作模型（ensemble）请在 config.json 中手动编辑，UI 将在后续版本补充。")
 
 
 def render_tests() -> None:

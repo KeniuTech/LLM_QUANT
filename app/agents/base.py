@@ -1,9 +1,9 @@
 """Agent abstractions for the multi-agent decision engine."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, Mapping
+from typing import Any, Dict, Mapping
 
 
 class AgentAction(str, Enum):
@@ -19,6 +19,8 @@ class AgentContext:
     ts_code: str
     trade_date: str
     features: Mapping[str, float]
+    market_snapshot: Mapping[str, Any] = field(default_factory=dict)
+    raw: Mapping[str, Any] = field(default_factory=dict)
 
 
 class Agent:

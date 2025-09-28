@@ -1,11 +1,12 @@
 """Multi-agent decision game implementation."""
 from __future__ import annotations
 
-from dataclasses import dataclass
-from math import exp, log
-from typing import Dict, Iterable, List, Mapping, Tuple
+from dataclasses import dataclass, field
+from math import log
+from typing import Dict, Iterable, List, Mapping, Optional, Tuple
 
 from .base import Agent, AgentAction, AgentContext, UtilityMatrix
+from .departments import DepartmentContext, DepartmentDecision, DepartmentManager
 from .registry import weight_map
 
 
@@ -29,6 +30,9 @@ class Decision:
     target_weight: float
     feasible_actions: List[AgentAction]
     utilities: UtilityMatrix
+    department_decisions: Dict[str, DepartmentDecision] = field(default_factory=dict)
+    department_votes: Dict[str, float] = field(default_factory=dict)
+    requires_review: bool = False
 
 
 def compute_utilities(agents: Iterable[Agent], context: AgentContext) -> UtilityMatrix:
@@ -105,16 +109,56 @@ def target_weight_for_action(action: AgentAction) -> float:
     return mapping[action]
 
 
-def decide(context: AgentContext, agents: Iterable[Agent], weights: Mapping[str, float], method: str = "nash") -> Decision:
+def decide(
+    context: AgentContext,
+    agents: Iterable[Agent],
+    weights: Mapping[str, float],
+    method: str = "nash",
+    department_manager: Optional[DepartmentManager] = None,
+    department_context: Optional[DepartmentContext] = None,
+) -> Decision:
     agent_list = list(agents)
-    norm_weights = weight_map(dict(weights))
     utilities = compute_utilities(agent_list, context)
     feas_actions = feasible_actions(agent_list, context)
     if not feas_actions:
-        return Decision(AgentAction.HOLD, 0.0, 0.0, [], utilities)
+        return Decision(
+            action=AgentAction.HOLD,
+            confidence=0.0,
+            target_weight=0.0,
+            feasible_actions=[],
+            utilities=utilities,
+        )
+
+    raw_weights = dict(weights)
+    department_decisions: Dict[str, DepartmentDecision] = {}
+    department_votes: Dict[str, float] = {}
+
+    if department_manager:
+        dept_context = department_context
+        if dept_context is None:
+            dept_context = DepartmentContext(
+                ts_code=context.ts_code,
+                trade_date=context.trade_date,
+                features=dict(context.features),
+                market_snapshot=dict(getattr(context, "market_snapshot", {}) or {}),
+                raw=dict(getattr(context, "raw", {}) or {}),
+            )
+        department_decisions = department_manager.evaluate(dept_context)
+        for code, decision in department_decisions.items():
+            agent_key = f"dept_{code}"
+            dept_agent = department_manager.agents.get(code)
+            weight = dept_agent.settings.weight if dept_agent else 1.0
+            raw_weights[agent_key] = weight
+            scores = _department_scores(decision)
+            for action in ACTIONS:
+                utilities.setdefault(action, {})[agent_key] = scores[action]
+            bucket = _department_vote_bucket(decision.action)
+            if bucket:
+                department_votes[bucket] = department_votes.get(bucket, 0.0) + weight * decision.confidence
 
     filtered_utilities = {action: utilities[action] for action in feas_actions}
     hold_scores = utilities.get(AgentAction.HOLD, {})
+    norm_weights = weight_map(raw_weights)
 
     if method == "vote":
         action, confidence = vote(filtered_utilities, norm_weights)
@@ -124,4 +168,66 @@ def decide(context: AgentContext, agents: Iterable[Agent], weights: Mapping[str,
             action, confidence = vote(filtered_utilities, norm_weights)
 
     weight = target_weight_for_action(action)
-    return Decision(action, confidence, weight, feas_actions, utilities)
+    requires_review = _department_conflict_flag(department_votes)
+    return Decision(
+        action=action,
+        confidence=confidence,
+        target_weight=weight,
+        feasible_actions=feas_actions,
+        utilities=utilities,
+        department_decisions=department_decisions,
+        department_votes=department_votes,
+        requires_review=requires_review,
+    )
+
+
+def _department_scores(decision: DepartmentDecision) -> Dict[AgentAction, float]:
+    conf = _clamp(decision.confidence)
+    scores: Dict[AgentAction, float] = {action: 0.2 for action in ACTIONS}
+    if decision.action is AgentAction.SELL:
+        scores[AgentAction.SELL] = 0.7 + 0.3 * conf
+        scores[AgentAction.HOLD] = 0.4 * (1 - conf)
+        scores[AgentAction.BUY_S] = 0.2 * (1 - conf)
+        scores[AgentAction.BUY_M] = 0.15 * (1 - conf)
+        scores[AgentAction.BUY_L] = 0.1 * (1 - conf)
+    elif decision.action in {AgentAction.BUY_S, AgentAction.BUY_M, AgentAction.BUY_L}:
+        for action in (AgentAction.BUY_S, AgentAction.BUY_M, AgentAction.BUY_L):
+            if action is decision.action:
+                scores[action] = 0.6 + 0.4 * conf
+            else:
+                scores[action] = 0.3 + 0.3 * conf
+        scores[AgentAction.HOLD] = 0.3 * (1 - conf) + 0.25
+        scores[AgentAction.SELL] = 0.15 * (1 - conf)
+    else:  # HOLD 或未知
+        scores[AgentAction.HOLD] = 0.6 + 0.4 * conf
+        scores[AgentAction.SELL] = 0.3 * (1 - conf)
+        scores[AgentAction.BUY_S] = 0.3 * (1 - conf)
+        scores[AgentAction.BUY_M] = 0.3 * (1 - conf)
+        scores[AgentAction.BUY_L] = 0.3 * (1 - conf)
+    return {action: _clamp(score) for action, score in scores.items()}
+
+
+def _department_vote_bucket(action: AgentAction) -> str:
+    if action is AgentAction.SELL:
+        return "sell"
+    if action in {AgentAction.BUY_S, AgentAction.BUY_M, AgentAction.BUY_L}:
+        return "buy"
+    if action is AgentAction.HOLD:
+        return "hold"
+    return ""
+
+
+def _department_conflict_flag(votes: Mapping[str, float]) -> bool:
+    if not votes:
+        return False
+    total = sum(votes.values())
+    if total <= 0:
+        return True
+    top = max(votes.values())
+    if top < total * 0.45:
+        return True
+    if len(votes) > 1:
+        sorted_votes = sorted(votes.values(), reverse=True)
+        if len(sorted_votes) >= 2 and (sorted_votes[0] - sorted_votes[1]) < total * 0.1:
+            return True
+    return False

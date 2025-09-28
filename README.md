@@ -23,6 +23,7 @@
 - **可视化与解释**：`app/ui/streamlit_app.py` 提供四大页签（今日计划、回测与复盘、数据与设置、自检测试），结合 Plotly 图形展示和 `app/llm` 提示卡片生成器，支撑人机协作分析。
 - **统一日志与持久化**：SQLite 统一存储行情、回测与日志，配合 `DatabaseLogHandler` 在 UI/抓数流程中输出结构化运行轨迹，支持快速追踪与复盘。
 - **跨市场数据扩展**：`app/ingest/tushare.py` 追加指数、ETF/公募基金、期货、外汇、港股与美股的增量拉取逻辑，确保多资产因子与宏观代理所需的行情基础数据齐备。
+- **部门化多模型协作**：`app/agents/departments.py` 封装部门级 LLM 调度，`app/llm/client.py` 支持 single/majority/leader 策略，部门结论在 `app/agents/game.py` 与六类基础代理共同博弈，并持久化至 `agent_utils` 供 UI 展示。
 
 ## LLM + 多智能体最佳实践
 
@@ -85,10 +86,35 @@ Streamlit `自检测试` 页签提供：
 ## 下一步
 
 1. 在 `app/features` 和 `app/backtest` 中完善信号计算、事件驱动撮合与绩效指标输出。
-2. 将代理效用写入 SQLite 的 `agent_utils` 和 `alloc_log` 表，驱动 UI 决策解释。
+2. 丰富 `DepartmentContext`（行情快照、风险指标），让部门评估拥有更完整的上下文。
 3. 使用轻量情感分析与热度计算填充 `news`、`heat_daily` 与热点指数。
-4. 接入本地小模型或 API 完成人类可读的策略建议卡片，形成端到端体验。
+4. 在 Streamlit 今日计划页增加“重新评估”与日志追踪能力，串联实时调度链路。
 
 ## License
 
 本项目采用定制的 “LLM Quant Framework License v1.0”。个人使用、修改与分发需保留出处，任何商业用途须事先与版权方协商并签署付费协议。详情参见仓库根目录的 `LICENSE` 文件。
+
+## 多智能体 LLM 投资流程
+
+- **部门化结构**：动量、价值、新闻、流动性、宏观、风险等代理视作独立业务部门，利用项目现有的数据/特征处理流程向每个部门提供上下文。
+- **多 LLM 协作**：每个部门内部可配置多家 LLM 提供商（如 DeepSeek、OpenAI、文心等）作为智能体助手，分别生成分析意见和风险提示；可通过多数投票、仲裁等策略确定部门结论。
+- **部门输出**：统一返回部门行动（买入/卖出/持有）、信心水平以及核心理由 (context + LLM 摘要)，当前实现会将摘要、风险提示与票权写入 `agent_utils`。
+- **跨部门协调**：沿用 `app/agents/game.py` 的纳什谈判/投票结构，将各部门的结论与六类基础代理共同建模，必要时触发冲突检测并标记复核。
+- **日志与可视化**：Streamlit 今日计划页读取 `agent_utils` 展示部门意见、投票细节与全局行动，可快速核查部门分歧与置信度。
+
+## 实施步骤
+
+1. **配置扩展** (`app/utils/config.py` + `config.json`) ✅
+   - 部门支持 primary/ensemble、策略（single/majority/leader）、权重，并可在 Streamlit 中编辑主要字段。
+
+2. **部门管控器** ✅
+   - `app/agents/departments.py` 提供 `DepartmentAgent`/`DepartmentManager`，封装 Prompt 构建、多模型协商及异常回退。
+
+3. **集成决策链** ✅
+   - `app/agents/game.py` 将部门评分嵌入纳什谈判/加权投票，并对冲突设置复核标记；`app/backtest/engine.py` 将结果落库。
+
+4. **UI 与日志**（进行中）
+   - 今日计划页展示部门意见、票权与全局策略，后续补充一键重评估、日志钻取。
+
+5. **测试与验证**（待补充）
+   - 需完善部门上下文构造与多模型调用的单元/集成测试，结合回测指标对比多 LLM 策略收益差异。

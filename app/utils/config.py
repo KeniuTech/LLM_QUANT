@@ -95,6 +95,9 @@ DEFAULT_LLM_TIMEOUTS: Dict[str, float] = {
     for provider, info in DEFAULT_LLM_MODEL_OPTIONS.items()
 }
 
+ALLOWED_LLM_STRATEGIES = {"single", "majority", "leader"}
+LLM_STRATEGY_ALIASES = {"leader-follower": "leader"}
+
 
 @dataclass
 class LLMEndpoint:
@@ -125,8 +128,34 @@ class LLMConfig:
 
     primary: LLMEndpoint = field(default_factory=LLMEndpoint)
     ensemble: List[LLMEndpoint] = field(default_factory=list)
-    strategy: str = "single"  # Options: single, majority
+    strategy: str = "single"  # Options: single, majority, leader
     majority_threshold: int = 3
+
+
+@dataclass
+class DepartmentSettings:
+    """Configuration for a single decision department."""
+
+    code: str
+    title: str
+    description: str = ""
+    weight: float = 1.0
+    llm: LLMConfig = field(default_factory=LLMConfig)
+
+
+def _default_departments() -> Dict[str, DepartmentSettings]:
+    presets = [
+        ("momentum", "动量策略部门"),
+        ("value", "价值评估部门"),
+        ("news", "新闻情绪部门"),
+        ("liquidity", "流动性评估部门"),
+        ("macro", "宏观研究部门"),
+        ("risk", "风险控制部门"),
+    ]
+    return {
+        code: DepartmentSettings(code=code, title=title)
+        for code, title in presets
+    }
 
 
 @dataclass
@@ -140,6 +169,7 @@ class AppConfig:
     agent_weights: AgentWeights = field(default_factory=AgentWeights)
     force_refresh: bool = False
     llm: LLMConfig = field(default_factory=LLMConfig)
+    departments: Dict[str, DepartmentSettings] = field(default_factory=_default_departments)
 
 
 CONFIG = AppConfig()
@@ -197,13 +227,52 @@ def _load_from_file(cfg: AppConfig) -> None:
                     if isinstance(item, dict)
                 ]
 
-            strategy = llm_payload.get("strategy")
-            if strategy in {"single", "majority"}:
-                cfg.llm.strategy = strategy
+            strategy_raw = llm_payload.get("strategy")
+            if isinstance(strategy_raw, str):
+                normalized = LLM_STRATEGY_ALIASES.get(strategy_raw, strategy_raw)
+                if normalized in ALLOWED_LLM_STRATEGIES:
+                    cfg.llm.strategy = normalized
 
             majority = llm_payload.get("majority_threshold")
             if isinstance(majority, int) and majority > 0:
                 cfg.llm.majority_threshold = majority
+
+        departments_payload = payload.get("departments")
+        if isinstance(departments_payload, dict):
+            new_departments: Dict[str, DepartmentSettings] = {}
+            for code, data in departments_payload.items():
+                if not isinstance(data, dict):
+                    continue
+                title = data.get("title") or code
+                description = data.get("description") or ""
+                weight = float(data.get("weight", 1.0))
+                llm_data = data.get("llm")
+                llm_cfg = LLMConfig()
+                if isinstance(llm_data, dict):
+                    if isinstance(llm_data.get("primary"), dict):
+                        llm_cfg.primary = _dict_to_endpoint(llm_data["primary"])
+                    llm_cfg.ensemble = [
+                        _dict_to_endpoint(item)
+                        for item in llm_data.get("ensemble", [])
+                        if isinstance(item, dict)
+                    ]
+                    strategy_raw = llm_data.get("strategy")
+                    if isinstance(strategy_raw, str):
+                        normalized = LLM_STRATEGY_ALIASES.get(strategy_raw, strategy_raw)
+                        if normalized in ALLOWED_LLM_STRATEGIES:
+                            llm_cfg.strategy = normalized
+                    majority_raw = llm_data.get("majority_threshold")
+                    if isinstance(majority_raw, int) and majority_raw > 0:
+                        llm_cfg.majority_threshold = majority_raw
+                new_departments[code] = DepartmentSettings(
+                    code=code,
+                    title=title,
+                    description=description,
+                    weight=weight,
+                    llm=llm_cfg,
+                )
+            if new_departments:
+                cfg.departments = new_departments
 
 
 def save_config(cfg: AppConfig | None = None) -> None:
@@ -214,10 +283,24 @@ def save_config(cfg: AppConfig | None = None) -> None:
         "force_refresh": cfg.force_refresh,
         "decision_method": cfg.decision_method,
         "llm": {
-            "strategy": cfg.llm.strategy,
+            "strategy": cfg.llm.strategy if cfg.llm.strategy in ALLOWED_LLM_STRATEGIES else "single",
             "majority_threshold": cfg.llm.majority_threshold,
             "primary": _endpoint_to_dict(cfg.llm.primary),
             "ensemble": [_endpoint_to_dict(ep) for ep in cfg.llm.ensemble],
+        },
+        "departments": {
+            code: {
+                "title": dept.title,
+                "description": dept.description,
+                "weight": dept.weight,
+                "llm": {
+                    "strategy": dept.llm.strategy if dept.llm.strategy in ALLOWED_LLM_STRATEGIES else "single",
+                    "majority_threshold": dept.llm.majority_threshold,
+                    "primary": _endpoint_to_dict(dept.llm.primary),
+                    "ensemble": [_endpoint_to_dict(ep) for ep in dept.llm.ensemble],
+                },
+            }
+            for code, dept in cfg.departments.items()
         },
     }
     try:

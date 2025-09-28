@@ -8,7 +8,13 @@ from typing import Dict, Iterable, List, Optional
 
 import requests
 
-from app.utils.config import DEFAULT_LLM_BASE_URLS, DEFAULT_LLM_MODELS, LLMEndpoint, get_config
+from app.utils.config import (
+    DEFAULT_LLM_BASE_URLS,
+    DEFAULT_LLM_MODELS,
+    LLMConfig,
+    LLMEndpoint,
+    get_config,
+)
 from app.utils.logging import get_logger
 
 LOGGER = get_logger(__name__)
@@ -140,15 +146,13 @@ def _normalize_response(text: str) -> str:
 
 
 def run_llm(prompt: str, *, system: Optional[str] = None) -> str:
-    """Execute the configured LLM strategy with the given prompt."""
+    """Execute the globally configured LLM strategy with the given prompt."""
 
     settings = get_config().llm
-    if settings.strategy == "majority":
-        return _run_majority_vote(settings, prompt, system)
-    return _call_endpoint(settings.primary, prompt, system)
+    return run_llm_with_config(settings, prompt, system=system)
 
 
-def _run_majority_vote(config, prompt: str, system: Optional[str]) -> str:
+def _run_majority_vote(config: LLMConfig, prompt: str, system: Optional[str]) -> str:
     endpoints: List[LLMEndpoint] = [config.primary] + list(config.ensemble)
     responses: List[Dict[str, str]] = []
     failures: List[str] = []
@@ -197,6 +201,72 @@ def _run_majority_vote(config, prompt: str, system: Optional[str]) -> str:
     if failures:
         LOGGER.warning("LLM 调用失败列表：%s", failures, extra=LOG_EXTRA)
     return responses[0]["raw"]
+
+
+def _run_leader_follow(config: LLMConfig, prompt: str, system: Optional[str]) -> str:
+    advisors: List[Dict[str, str]] = []
+    for endpoint in config.ensemble:
+        try:
+            raw = _call_endpoint(endpoint, prompt, system)
+            advisors.append(
+                {
+                    "provider": endpoint.provider,
+                    "model": endpoint.model or "",
+                    "raw": raw,
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "顾问模型调用失败：%s:%s -> %s",
+                endpoint.provider,
+                endpoint.model,
+                exc,
+                extra=LOG_EXTRA,
+            )
+
+    if not advisors:
+        LOGGER.info("领导者策略顾问为空，回退至主模型", extra=LOG_EXTRA)
+        return _call_endpoint(config.primary, prompt, system)
+
+    advisor_chunks = []
+    for idx, record in enumerate(advisors, start=1):
+        snippet = record["raw"].strip()
+        if len(snippet) > 1200:
+            snippet = snippet[:1200] + "..."
+        advisor_chunks.append(
+            f"顾问#{idx} ({record['provider']}:{record['model']}):\n{snippet}"
+        )
+    advisor_section = "\n\n".join(advisor_chunks)
+    leader_prompt = (
+        "【顾问模型意见】\n"
+        f"{advisor_section}\n\n"
+        "请在充分参考顾问模型观点的基础上，保持原始指令的输出格式进行最终回答。\n\n"
+        f"{prompt}"
+    )
+    LOGGER.info(
+        "领导者策略触发：顾问数量=%s",
+        len(advisors),
+        extra=LOG_EXTRA,
+    )
+    return _call_endpoint(config.primary, leader_prompt, system)
+
+
+def run_llm_with_config(
+    config: LLMConfig,
+    prompt: str,
+    *,
+    system: Optional[str] = None,
+) -> str:
+    """Execute an LLM request using the provided configuration block."""
+
+    strategy = (config.strategy or "single").lower()
+    if strategy == "leader-follower":
+        strategy = "leader"
+    if strategy == "majority":
+        return _run_majority_vote(config, prompt, system)
+    if strategy == "leader":
+        return _run_leader_follow(config, prompt, system)
+    return _call_endpoint(config.primary, prompt, system)
 
 
 def llm_config_snapshot() -> Dict[str, object]:
