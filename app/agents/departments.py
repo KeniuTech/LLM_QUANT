@@ -222,37 +222,126 @@ class DepartmentAgent:
         ts_code = context.ts_code
         trade_date = self._normalize_trade_date(context.trade_date)
 
-        latest_fields: List[str] = []
+        latest_groups: Dict[str, List[str]] = {}
         series_requests: List[Tuple[DataRequest, Tuple[str, str]]] = []
+        values_map, db_alias_map, series_map = _build_context_lookup(context)
 
         for req in requests:
             field = req.field.strip()
             if not field:
                 continue
-            resolved = self._broker.resolve_field(field)
-            if not resolved:
-                lines.append(f"- {field}: 字段不存在或不可用")
-                continue
-            if req.window <= 1:
-                if field not in latest_fields:
-                    latest_fields.append(field)
-                delivered.add((field, 1))
-                continue
-            series_requests.append((req, resolved))
-            delivered.add((field, req.window))
+            window = req.window
+            resolved: Optional[Tuple[str, str]] = None
+            if "." in field:
+                resolved = self._broker.resolve_field(field)
+            elif field in db_alias_map:
+                resolved = db_alias_map[field]
 
-        if latest_fields:
-            latest_values = self._broker.fetch_latest(ts_code, trade_date, latest_fields)
-            for field in latest_fields:
-                value = latest_values.get(field)
-                if value is None:
-                    lines.append(f"- {field}: (数据缺失)")
+            if resolved:
+                table, column = resolved
+                canonical = f"{table}.{column}"
+                if window <= 1:
+                    latest_groups.setdefault(canonical, []).append(field)
+                    delivered.add((field, 1))
+                    delivered.add((canonical, 1))
                 else:
-                    lines.append(f"- {field}: {value}")
-                payload.append({"field": field, "window": 1, "values": value})
+                    series_requests.append((req, resolved))
+                    delivered.add((field, window))
+                    delivered.add((canonical, window))
+                continue
 
-        for req, parsed in series_requests:
-            table, column = parsed
+            if field in values_map:
+                value = values_map[field]
+                if window <= 1:
+                    payload.append(
+                        {
+                            "field": field,
+                            "window": 1,
+                            "source": "context",
+                            "values": [
+                                {
+                                    "trade_date": context.trade_date,
+                                    "value": value,
+                                }
+                            ],
+                        }
+                    )
+                    lines.append(f"- {field}: {value} (来自上下文)")
+                else:
+                    series = series_map.get(field)
+                    if series:
+                        trimmed = series[: window]
+                        payload.append(
+                            {
+                                "field": field,
+                                "window": window,
+                                "source": "context_series",
+                                "values": [
+                                    {"trade_date": dt, "value": val}
+                                    for dt, val in trimmed
+                                ],
+                            }
+                        )
+                        preview = ", ".join(
+                            f"{dt}:{val:.4f}" for dt, val in trimmed[: min(len(trimmed), 5)]
+                        )
+                        lines.append(
+                            f"- {field} (window={window} 来自上下文序列): {preview}"
+                        )
+                    else:
+                        payload.append(
+                            {
+                                "field": field,
+                                "window": window,
+                                "source": "context",
+                                "values": [
+                                    {
+                                        "trade_date": context.trade_date,
+                                        "value": value,
+                                    }
+                                ],
+                                "warning": "仅提供当前值，缺少历史序列",
+                            }
+                        )
+                        lines.append(
+                            f"- {field} (window={window}): 仅有当前值 {value}, 无历史序列"
+                        )
+                delivered.add((field, window))
+                if field in db_alias_map:
+                    resolved = db_alias_map[field]
+                    canonical = f"{resolved[0]}.{resolved[1]}"
+                    delivered.add((canonical, window))
+                continue
+
+            lines.append(f"- {field}: 字段不存在或不可用")
+
+        if latest_groups:
+            latest_values = self._broker.fetch_latest(
+                ts_code, trade_date, list(latest_groups.keys())
+            )
+            for canonical, aliases in latest_groups.items():
+                value = latest_values.get(canonical)
+                if value is None:
+                    lines.append(f"- {canonical}: (数据缺失)")
+                else:
+                    lines.append(f"- {canonical}: {value}")
+                for alias in aliases:
+                    payload.append(
+                        {
+                            "field": alias,
+                            "window": 1,
+                            "source": "database",
+                            "values": [
+                                {
+                                    "trade_date": trade_date,
+                                    "value": value,
+                                }
+                            ],
+                        }
+                    )
+
+        for req, resolved in series_requests:
+            table, column = resolved
             series = self._broker.fetch_series(
                 table,
                 column,
@@ -276,6 +365,7 @@ class DepartmentAgent:
                 {
                     "field": req.field,
                     "window": req.window,
+                    "source": "database",
                     "values": [
                         {"trade_date": dt, "value": val}
                         for dt, val in series
@@ -544,6 +634,40 @@ def _extract_message_content(message: Mapping[str, Any]) -> str:
     if isinstance(content, str):
         return content
     return json.dumps(message, ensure_ascii=False)
+
+
+def _build_context_lookup(
+    context: DepartmentContext,
+) -> Tuple[Dict[str, Any], Dict[str, Tuple[str, str]], Dict[str, List[Tuple[str, float]]]]:
+    values: Dict[str, Any] = {}
+    db_alias: Dict[str, Tuple[str, str]] = {}
+    series_map: Dict[str, List[Tuple[str, float]]] = {}
+
+    for source in (context.features or {}, context.market_snapshot or {}):
+        for key, value in source.items():
+            values[str(key)] = value
+
+    scope_values = context.raw.get("scope_values") or {}
+    for key, value in scope_values.items():
+        key_str = str(key)
+        values[key_str] = value
+        if "." in key_str:
+            table, column = key_str.split(".", 1)
+            db_alias.setdefault(column, (table, column))
+            db_alias.setdefault(key_str, (table, column))
+            values.setdefault(column, value)
+
+    close_series = context.raw.get("close_series") or []
+    if isinstance(close_series, list) and close_series:
+        series_map["close"] = close_series
+        series_map["daily.close"] = close_series
+
+    turnover_series = context.raw.get("turnover_series") or []
+    if isinstance(turnover_series, list) and turnover_series:
+        series_map["turnover_rate"] = turnover_series
+        series_map["daily_basic.turnover_rate"] = turnover_series
+
+    return values, db_alias, series_map
 
 
 class DepartmentManager:

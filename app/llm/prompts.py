@@ -62,13 +62,8 @@ def department_prompt(
   "risks": ["风险点", "..."]
 }}
 
-如需额外数据，请在同一 JSON 中添加可选字段 `"data_requests"`，其取值为数组，例如：
-"data_requests": [
-  {{"field": "daily.close", "window": 5}},
-  {{"field": "daily_basic.pe"}}
-]
-其中 `field` 必须属于【可用数据范围】或明确说明新增需求；`window` 表示希望返回的最近数据点数量，省略时默认为 1。
-如果不需要更多数据，请不要返回 `data_requests`。
+如需额外数据，请调用可用工具 `fetch_data` 并在参数中提供 `requests` 数组（元素包含 `field` 以及可选的 `window`）；`field` 必须符合【可用数据范围】，`window` 默认为 1。
+工具返回的数据会在后续消息中提供，请在获取所有必要信息后再给出最终 JSON 答复。
 
 请严格返回单个 JSON 对象，不要添加额外文本。
 """

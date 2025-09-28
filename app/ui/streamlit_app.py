@@ -213,6 +213,7 @@ def render_today_plan() -> None:
 
     global_info = None
     dept_records: List[Dict[str, object]] = []
+    dept_details: Dict[str, Dict[str, object]] = {}
     agent_records: List[Dict[str, object]] = []
 
     for item in rows:
@@ -231,6 +232,11 @@ def render_today_plan() -> None:
                 "target_weight": float(utils.get("_target_weight", 0.0)),
                 "department_votes": utils.get("_department_votes", {}),
                 "requires_review": bool(utils.get("_requires_review", False)),
+                "scope_values": utils.get("_scope_values", {}),
+                "close_series": utils.get("_close_series", []),
+                "turnover_series": utils.get("_turnover_series", []),
+                "department_supplements": utils.get("_department_supplements", {}),
+                "department_dialogue": utils.get("_department_dialogue", {}),
             }
             continue
 
@@ -238,6 +244,8 @@ def render_today_plan() -> None:
             code = agent_name.split("dept_", 1)[-1]
             signals = utils.get("_signals", [])
             risks = utils.get("_risks", [])
+            supplements = utils.get("_supplements", [])
+            dialogue = utils.get("_dialogue", [])
             dept_records.append(
                 {
                     "部门": code,
@@ -247,8 +255,16 @@ def render_today_plan() -> None:
                     "摘要": utils.get("_summary", ""),
                     "核心信号": "；".join(signals) if isinstance(signals, list) else signals,
                     "风险提示": "；".join(risks) if isinstance(risks, list) else risks,
+                    "补充次数": len(supplements) if isinstance(supplements, list) else 0,
                 }
             )
+            dept_details[code] = {
+                "supplements": supplements if isinstance(supplements, list) else [],
+                "dialogue": dialogue if isinstance(dialogue, list) else [],
+                "summary": utils.get("_summary", ""),
+                "signals": signals,
+                "risks": risks,
+            }
         else:
             score_map = {
                 key: float(val)
@@ -281,6 +297,26 @@ def render_today_plan() -> None:
             st.json(global_info["department_votes"])
         if global_info["requires_review"]:
             st.warning("部门分歧较大，已标记为需人工复核。")
+        with st.expander("基础上下文数据", expanded=False):
+            if global_info.get("scope_values"):
+                st.write("最新字段：")
+                st.json(global_info["scope_values"])
+            if global_info.get("close_series"):
+                st.write("收盘价时间序列 (最近窗口)：")
+                st.json(global_info["close_series"])
+            if global_info.get("turnover_series"):
+                st.write("换手率时间序列 (最近窗口)：")
+                st.json(global_info["turnover_series"])
+        dept_sup = global_info.get("department_supplements") or {}
+        dept_dialogue = global_info.get("department_dialogue") or {}
+        if dept_sup or dept_dialogue:
+            with st.expander("部门补数与对话记录", expanded=False):
+                if dept_sup:
+                    st.write("补充数据：")
+                    st.json(dept_sup)
+                if dept_dialogue:
+                    st.write("对话片段：")
+                    st.json(dept_dialogue)
     else:
         st.info("暂未写入全局策略摘要。")
 
@@ -288,6 +324,21 @@ def render_today_plan() -> None:
     if dept_records:
         dept_df = pd.DataFrame(dept_records)
         st.dataframe(dept_df, use_container_width=True, hide_index=True)
+        for code, details in dept_details.items():
+            with st.expander(f"{code} 补充详情", expanded=False):
+                supplements = details.get("supplements", [])
+                dialogue = details.get("dialogue", [])
+                if supplements:
+                    st.write("补充数据：")
+                    st.json(supplements)
+                else:
+                    st.caption("无补充数据请求。")
+                if dialogue:
+                    st.write("对话记录：")
+                    for idx, line in enumerate(dialogue, start=1):
+                        st.markdown(f"**回合 {idx}:** {line}")
+                else:
+                    st.caption("无额外对话。")
     else:
         st.info("暂无部门记录。")
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import ClassVar, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from .db import db_session
 from .logging import get_logger
@@ -42,7 +42,7 @@ def parse_field_path(path: str) -> Tuple[str, str] | None:
 class DataBroker:
     """Lightweight data access helper for agent/LLM consumption."""
 
-    FIELD_ALIASES: Dict[str, Dict[str, str]] = {
+    FIELD_ALIASES: ClassVar[Dict[str, Dict[str, str]]] = {
         "daily": {
             "volume": "vol",
             "vol": "vol",
@@ -57,13 +57,14 @@ class DataBroker:
             "pb": "pb",
             "ps": "ps",
             "ps_ttm": "ps_ttm",
+            "dividend_yield": "dv_ratio",
         },
         "stk_limit": {
             "up": "up_limit",
             "down": "down_limit",
         },
     }
-    MAX_WINDOW: int = 120
+    MAX_WINDOW: ClassVar[int] = 120
 
     def fetch_latest(
         self,

@@ -120,7 +120,12 @@ def get_logger(name: Optional[str] = None) -> logging.Logger:
     """返回指定名称的 logger，确保全局配置已就绪。"""
 
     setup_logging()
-    return logging.getLogger(name)
+    logger = logging.getLogger(name)
+    # Quiet noisy third-party loggers when default level is DEBUG
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
+    logging.getLogger("requests.packages.urllib3").setLevel(logging.WARNING)
+    return logger
 
 
 # 默认在模块导入时完成配置，适配现有调用方式。
