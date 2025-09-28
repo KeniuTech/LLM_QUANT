@@ -3,12 +3,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Mapping
+from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from app.agents.base import AgentAction
 from app.llm.client import run_llm_with_config
 from app.llm.prompts import department_prompt
-from app.utils.config import DepartmentSettings
+from app.utils.config import AppConfig, DepartmentSettings, LLMConfig
 from app.utils.logging import get_logger
 
 LOGGER = get_logger(__name__)
@@ -53,16 +53,27 @@ class DepartmentDecision:
 class DepartmentAgent:
     """Wraps LLM ensemble logic for a single analytical department."""
 
-    def __init__(self, settings: DepartmentSettings) -> None:
+    def __init__(
+        self,
+        settings: DepartmentSettings,
+        resolver: Optional[Callable[[DepartmentSettings], LLMConfig]] = None,
+    ) -> None:
         self.settings = settings
+        self._resolver = resolver
+
+    def _get_llm_config(self) -> LLMConfig:
+        if self._resolver:
+            return self._resolver(self.settings)
+        return self.settings.llm
 
     def analyze(self, context: DepartmentContext) -> DepartmentDecision:
         prompt = department_prompt(self.settings, context)
         system_prompt = (
             "你是一个多智能体量化投研系统中的分部决策者，需要根据提供的结构化信息给出买卖意见。"
         )
+        llm_cfg = self._get_llm_config()
         try:
-            response = run_llm_with_config(self.settings.llm, prompt, system=system_prompt)
+            response = run_llm_with_config(llm_cfg, prompt, system=system_prompt)
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("部门 %s 调用 LLM 失败：%s", self.settings.code, exc, extra=LOG_EXTRA)
             return DepartmentDecision(
@@ -106,10 +117,11 @@ class DepartmentAgent:
 class DepartmentManager:
     """Orchestrates all departments defined in configuration."""
 
-    def __init__(self, departments: Mapping[str, DepartmentSettings]) -> None:
+    def __init__(self, config: AppConfig) -> None:
+        self.config = config
         self.agents: Dict[str, DepartmentAgent] = {
-            code: DepartmentAgent(settings)
-            for code, settings in departments.items()
+            code: DepartmentAgent(settings, self._resolve_llm)
+            for code, settings in config.departments.items()
         }
 
     def evaluate(self, context: DepartmentContext) -> Dict[str, DepartmentDecision]:
@@ -117,6 +129,11 @@ class DepartmentManager:
         for code, agent in self.agents.items():
             results[code] = agent.analyze(context)
         return results
+
+    def _resolve_llm(self, settings: DepartmentSettings) -> LLMConfig:
+        if settings.llm_route and settings.llm_route in self.config.llm_routes:
+            return self.config.llm_routes[settings.llm_route].resolve(self.config.llm_profiles)
+        return settings.llm
 
 
 def _parse_department_response(text: str) -> Dict[str, Any]:

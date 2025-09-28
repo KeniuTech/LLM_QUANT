@@ -272,7 +272,8 @@ def run_llm_with_config(
 def llm_config_snapshot() -> Dict[str, object]:
     """Return a sanitized snapshot of current LLM configuration for debugging."""
 
-    settings = get_config().llm
+    cfg = get_config()
+    settings = cfg.llm
     primary = asdict(settings.primary)
     if primary.get("api_key"):
         primary["api_key"] = "***"
@@ -282,7 +283,11 @@ def llm_config_snapshot() -> Dict[str, object]:
         if record.get("api_key"):
             record["api_key"] = "***"
         ensemble.append(record)
+    route_name = cfg.llm_route
+    route_obj = cfg.llm_routes.get(route_name)
     return {
+        "route": route_name,
+        "route_detail": route_obj.to_dict() if route_obj else None,
         "strategy": settings.strategy,
         "majority_threshold": settings.majority_threshold,
         "primary": primary,

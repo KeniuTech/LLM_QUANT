@@ -55,7 +55,7 @@ class BacktestEngine:
         else:
             self.weights = {agent.name: 1.0 for agent in self.agents}
         self.department_manager = (
-            DepartmentManager(app_cfg.departments) if app_cfg.departments else None
+            DepartmentManager(app_cfg) if app_cfg.departments else None
         )
 
     def load_market_data(self, trade_date: date) -> Mapping[str, Dict[str, float]]:

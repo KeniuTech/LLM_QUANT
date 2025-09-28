@@ -24,6 +24,7 @@
 - **统一日志与持久化**：SQLite 统一存储行情、回测与日志，配合 `DatabaseLogHandler` 在 UI/抓数流程中输出结构化运行轨迹，支持快速追踪与复盘。
 - **跨市场数据扩展**：`app/ingest/tushare.py` 追加指数、ETF/公募基金、期货、外汇、港股与美股的增量拉取逻辑，确保多资产因子与宏观代理所需的行情基础数据齐备。
 - **部门化多模型协作**：`app/agents/departments.py` 封装部门级 LLM 调度，`app/llm/client.py` 支持 single/majority/leader 策略，部门结论在 `app/agents/game.py` 与六类基础代理共同博弈，并持久化至 `agent_utils` 供 UI 展示。
+- **LLM Profile/Route 管理**：`app/utils/config.py` 引入可复用的 Profile（终端定义）与 Route（推理策略组合），Streamlit UI 支持可视化维护，全局与部门均可复用命名路由提升配置一致性。
 
 ## LLM + 多智能体最佳实践
 
@@ -59,13 +60,11 @@ export TUSHARE_TOKEN="<your-token>"
 
 ### LLM 配置与测试
 
-- 支持本地 Ollama 与多家 OpenAI 兼容云端供应商（如 DeepSeek、文心一言、OpenAI 等），可在 “数据与设置” 页签切换 Provider 并自动加载该 Provider 的候选模型、推荐 Base URL、默认温度与超时时间，亦可切换为自定义值。所有修改会持久化到 `app/data/config.json`，下次启动自动加载。
-- 修改 Provider/模型/Base URL/API Key 后点击 “保存 LLM 设置”，更新内容仅在当前会话生效。
-- 在 “自检测试” 页新增 “LLM 接口测试”，可输入 Prompt 快速验证调用结果，日志会记录限频与错误信息便于排查。
-- 未来可对同一功能的智能体并行调用多个 LLM，采用多数投票等策略增强鲁棒性，当前代码结构已为此预留扩展空间。
-- 若使用环境变量自动注入配置，可设置：
-  - `TUSHARE_TOKEN`
-  - `LLM_API_KEY`
+- 新增 Profile/Route 双层配置：Profile 定义单个端点（含 Provider/模型/域名/API Key），Route 组合 Profile 并指定推理策略（single/majority/leader）。全局路由可一键切换，部门可复用命名路由或保留自定义设置。
+- Streamlit “数据与设置” 页通过表单管理 Profile、Route、全局路由，保存即写入 `app/data/config.json`；Route 预览会同步展示经 `llm_config_snapshot()` 脱敏后的实时配置。
+- 支持本地 Ollama 与多家 OpenAI 兼容供应商（DeepSeek、文心一言、OpenAI 等），可为不同 Profile 设置默认模型、温度、超时与启用状态。
+- UI 保留 TuShare Token 维护，以及路由/Profile 新增、删除、禁用等操作；所有更新即时生效并记入日志。
+- 使用环境变量注入敏感信息时，可配置：`TUSHARE_TOKEN`、`LLM_API_KEY`，加载后会同步至当前路由的主 Profile。
 
 ## 快速开始
 
@@ -105,7 +104,7 @@ Streamlit `自检测试` 页签提供：
 ## 实施步骤
 
 1. **配置扩展** (`app/utils/config.py` + `config.json`) ✅
-   - 部门支持 primary/ensemble、策略（single/majority/leader）、权重，并可在 Streamlit 中编辑主要字段。
+   - 引入 `llm_profiles`/`llm_routes` 统一管理终端与策略，部门可复用路由或使用自定义配置；Streamlit 提供可视化维护表单。
 
 2. **部门管控器** ✅
    - `app/agents/departments.py` 提供 `DepartmentAgent`/`DepartmentManager`，封装 Prompt 构建、多模型协商及异常回退。

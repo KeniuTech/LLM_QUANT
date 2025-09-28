@@ -29,7 +29,8 @@ from app.utils.config import (
     DEFAULT_LLM_MODEL_OPTIONS,
     DEFAULT_LLM_MODELS,
     DepartmentSettings,
-    LLMEndpoint,
+    LLMProfile,
+    LLMRoute,
     get_config,
     save_config,
 )
@@ -349,208 +350,253 @@ def render_settings() -> None:
 
     st.divider()
     st.subheader("LLM 设置")
-    llm_cfg = cfg.llm
-    primary = llm_cfg.primary
-    providers = sorted(DEFAULT_LLM_MODELS.keys())
-    try:
-        provider_index = providers.index((primary.provider or "ollama").lower())
-    except ValueError:
-        provider_index = 0
-    selected_provider = st.selectbox("LLM Provider", providers, index=provider_index)
-    provider_info = DEFAULT_LLM_MODEL_OPTIONS.get(selected_provider, {})
-    model_options = provider_info.get("models", [])
-    custom_model_label = "自定义模型"
-    default_model_hint = DEFAULT_LLM_MODELS.get(selected_provider, DEFAULT_LLM_MODELS["ollama"])
+    profiles = cfg.llm_profiles or {}
+    routes = cfg.llm_routes or {}
+    profile_keys = sorted(profiles.keys())
+    route_keys = sorted(routes.keys())
+    used_routes = {
+        dept.llm_route for dept in cfg.departments.values() if dept.llm_route
+    }
+    st.caption("Profile 定义单个模型终端，Route 负责组合 Profile 与推理策略。")
 
-    if model_options:
-        options_with_custom = model_options + [custom_model_label]
-        if primary.provider == selected_provider and primary.model in model_options:
-            model_index = options_with_custom.index(primary.model)
-        else:
-            model_index = 0
-        selected_model_option = st.selectbox(
-            "LLM 模型",
-            options_with_custom,
-            index=model_index,
-            help=f"可选模型：{', '.join(model_options)}",
+    route_select_col, route_manage_col = st.columns([3, 1])
+    if route_keys:
+        try:
+            active_index = route_keys.index(cfg.llm_route)
+        except ValueError:
+            active_index = 0
+        selected_route = route_select_col.selectbox(
+            "全局路由",
+            route_keys,
+            index=active_index,
+            key="llm_route_select",
         )
-        if selected_model_option == custom_model_label:
-            custom_model_value = st.text_input(
-                "自定义模型名称",
-                value="" if primary.provider != selected_provider or primary.model in model_options else primary.model,
-            )
-            chosen_model = custom_model_value.strip() or default_model_hint
+    else:
+        selected_route = None
+        route_select_col.info("尚未配置路由，请先创建。")
+
+    new_route_name = route_manage_col.text_input("新增路由", key="new_route_name")
+    if route_manage_col.button("添加路由"):
+        key = (new_route_name or "").strip()
+        if not key:
+            st.warning("请输入有效的路由名称。")
+        elif key in routes:
+            st.warning(f"路由 {key} 已存在。")
         else:
-            chosen_model = selected_model_option
-    else:
-        chosen_model = st.text_input(
-            "LLM 模型",
-            value=primary.model or default_model_hint,
-            help="未预设该 Provider 的模型列表，请手动填写",
-        ).strip() or default_model_hint
-    default_base_hint = DEFAULT_LLM_BASE_URLS.get(selected_provider, "")
-    provider_default_temp = float(provider_info.get("temperature", 0.2))
-    provider_default_timeout = int(provider_info.get("timeout", 30.0))
+            routes[key] = LLMRoute(name=key)
+            if not selected_route:
+                selected_route = key
+                cfg.llm_route = key
+            save_config()
+            st.success(f"已添加路由 {key}，请继续配置。")
+            st.experimental_rerun()
 
-    if primary.provider == selected_provider:
-        base_value = primary.base_url or default_base_hint or ""
-        temp_value = float(primary.temperature)
-        timeout_value = int(primary.timeout)
-    else:
-        base_value = default_base_hint or ""
-        temp_value = provider_default_temp
-        timeout_value = provider_default_timeout
-
-    llm_base = st.text_input(
-        "LLM Base URL",
-        value=base_value,
-        help=f"默认推荐：{default_base_hint or '按供应商要求填写'}",
-    )
-    llm_api_key = st.text_input(
-        "LLM API Key",
-        value=primary.api_key or "",
-        type="password",
-        help="点击右侧小图标可查看当前 Key，该值会写入 config.json（已被 gitignore 排除）",
-    )
-    llm_temperature = st.slider(
-        "LLM 温度",
-        min_value=0.0,
-        max_value=2.0,
-        value=temp_value,
-        step=0.05,
-    )
-    llm_timeout = st.number_input(
-        "请求超时时间 (秒)",
-        min_value=5,
-        max_value=120,
-        value=timeout_value,
-        step=5,
-    )
-
-    strategy_options = ["single", "majority", "leader"]
-    try:
-        strategy_index = strategy_options.index(llm_cfg.strategy)
-    except ValueError:
-        strategy_index = 0
-    selected_strategy = st.selectbox("LLM 推理策略", strategy_options, index=strategy_index)
-    majority_threshold = st.number_input(
-        "多数投票门槛",
-        min_value=1,
-        max_value=10,
-        value=int(llm_cfg.majority_threshold),
-        step=1,
-        format="%d",
-    )
-
-    existing_api_keys = {ep.provider: ep.api_key or None for ep in llm_cfg.ensemble}
-
-    available_providers = sorted(DEFAULT_LLM_MODEL_OPTIONS.keys())
-    ensemble_rows = [
-        {
-            "provider": ep.provider or "",
-            "model": ep.model or DEFAULT_LLM_MODELS.get(ep.provider, DEFAULT_LLM_MODELS["ollama"]),
-            "base_url": ep.base_url or DEFAULT_LLM_BASE_URLS.get(ep.provider, ""),
-            "api_key": "***" if ep.api_key else "",
-            "temperature": float(ep.temperature),
-            "timeout": float(ep.timeout),
-        }
-        for ep in llm_cfg.ensemble
-    ] or [
-        {
-            "provider": "",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "temperature": provider_default_temp,
-            "timeout": provider_default_timeout,
-        }
-    ]
-
-    edited = st.data_editor(
-        ensemble_rows,
-        num_rows="dynamic",
-        key="llm_ensemble_editor",
-        column_config={
-            "provider": st.column_config.SelectboxColumn(
-                "Provider",
-                options=available_providers,
-                help="选择 LLM 供应商"
-            ),
-            "model": st.column_config.TextColumn("模型", help="留空时使用该 Provider 的默认模型"),
-            "base_url": st.column_config.TextColumn("Base URL", help="留空时使用默认地址"),
-            "api_key": st.column_config.TextColumn("API Key", help="留空表示使用环境变量或不配置"),
-            "temperature": st.column_config.NumberColumn("温度", min_value=0.0, max_value=2.0, step=0.05),
-            "timeout": st.column_config.NumberColumn("超时(秒)", min_value=5.0, max_value=120.0, step=5.0),
-        },
-        hide_index=True,
-        use_container_width=True,
-    )
-    if hasattr(edited, "to_dict"):
-        ensemble_rows = edited.to_dict("records")
-    else:
-        ensemble_rows = edited
-
-    if st.button("保存 LLM 设置"):
-        primary.provider = selected_provider
-        primary.model = chosen_model
-        primary.base_url = llm_base.strip() or DEFAULT_LLM_BASE_URLS.get(selected_provider)
-        primary.temperature = llm_temperature
-        primary.timeout = llm_timeout
-        api_key_value = llm_api_key.strip()
-        if api_key_value:
-            primary.api_key = api_key_value
-
-        new_ensemble: List[LLMEndpoint] = []
-        for row in ensemble_rows:
-            provider = (row.get("provider") or "").strip().lower()
-            if not provider:
-                continue
-            provider_defaults = DEFAULT_LLM_MODEL_OPTIONS.get(provider, {})
-            default_model = DEFAULT_LLM_MODELS.get(provider, DEFAULT_LLM_MODELS["ollama"])
-            default_base = DEFAULT_LLM_BASE_URLS.get(provider)
-            temp_default = float(provider_defaults.get("temperature", 0.2))
-            timeout_default = float(provider_defaults.get("timeout", 30.0))
-
-            model_val = (row.get("model") or "").strip() or default_model
-            base_val = (row.get("base_url") or "").strip() or default_base
-            api_raw = (row.get("api_key") or "").strip()
-            if api_raw == "***":
-                api_value = existing_api_keys.get(provider)
-            else:
-                api_value = api_raw or None
-
-            temp_val = row.get("temperature")
-            timeout_val = row.get("timeout")
-            endpoint = LLMEndpoint(
-                provider=provider,
-                model=model_val,
-                base_url=base_val,
-                api_key=api_value,
-                temperature=float(temp_val) if temp_val is not None else temp_default,
-                timeout=float(timeout_val) if timeout_val is not None else timeout_default,
+    if selected_route:
+        route_obj = routes.get(selected_route)
+        if route_obj is None:
+            route_obj = LLMRoute(name=selected_route)
+            routes[selected_route] = route_obj
+        strategy_choices = sorted(ALLOWED_LLM_STRATEGIES)
+        try:
+            strategy_index = strategy_choices.index(route_obj.strategy)
+        except ValueError:
+            strategy_index = 0
+        route_title = st.text_input(
+            "路由说明",
+            value=route_obj.title or "",
+            key=f"route_title_{selected_route}",
+        )
+        route_strategy = st.selectbox(
+            "推理策略",
+            strategy_choices,
+            index=strategy_index,
+            key=f"route_strategy_{selected_route}",
+        )
+        route_majority = st.number_input(
+            "多数投票门槛",
+            min_value=1,
+            max_value=10,
+            value=int(route_obj.majority_threshold or 1),
+            step=1,
+            key=f"route_majority_{selected_route}",
+        )
+        if not profile_keys:
+            st.warning("暂无可用 Profile，请先在下方创建。")
+        else:
+            try:
+                primary_index = profile_keys.index(route_obj.primary)
+            except ValueError:
+                primary_index = 0
+            primary_key = st.selectbox(
+                "主用 Profile",
+                profile_keys,
+                index=primary_index,
+                key=f"route_primary_{selected_route}",
             )
-            new_ensemble.append(endpoint)
+            default_ensemble = [
+                key for key in route_obj.ensemble if key in profile_keys and key != primary_key
+            ]
+            ensemble_keys = st.multiselect(
+                "协作 Profile (可多选)",
+                profile_keys,
+                default=default_ensemble,
+                key=f"route_ensemble_{selected_route}",
+            )
+            if st.button("保存路由设置", key=f"save_route_{selected_route}"):
+                route_obj.title = route_title.strip()
+                route_obj.strategy = route_strategy
+                route_obj.majority_threshold = int(route_majority)
+                route_obj.primary = primary_key
+                route_obj.ensemble = [key for key in ensemble_keys if key != primary_key]
+                cfg.llm_route = selected_route
+                cfg.sync_runtime_llm()
+                save_config()
+                LOGGER.info(
+                    "路由 %s 配置更新：%s",
+                    selected_route,
+                    route_obj.to_dict(),
+                    extra=LOG_EXTRA,
+                )
+                st.success("路由配置已保存。")
+                st.json({
+                    "route": selected_route,
+                    "route_detail": route_obj.to_dict(),
+                    "resolved": llm_config_snapshot(),
+                })
+        route_in_use = selected_route in used_routes or selected_route == cfg.llm_route
+        if st.button(
+            "删除当前路由",
+            key=f"delete_route_{selected_route}",
+            disabled=route_in_use or len(routes) <= 1,
+        ):
+            routes.pop(selected_route, None)
+            if cfg.llm_route == selected_route:
+                cfg.llm_route = next((key for key in routes.keys()), "global")
+            cfg.sync_runtime_llm()
+            save_config()
+            st.success("路由已删除。")
+            st.experimental_rerun()
 
-        llm_cfg.ensemble = new_ensemble
-        llm_cfg.strategy = selected_strategy
-        llm_cfg.majority_threshold = int(majority_threshold)
-        save_config()
-        LOGGER.info("LLM 配置已更新：%s", llm_config_snapshot(), extra=LOG_EXTRA)
-        st.success("LLM 设置已保存，仅在当前会话生效。")
-        st.json(llm_config_snapshot())
+    st.divider()
+    st.subheader("LLM Profile 管理")
+    profile_select_col, profile_manage_col = st.columns([3, 1])
+    if profile_keys:
+        selected_profile = profile_select_col.selectbox(
+            "选择 Profile",
+            profile_keys,
+            index=0,
+            key="profile_select",
+        )
+    else:
+        selected_profile = None
+        profile_select_col.info("尚未配置 Profile，请先创建。")
+
+    new_profile_name = profile_manage_col.text_input("新增 Profile", key="new_profile_name")
+    if profile_manage_col.button("创建 Profile"):
+        key = (new_profile_name or "").strip()
+        if not key:
+            st.warning("请输入有效的 Profile 名称。")
+        elif key in profiles:
+            st.warning(f"Profile {key} 已存在。")
+        else:
+            profiles[key] = LLMProfile(key=key)
+            save_config()
+            st.success(f"已创建 Profile {key}。")
+            st.experimental_rerun()
+
+    if selected_profile:
+        profile = profiles[selected_profile]
+        provider_choices = sorted(DEFAULT_LLM_MODEL_OPTIONS.keys())
+        try:
+            provider_index = provider_choices.index(profile.provider)
+        except ValueError:
+            provider_index = 0
+        with st.form(f"profile_form_{selected_profile}"):
+            provider_val = st.selectbox(
+                "Provider",
+                provider_choices,
+                index=provider_index,
+            )
+            model_default = DEFAULT_LLM_MODELS.get(provider_val, profile.model or "")
+            model_val = st.text_input(
+                "模型",
+                value=profile.model or model_default,
+            )
+            base_default = DEFAULT_LLM_BASE_URLS.get(provider_val, profile.base_url or "")
+            base_val = st.text_input(
+                "Base URL",
+                value=profile.base_url or base_default,
+            )
+            api_val = st.text_input(
+                "API Key",
+                value=profile.api_key or "",
+                type="password",
+            )
+            temp_val = st.slider(
+                "温度",
+                min_value=0.0,
+                max_value=2.0,
+                value=float(profile.temperature),
+                step=0.05,
+            )
+            timeout_val = st.number_input(
+                "超时(秒)",
+                min_value=5,
+                max_value=180,
+                value=int(profile.timeout or 30),
+                step=5,
+            )
+            title_val = st.text_input("备注", value=profile.title or "")
+            enabled_val = st.checkbox("启用", value=profile.enabled)
+            submitted = st.form_submit_button("保存 Profile")
+        if submitted:
+            profile.provider = provider_val
+            profile.model = model_val.strip() or DEFAULT_LLM_MODELS.get(provider_val)
+            profile.base_url = base_val.strip() or DEFAULT_LLM_BASE_URLS.get(provider_val)
+            profile.api_key = api_val.strip() or None
+            profile.temperature = temp_val
+            profile.timeout = timeout_val
+            profile.title = title_val.strip()
+            profile.enabled = enabled_val
+            profiles[selected_profile] = profile
+            cfg.sync_runtime_llm()
+            save_config()
+            st.success("Profile 已保存。")
+
+        profile_in_use = any(
+            selected_profile == route.primary or selected_profile in route.ensemble
+            for route in routes.values()
+        )
+        if st.button(
+            "删除该 Profile",
+            key=f"delete_profile_{selected_profile}",
+            disabled=profile_in_use or len(profiles) <= 1,
+        ):
+            profiles.pop(selected_profile, None)
+            fallback_key = next((key for key in profiles.keys()), None)
+            for route in routes.values():
+                if route.primary == selected_profile:
+                    route.primary = fallback_key or route.primary
+                route.ensemble = [key for key in route.ensemble if key != selected_profile]
+            cfg.sync_runtime_llm()
+            save_config()
+            st.success("Profile 已删除。")
+            st.experimental_rerun()
 
     st.divider()
     st.subheader("部门配置")
 
     dept_settings = cfg.departments or {}
+    route_options_display = [""] + route_keys
     dept_rows = [
         {
             "code": code,
             "title": dept.title,
             "description": dept.description,
             "weight": float(dept.weight),
+            "llm_route": dept.llm_route or "",
             "strategy": dept.llm.strategy,
-            "primary_provider": (dept.llm.primary.provider or "ollama"),
+            "primary_provider": (dept.llm.primary.provider or ""),
             "primary_model": dept.llm.primary.model or "",
             "ensemble_size": len(dept.llm.ensemble),
         }
@@ -572,20 +618,25 @@ def render_settings() -> None:
             "title": st.column_config.TextColumn("名称"),
             "description": st.column_config.TextColumn("说明"),
             "weight": st.column_config.NumberColumn("权重", min_value=0.0, max_value=10.0, step=0.1),
+            "llm_route": st.column_config.SelectboxColumn(
+                "路由",
+                options=route_options_display,
+                help="选择预定义路由；留空表示使用自定义配置",
+            ),
             "strategy": st.column_config.SelectboxColumn(
-                "策略",
+                "自定义策略",
                 options=sorted(ALLOWED_LLM_STRATEGIES),
-                help="single=单模型, majority=多数投票, leader=顾问-决策者模式",
+                help="仅当未选择路由时生效",
             ),
             "primary_provider": st.column_config.SelectboxColumn(
-                "主模型 Provider",
+                "自定义 Provider",
                 options=sorted(DEFAULT_LLM_MODEL_OPTIONS.keys()),
             ),
-            "primary_model": st.column_config.TextColumn("主模型名称"),
+            "primary_model": st.column_config.TextColumn("自定义模型"),
             "ensemble_size": st.column_config.NumberColumn(
                 "协作模型数量",
                 disabled=True,
-                help="在 config.json 中编辑 ensemble 详情",
+                help="路由模式下自动维护",
             ),
         },
     )
@@ -609,31 +660,32 @@ def render_settings() -> None:
             try:
                 existing.weight = max(0.0, float(row.get("weight", existing.weight)))
             except (TypeError, ValueError):
-                existing.weight = existing.weight
+                pass
 
-            strategy_val = (row.get("strategy") or existing.llm.strategy).lower()
-            if strategy_val in ALLOWED_LLM_STRATEGIES:
-                existing.llm.strategy = strategy_val
-
-            provider_before = existing.llm.primary.provider or ""
-            provider_val = (row.get("primary_provider") or provider_before or "ollama").lower()
-            existing.llm.primary.provider = provider_val
-
-            model_val = (row.get("primary_model") or "").strip()
-            if model_val:
-                existing.llm.primary.model = model_val
+            route_name = (row.get("llm_route") or "").strip() or None
+            existing.llm_route = route_name
+            if route_name and route_name in routes:
+                existing.llm = routes[route_name].resolve(profiles)
             else:
-                existing.llm.primary.model = DEFAULT_LLM_MODELS.get(provider_val, existing.llm.primary.model)
-
-            if provider_before != provider_val:
-                default_base = DEFAULT_LLM_BASE_URLS.get(provider_val)
-                existing.llm.primary.base_url = default_base or existing.llm.primary.base_url
-
-            existing.llm.primary.__post_init__()
+                strategy_val = (row.get("strategy") or existing.llm.strategy).lower()
+                if strategy_val in ALLOWED_LLM_STRATEGIES:
+                    existing.llm.strategy = strategy_val
+                provider_before = existing.llm.primary.provider or ""
+                provider_val = (row.get("primary_provider") or provider_before or "ollama").lower()
+                existing.llm.primary.provider = provider_val
+                model_val = (row.get("primary_model") or "").strip()
+                existing.llm.primary.model = (
+                    model_val or DEFAULT_LLM_MODELS.get(provider_val, existing.llm.primary.model)
+                )
+                if provider_before != provider_val:
+                    default_base = DEFAULT_LLM_BASE_URLS.get(provider_val)
+                    existing.llm.primary.base_url = default_base or existing.llm.primary.base_url
+                existing.llm.primary.__post_init__()
             updated_departments[code] = existing
 
         if updated_departments:
             cfg.departments = updated_departments
+            cfg.sync_runtime_llm()
             save_config()
             st.success("部门配置已更新。")
         else:
@@ -643,10 +695,12 @@ def render_settings() -> None:
         from app.utils.config import _default_departments
 
         cfg.departments = _default_departments()
+        cfg.sync_runtime_llm()
         save_config()
         st.success("已恢复默认部门配置。")
         st.experimental_rerun()
 
+    st.caption("选择路由可统一部门模型调用，自定义模式仍支持逐项配置。")
     st.caption("部门协作模型（ensemble）请在 config.json 中手动编辑，UI 将在后续版本补充。")
 
 
