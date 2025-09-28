@@ -131,8 +131,6 @@ class DepartmentManager:
         return results
 
     def _resolve_llm(self, settings: DepartmentSettings) -> LLMConfig:
-        if settings.llm_route and settings.llm_route in self.config.llm_routes:
-            return self.config.llm_routes[settings.llm_route].resolve(self.config.llm_profiles)
         return settings.llm
 
 

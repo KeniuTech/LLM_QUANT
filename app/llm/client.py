@@ -102,24 +102,58 @@ def _request_openai(
 
 
 def _call_endpoint(endpoint: LLMEndpoint, prompt: str, system: Optional[str]) -> str:
-    provider = (endpoint.provider or "ollama").lower()
-    base_url = endpoint.base_url or _default_base_url(provider)
-    model = endpoint.model or _default_model(provider)
-    temperature = max(0.0, min(endpoint.temperature, 2.0))
-    timeout = max(5.0, endpoint.timeout or 30.0)
+    cfg = get_config()
+    provider_key = (endpoint.provider or "ollama").lower()
+    provider_cfg = cfg.llm_providers.get(provider_key)
+
+    base_url = endpoint.base_url
+    api_key = endpoint.api_key
+    model = endpoint.model
+    temperature = endpoint.temperature
+    timeout = endpoint.timeout
+    prompt_template = endpoint.prompt_template
+
+    if provider_cfg:
+        if not provider_cfg.enabled:
+            raise LLMError(f"Provider {provider_key} 已被禁用")
+        base_url = base_url or provider_cfg.base_url or _default_base_url(provider_key)
+        api_key = api_key or provider_cfg.api_key
+        model = model or provider_cfg.default_model or (provider_cfg.models[0] if provider_cfg.models else _default_model(provider_key))
+        if temperature is None:
+            temperature = provider_cfg.default_temperature
+        if timeout is None:
+            timeout = provider_cfg.default_timeout
+        prompt_template = prompt_template or (provider_cfg.prompt_template or None)
+        mode = provider_cfg.mode or ("ollama" if provider_key == "ollama" else "openai")
+    else:
+        base_url = base_url or _default_base_url(provider_key)
+        model = model or _default_model(provider_key)
+        if temperature is None:
+            temperature = DEFAULT_LLM_TEMPERATURES.get(provider_key, 0.2)
+        if timeout is None:
+            timeout = DEFAULT_LLM_TIMEOUTS.get(provider_key, 30.0)
+        mode = "ollama" if provider_key == "ollama" else "openai"
+
+    temperature = max(0.0, min(float(temperature), 2.0))
+    timeout = max(5.0, float(timeout))
+
+    if prompt_template:
+        try:
+            prompt = prompt_template.format(prompt=prompt)
+        except Exception:  # noqa: BLE001
+            LOGGER.warning("Prompt 模板格式化失败，使用原始 prompt", extra=LOG_EXTRA)
 
     LOGGER.info(
         "触发 LLM 请求：provider=%s model=%s base=%s",
-        provider,
+        provider_key,
         model,
         base_url,
         extra=LOG_EXTRA,
     )
 
-    if provider in {"openai", "deepseek", "wenxin"}:
-        api_key = endpoint.api_key
+    if mode != "ollama":
         if not api_key:
-            raise LLMError(f"缺少 {provider} API Key (model={model})")
+            raise LLMError(f"缺少 {provider_key} API Key (model={model})")
         return _request_openai(
             model,
             prompt,
@@ -129,7 +163,7 @@ def _call_endpoint(endpoint: LLMEndpoint, prompt: str, system: Optional[str]) ->
             timeout=timeout,
             system=system,
         )
-    if provider == "ollama":
+    if base_url:
         return _request_ollama(
             model,
             prompt,
@@ -283,13 +317,17 @@ def llm_config_snapshot() -> Dict[str, object]:
         if record.get("api_key"):
             record["api_key"] = "***"
         ensemble.append(record)
-    route_name = cfg.llm_route
-    route_obj = cfg.llm_routes.get(route_name)
     return {
-        "route": route_name,
-        "route_detail": route_obj.to_dict() if route_obj else None,
         "strategy": settings.strategy,
         "majority_threshold": settings.majority_threshold,
         "primary": primary,
         "ensemble": ensemble,
+        "providers": {
+            key: {
+                "base_url": provider.base_url,
+                "default_model": provider.default_model,
+                "enabled": provider.enabled,
+            }
+            for key, provider in cfg.llm_providers.items()
+        },
     }
