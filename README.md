@@ -4,16 +4,41 @@
 
 本仓库提供一个面向 A 股日线级别的多智能体投资助理原型，覆盖数据采集、特征抽取、策略博弈、回测展示和 LLM 解释链路。代码以模块化骨架形式呈现，方便在单机环境下快速搭建端到端的量化研究和可视化决策流程。
 
-## 核心模块
+## 架构总览
 
-- `app/data`：数据库初始化与 Schema 定义。
-- `app/utils`：配置、数据库连接、日志和交易日历工具。
-- `app/ingest`：TuShare 数据抓取、新闻 RSS、数据覆盖检查器。
-- `app/features`：指标与信号计算接口。
-- `app/agents`：多智能体博弈实现，包括动量、价值、新闻、流动性、宏观与风险代理。
-- `app/backtest`：日线回测引擎与指标计算的占位实现。
-- `app/llm`：人类可读卡片与摘要生成入口（仅构建提示，不直接交易）。
-- `app/ui`：Streamlit 四页界面骨架，含“自检测试”页。
+- **数据与存储层**：`app/ingest` 封装 TuShare/RSS 拉数与限频处理，`app/data/schema.py` 初始化 SQLite 表结构，所有模块通过 `app/utils/db.py` 的 `db_session` 访问 `app/data/llm_quant.db`。
+- **工具与配置层**：`app/utils` 聚合配置、日志、交易日历及 provider 管理，`app/utils/config.py` 定义 LLM/部门/代理权重等全局设置。
+- **特征与策略层**：`app/features` 负责信号构建（当前为占位实现），`app/agents` 实现六类规则型代理与部门级 LLM 协同，`app/backtest/engine.py` 运行多智能体博弈并将结果写入 `agent_utils`。
+- **LLM 与协作层**：`app/llm` 提供统一的模型调用与 Prompt 构建，支持 single/majority/leader 策略，部门输出再与规则代理共同决策。
+- **可视化层**：`app/ui/streamlit_app.py` 提供今日计划、回测、设置、自检四大页签，实时读取 `agent_utils`、`run_log` 追踪决策链路。
+
+> 经典模块划分仍保留在文末《实施步骤》中，便于对照逐项推进。
+
+## 智能体策略速览
+
+- **动量 (`A_mom`)**：基于 `mom_20/mom_60` 的 Sigmoid 强度判定买卖梯度。
+- **价值 (`A_val`)**：组合 PE/PB/ROE 分位，低估值与高质量越倾向买入。
+- **新闻 (`A_news`)**：按新闻热度与情绪正负分配买卖权重，热度低时偏好持有。
+- **流动性 (`A_liq`)**：衡量 `liquidity_score` 与交易成本惩罚，约束加仓节奏。
+- **宏观 (`A_macro`)**：关注行业热度与相对强弱，多头动能越强，则买入级别越高。
+- **风险 (`A_risk`)**：根据 `risk_penalty` 调整信心，并在停牌/涨停/仓位限制场景下行使否决权。
+
+部门级智能体通过 `DepartmentManager` → `DepartmentAgent` → `department_prompt()` 的链路向 LLM 请求 JSON 化决策（动作、置信度、摘要、信号、风险），输出在 `app/agents/game.py` 中与规则代理共同参与纳什谈判或加权投票。
+
+## 当前瓶颈
+
+- **数据获取**：`BacktestEngine.load_market_data()` 仍为空实现，规则型代理依赖外部写入的 `AgentContext.features`，缺乏统一的取数协议。
+- **角色提示**：部门 `description` 尚未注入 Prompt，代理职责依旧“写死”在 Python 逻辑中。
+- **过程记录**：缺少对“请求了哪些数据、执行了哪些 SQL、LLM 收到什么上下文”的显式追踪，不利于复盘。
+
+## 提示词驱动的改造方向
+
+1. **配置声明角色**：在 `config.json`/`DepartmentSettings` 中补充 `description` 与 `data_scope`，`department_prompt()` 拼接角色指令，实现职责以 Prompt 管理而非硬编码。
+2. **统一数据层**：新增 `DataBroker`（或同类工具）封装常用查询，代理与部门通过声明式 JSON 请求所需表/字段/窗口，由服务端执行并返回特征。
+3. **双阶段 LLM 工作流**：第一阶段让 LLM 输出结构化 `data_requests`，服务端取数后将摘要回填，第二阶段再生成最终行动与解释，形成闭环。
+4. **审计与前端联动**：把角色提示、数据请求与执行摘要写入 `agent_utils` 附加字段，使 Streamlit 能完整呈现“角色 → 请求 → 决策”的链条。
+
+上述调整可在单个部门先行做 PoC，验证闭环能力后再推广至全部角色。
 
 ## 核心技术原理
 
