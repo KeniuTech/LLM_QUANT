@@ -15,7 +15,11 @@ def plan_prompt(data: Dict) -> str:
     return "你是一个投资助理，请根据提供的数据给出三条要点和两条风险提示。"
 
 
-def department_prompt(settings: "DepartmentSettings", context: "DepartmentContext") -> str:
+def department_prompt(
+    settings: "DepartmentSettings",
+    context: "DepartmentContext",
+    supplements: str = "",
+) -> str:
     """Compose a structured prompt for department-level LLM ensemble."""
 
     feature_lines = "\n".join(
@@ -27,6 +31,7 @@ def department_prompt(settings: "DepartmentSettings", context: "DepartmentContex
     scope_lines = "\n".join(f"- {item}" for item in settings.data_scope)
     role_description = settings.description.strip()
     role_instruction = settings.prompt.strip()
+    supplement_block = supplements.strip()
 
     instructions = f"""
 部门名称：{settings.title}
@@ -45,6 +50,9 @@ def department_prompt(settings: "DepartmentSettings", context: "DepartmentContex
 【市场背景】
 {market_lines or '- (无)'}
 
+【追加数据】
+{supplement_block or '- 当前无追加数据'}
+
 请基于以上数据给出该部门对当前股票的操作建议。输出必须是 JSON，字段如下：
 {{
   "action": "BUY|BUY_S|BUY_M|BUY_L|SELL|HOLD",
@@ -53,6 +61,14 @@ def department_prompt(settings: "DepartmentSettings", context: "DepartmentContex
   "signals": ["详细要点", "..."],
   "risks": ["风险点", "..."]
 }}
+
+如需额外数据，请在同一 JSON 中添加可选字段 `"data_requests"`，其取值为数组，例如：
+"data_requests": [
+  {{"field": "daily.close", "window": 5}},
+  {{"field": "daily_basic.pe"}}
+]
+其中 `field` 必须属于【可用数据范围】或明确说明新增需求；`window` 表示希望返回的最近数据点数量，省略时默认为 1。
+如果不需要更多数据，请不要返回 `data_requests`。
 
 请严格返回单个 JSON 对象，不要添加额外文本。
 """

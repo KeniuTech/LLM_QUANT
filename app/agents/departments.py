@@ -3,16 +3,23 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Mapping, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from app.agents.base import AgentAction
 from app.llm.client import run_llm_with_config
 from app.llm.prompts import department_prompt
 from app.utils.config import AppConfig, DepartmentSettings, LLMConfig
 from app.utils.logging import get_logger
+from app.utils.data_access import DataBroker, parse_field_path
 
 LOGGER = get_logger(__name__)
 LOG_EXTRA = {"stage": "department"}
+
+
+@dataclass
+class DataRequest:
+    field: str
+    window: int = 1
 
 
 @dataclass
@@ -37,6 +44,8 @@ class DepartmentDecision:
     raw_response: str
     signals: List[str] = field(default_factory=list)
     risks: List[str] = field(default_factory=list)
+    supplements: List[Dict[str, Any]] = field(default_factory=list)
+    dialogue: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -47,6 +56,8 @@ class DepartmentDecision:
             "signals": self.signals,
             "risks": self.risks,
             "raw_response": self.raw_response,
+            "supplements": self.supplements,
+            "dialogue": self.dialogue,
         }
 
 
@@ -60,6 +71,8 @@ class DepartmentAgent:
     ) -> None:
         self.settings = settings
         self._resolver = resolver
+        self._broker = DataBroker()
+        self._max_rounds = 3
 
     def _get_llm_config(self) -> LLMConfig:
         if self._resolver:
@@ -67,24 +80,79 @@ class DepartmentAgent:
         return self.settings.llm
 
     def analyze(self, context: DepartmentContext) -> DepartmentDecision:
-        prompt = department_prompt(self.settings, context)
+        mutable_context = _ensure_mutable_context(context)
         system_prompt = (
             "你是一个多智能体量化投研系统中的分部决策者，需要根据提供的结构化信息给出买卖意见。"
         )
         llm_cfg = self._get_llm_config()
-        try:
-            response = run_llm_with_config(llm_cfg, prompt, system=system_prompt)
-        except Exception as exc:  # noqa: BLE001
-            LOGGER.exception("部门 %s 调用 LLM 失败：%s", self.settings.code, exc, extra=LOG_EXTRA)
-            return DepartmentDecision(
-                department=self.settings.code,
-                action=AgentAction.HOLD,
-                confidence=0.0,
-                summary=f"LLM 调用失败：{exc}",
-                raw_response=str(exc),
-            )
+        supplement_chunks: List[str] = []
+        transcript: List[str] = []
+        delivered_requests = {
+            (field, 1)
+            for field in (mutable_context.raw.get("scope_values") or {}).keys()
+        }
 
-        decision_data = _parse_department_response(response)
+        response = ""
+        decision_data: Dict[str, Any] = {}
+        for round_idx in range(self._max_rounds):
+            supplement_text = "\n\n".join(chunk for chunk in supplement_chunks if chunk)
+            prompt = department_prompt(self.settings, mutable_context, supplements=supplement_text)
+            try:
+                response = run_llm_with_config(llm_cfg, prompt, system=system_prompt)
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.exception(
+                    "部门 %s 调用 LLM 失败：%s",
+                    self.settings.code,
+                    exc,
+                    extra=LOG_EXTRA,
+                )
+                return DepartmentDecision(
+                    department=self.settings.code,
+                    action=AgentAction.HOLD,
+                    confidence=0.0,
+                    summary=f"LLM 调用失败：{exc}",
+                    raw_response=str(exc),
+                )
+
+            transcript.append(response)
+            decision_data = _parse_department_response(response)
+            data_requests = _parse_data_requests(decision_data)
+            filtered_requests = [
+                req
+                for req in data_requests
+                if (req.field, req.window) not in delivered_requests
+            ]
+
+            if filtered_requests and round_idx < self._max_rounds - 1:
+                lines, payload, delivered = self._fulfill_data_requests(
+                    mutable_context, filtered_requests
+                )
+                if payload:
+                    supplement_chunks.append(
+                        f"回合 {round_idx + 1} 追加数据:\n" + "\n".join(lines)
+                    )
+                    mutable_context.raw.setdefault("supplement_data", []).extend(payload)
+                    mutable_context.raw.setdefault("supplement_rounds", []).append(
+                        {
+                            "round": round_idx + 1,
+                            "requests": [req.__dict__ for req in filtered_requests],
+                            "data": payload,
+                        }
+                    )
+                    delivered_requests.update(delivered)
+                    decision_data.pop("data_requests", None)
+                    continue
+                LOGGER.debug(
+                    "部门 %s 数据请求无结果：%s",
+                    self.settings.code,
+                    filtered_requests,
+                    extra=LOG_EXTRA,
+                )
+            decision_data.pop("data_requests", None)
+            break
+
+        mutable_context.raw["supplement_transcript"] = list(transcript)
+
         action = _normalize_action(decision_data.get("action"))
         confidence = _clamp_float(decision_data.get("confidence"), default=0.5)
         summary = decision_data.get("summary") or decision_data.get("reason") or ""
@@ -102,7 +170,9 @@ class DepartmentAgent:
             summary=summary or "未提供摘要",
             signals=[str(sig) for sig in signals if sig],
             risks=[str(risk) for risk in risks if risk],
-            raw_response=response,
+            raw_response="\n\n".join(transcript) if transcript else response,
+            supplements=list(mutable_context.raw.get("supplement_data", [])),
+            dialogue=list(transcript),
         )
         LOGGER.debug(
             "部门 %s 决策：action=%s confidence=%.2f",
@@ -112,6 +182,124 @@ class DepartmentAgent:
             extra=LOG_EXTRA,
         )
         return decision
+
+    @staticmethod
+    def _normalize_trade_date(value: str) -> str:
+        if not isinstance(value, str):
+            return str(value)
+        return value.replace("-", "")
+
+    def _fulfill_data_requests(
+        self,
+        context: DepartmentContext,
+        requests: Sequence[DataRequest],
+    ) -> Tuple[List[str], List[Dict[str, Any]], set[Tuple[str, int]]]:
+        lines: List[str] = []
+        payload: List[Dict[str, Any]] = []
+        delivered: set[Tuple[str, int]] = set()
+
+        ts_code = context.ts_code
+        trade_date = self._normalize_trade_date(context.trade_date)
+
+        latest_fields: List[str] = []
+        series_requests: List[Tuple[DataRequest, Tuple[str, str]]] = []
+
+        for req in requests:
+            field = req.field.strip()
+            if not field:
+                continue
+            if req.window <= 1:
+                if field not in latest_fields:
+                    latest_fields.append(field)
+                delivered.add((field, 1))
+                continue
+            parsed = parse_field_path(field)
+            if not parsed:
+                lines.append(f"- {field}: 字段不合法，已忽略")
+                continue
+            series_requests.append((req, parsed))
+            delivered.add((field, req.window))
+
+        if latest_fields:
+            latest_values = self._broker.fetch_latest(ts_code, trade_date, latest_fields)
+            for field in latest_fields:
+                value = latest_values.get(field)
+                if value is None:
+                    lines.append(f"- {field}: (数据缺失)")
+                else:
+                    lines.append(f"- {field}: {value}")
+                payload.append({"field": field, "window": 1, "values": value})
+
+        for req, parsed in series_requests:
+            table, column = parsed
+            series = self._broker.fetch_series(
+                table,
+                column,
+                ts_code,
+                trade_date,
+                window=req.window,
+            )
+            if series:
+                preview = ", ".join(
+                    f"{dt}:{val:.4f}"
+                    for dt, val in series[: min(len(series), 5)]
+                )
+                lines.append(
+                    f"- {req.field} (window={req.window}): {preview}"
+                )
+            else:
+                lines.append(
+                    f"- {req.field} (window={req.window}): (数据缺失)"
+                )
+            payload.append({"field": req.field, "window": req.window, "values": series})
+
+        return lines, payload, delivered
+
+
+def _ensure_mutable_context(context: DepartmentContext) -> DepartmentContext:
+    if not isinstance(context.features, dict):
+        context.features = dict(context.features or {})
+    if not isinstance(context.market_snapshot, dict):
+        context.market_snapshot = dict(context.market_snapshot or {})
+    raw = dict(context.raw or {})
+    scope_values = raw.get("scope_values")
+    if scope_values is not None and not isinstance(scope_values, dict):
+        raw["scope_values"] = dict(scope_values)
+    context.raw = raw
+    return context
+
+
+def _parse_data_requests(payload: Mapping[str, Any]) -> List[DataRequest]:
+    raw_requests = payload.get("data_requests")
+    requests: List[DataRequest] = []
+    if not isinstance(raw_requests, list):
+        return requests
+    seen: set[Tuple[str, int]] = set()
+    for item in raw_requests:
+        field = ""
+        window = 1
+        if isinstance(item, str):
+            field = item.strip()
+        elif isinstance(item, Mapping):
+            candidate = item.get("field")
+            if candidate is None:
+                continue
+            field = str(candidate).strip()
+            try:
+                window = int(item.get("window", 1))
+            except (TypeError, ValueError):
+                window = 1
+        else:
+            continue
+        if not field:
+            continue
+        window = max(1, window)
+        key = (field, window)
+        if key in seen:
+            continue
+        seen.add(key)
+        requests.append(DataRequest(field=field, window=window))
+    return requests
 
 
 class DepartmentManager:
@@ -127,7 +315,17 @@ class DepartmentManager:
     def evaluate(self, context: DepartmentContext) -> Dict[str, DepartmentDecision]:
         results: Dict[str, DepartmentDecision] = {}
         for code, agent in self.agents.items():
-            results[code] = agent.analyze(context)
+            raw_base = dict(context.raw or {})
+            if "scope_values" in raw_base:
+                raw_base["scope_values"] = dict(raw_base.get("scope_values") or {})
+            dept_context = DepartmentContext(
+                ts_code=context.ts_code,
+                trade_date=context.trade_date,
+                features=dict(context.features or {}),
+                market_snapshot=dict(context.market_snapshot or {}),
+                raw=raw_base,
+            )
+            results[code] = agent.analyze(dept_context)
         return results
 
     def _resolve_llm(self, settings: DepartmentSettings) -> LLMConfig:

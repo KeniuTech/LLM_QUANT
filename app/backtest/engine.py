@@ -170,6 +170,14 @@ class BacktestEngine:
             if down_limit and latest_close:
                 limit_down = latest_close <= down_limit * 1.001
 
+            is_suspended = self.data_broker.fetch_flags(
+                "suspend",
+                ts_code,
+                trade_date_str,
+                "suspend_date <= ? AND (resume_date IS NULL OR resume_date > ?)",
+                (trade_date_str, trade_date_str),
+            )
+
             features = {
                 "mom_20": mom20,
                 "mom_60": mom60,
@@ -185,7 +193,7 @@ class BacktestEngine:
                     scope_values.get("index.performance_peers", 0.0),
                 ),
                 "risk_penalty": min(1.0, volat20 * 5.0),
-                "is_suspended": False,
+                "is_suspended": is_suspended,
                 "limit_up": limit_up,
                 "limit_down": limit_down,
                 "position_limit": False,
@@ -205,6 +213,7 @@ class BacktestEngine:
                 "scope_values": scope_values,
                 "close_series": closes,
                 "turnover_series": turnover_series,
+                "required_fields": self.required_fields,
             }
 
             feature_map[ts_code] = {
@@ -285,6 +294,10 @@ class BacktestEngine:
                         "_risks": dept_decision.risks,
                         "_confidence": dept_decision.confidence,
                     }
+                    if dept_decision.supplements:
+                        metadata["_supplements"] = dept_decision.supplements
+                    if dept_decision.dialogue:
+                        metadata["_dialogue"] = dept_decision.dialogue
             payload_json = {**action_scores, **metadata}
             rows.append(
                 (
@@ -303,6 +316,19 @@ class BacktestEngine:
             "_target_weight": decision.target_weight,
             "_department_votes": decision.department_votes,
             "_requires_review": decision.requires_review,
+            "_scope_values": context.raw.get("scope_values", {}),
+            "_close_series": context.raw.get("close_series", []),
+            "_turnover_series": context.raw.get("turnover_series", []),
+            "_department_supplements": {
+                code: dept.supplements
+                for code, dept in decision.department_decisions.items()
+                if dept.supplements
+            },
+            "_department_dialogue": {
+                code: dept.dialogue
+                for code, dept in decision.department_decisions.items()
+                if dept.dialogue
+            },
         }
         rows.append(
             (

@@ -32,6 +32,12 @@ def _safe_split(path: str) -> Tuple[str, str] | None:
     return table, column
 
 
+def parse_field_path(path: str) -> Tuple[str, str] | None:
+    """Validate and split a `table.column` field expression."""
+
+    return _safe_split(path)
+
+
 @dataclass
 class DataBroker:
     """Lightweight data access helper for agent/LLM consumption."""

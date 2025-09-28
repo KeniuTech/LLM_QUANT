@@ -6,9 +6,9 @@
 
 ## 架构总览
 
-- **数据与存储层**：`app/ingest` 封装 TuShare/RSS 拉数与限频处理，`app/data/schema.py` 初始化 SQLite 表结构，所有模块通过 `app/utils/db.py` 的 `db_session` 访问 `app/data/llm_quant.db`。
+- **数据与存储层**：`app/ingest` 封装 TuShare/RSS 拉数与限频处理，`app/data/schema.py` 初始化 SQLite 表结构，所有模块通过 `app/utils/db.py` 的 `db_session` 访问 `app/data/llm_quant.db`，数据抽象层由 `app/utils/data_access.py` 的 `DataBroker` 统一提供字段查询与时间序列切片。
 - **工具与配置层**：`app/utils` 聚合配置、日志、交易日历及 provider 管理，`app/utils/config.py` 定义 LLM/部门/代理权重等全局设置。
-- **特征与策略层**：`app/features` 负责信号构建（当前为占位实现），`app/agents` 实现六类规则型代理与部门级 LLM 协同，`app/backtest/engine.py` 运行多智能体博弈并将结果写入 `agent_utils`。
+- **特征与策略层**：`app/features` 负责信号构建（当前为占位实现），`app/agents` 实现六类规则型代理与部门级 LLM 协同，`app/backtest/engine.py` 通过 `DataBroker` 装配特征/上下文后运行多智能体博弈并将结果写入 `agent_utils`。
 - **LLM 与协作层**：`app/llm` 提供统一的模型调用与 Prompt 构建，支持 single/majority/leader 策略，部门输出再与规则代理共同决策。
 - **可视化层**：`app/ui/streamlit_app.py` 提供今日计划、回测、设置、自检四大页签，实时读取 `agent_utils`、`run_log` 追踪决策链路。
 
@@ -37,6 +37,8 @@
 2. **统一数据层**：新增 `DataBroker`（或同类工具）封装常用查询，代理与部门通过声明式 JSON 请求所需表/字段/窗口，由服务端执行并返回特征。
 3. **双阶段 LLM 工作流**：第一阶段让 LLM 输出结构化 `data_requests`，服务端取数后将摘要回填，第二阶段再生成最终行动与解释，形成闭环。
 4. **审计与前端联动**：把角色提示、数据请求与执行摘要写入 `agent_utils` 附加字段，使 Streamlit 能完整呈现“角色 → 请求 → 决策”的链条。
+
+目前部门 LLM 已支持通过在 JSON 中返回 `data_requests` 触发追加查询：系统会使用 `DataBroker` 验证字段后补充最近数据窗口，再带着查询结果进入下一轮提示，从而形成“请求→取数→复议”的闭环。
 
 上述调整可在单个部门先行做 PoC，验证闭环能力后再推广至全部角色。
 
