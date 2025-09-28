@@ -11,6 +11,8 @@ import requests
 from app.utils.config import (
     DEFAULT_LLM_BASE_URLS,
     DEFAULT_LLM_MODELS,
+    DEFAULT_LLM_TEMPERATURES,
+    DEFAULT_LLM_TIMEOUTS,
     LLMConfig,
     LLMEndpoint,
     get_config,
@@ -34,8 +36,8 @@ def _default_model(provider: str) -> str:
     return DEFAULT_LLM_MODELS.get(provider, DEFAULT_LLM_MODELS["ollama"])
 
 
-def _build_messages(prompt: str, system: Optional[str] = None) -> List[Dict[str, str]]:
-    messages: List[Dict[str, str]] = []
+def _build_messages(prompt: str, system: Optional[str] = None) -> List[Dict[str, object]]:
+    messages: List[Dict[str, object]] = []
     if system:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
@@ -70,38 +72,39 @@ def _request_ollama(
     return str(content)
 
 
-def _request_openai(
-    model: str,
-    prompt: str,
+def _request_openai_chat(
     *,
     base_url: str,
     api_key: str,
+    model: str,
+    messages: List[Dict[str, object]],
     temperature: float,
     timeout: float,
-    system: Optional[str],
-) -> str:
+    tools: Optional[List[Dict[str, object]]] = None,
+    tool_choice: Optional[object] = None,
+) -> Dict[str, object]:
     url = f"{base_url.rstrip('/')}/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-    payload = {
+    payload: Dict[str, object] = {
         "model": model,
-        "messages": _build_messages(prompt, system),
+        "messages": messages,
         "temperature": temperature,
     }
+    if tools:
+        payload["tools"] = tools
+        if tool_choice is not None:
+            payload["tool_choice"] = tool_choice
     LOGGER.debug("调用 OpenAI 兼容接口: %s %s", model, url, extra=LOG_EXTRA)
     response = requests.post(url, headers=headers, json=payload, timeout=timeout)
     if response.status_code != 200:
         raise LLMError(f"OpenAI API 调用失败: {response.status_code} {response.text}")
-    data = response.json()
-    try:
-        return data["choices"][0]["message"]["content"].strip()
-    except (KeyError, IndexError) as exc:
-        raise LLMError(f"OpenAI 响应解析失败: {json.dumps(data, ensure_ascii=False)}") from exc
+    return response.json()
 
 
-def _call_endpoint(endpoint: LLMEndpoint, prompt: str, system: Optional[str]) -> str:
+def _prepare_endpoint(endpoint: LLMEndpoint) -> Dict[str, object]:
     cfg = get_config()
     provider_key = (endpoint.provider or "ollama").lower()
     provider_cfg = cfg.llm_providers.get(provider_key)
@@ -128,20 +131,70 @@ def _call_endpoint(endpoint: LLMEndpoint, prompt: str, system: Optional[str]) ->
     else:
         base_url = base_url or _default_base_url(provider_key)
         model = model or _default_model(provider_key)
+
         if temperature is None:
             temperature = DEFAULT_LLM_TEMPERATURES.get(provider_key, 0.2)
         if timeout is None:
             timeout = DEFAULT_LLM_TIMEOUTS.get(provider_key, 30.0)
         mode = "ollama" if provider_key == "ollama" else "openai"
 
-    temperature = max(0.0, min(float(temperature), 2.0))
-    timeout = max(5.0, float(timeout))
+    return {
+        "provider_key": provider_key,
+        "mode": mode,
+        "base_url": base_url,
+        "api_key": api_key,
+        "model": model,
+        "temperature": max(0.0, min(float(temperature), 2.0)),
+        "timeout": max(5.0, float(timeout)),
+        "prompt_template": prompt_template,
+    }
+
+
+def _call_endpoint(endpoint: LLMEndpoint, prompt: str, system: Optional[str]) -> str:
+    resolved = _prepare_endpoint(endpoint)
+    provider_key = resolved["provider_key"]
+    mode = resolved["mode"]
+    prompt_template = resolved["prompt_template"]
 
     if prompt_template:
         try:
             prompt = prompt_template.format(prompt=prompt)
         except Exception:  # noqa: BLE001
             LOGGER.warning("Prompt 模板格式化失败，使用原始 prompt", extra=LOG_EXTRA)
+
+    messages = _build_messages(prompt, system)
+    response = call_endpoint_with_messages(
+        endpoint,
+        messages,
+        tools=None,
+    )
+    if mode == "ollama":
+        message = response.get("message") or {}
+        content = message.get("content", "")
+        if isinstance(content, list):
+            return "".join(chunk.get("text", "") or chunk.get("content", "") for chunk in content)
+        return str(content)
+    try:
+        return response["choices"][0]["message"]["content"].strip()
+    except (KeyError, IndexError) as exc:
+        raise LLMError(f"OpenAI 响应解析失败: {json.dumps(response, ensure_ascii=False)}") from exc
+
+
+def call_endpoint_with_messages(
+    endpoint: LLMEndpoint,
+    messages: List[Dict[str, object]],
+    *,
+    tools: Optional[List[Dict[str, object]]] = None,
+    tool_choice: Optional[object] = None,
+) -> Dict[str, object]:
+    resolved = _prepare_endpoint(endpoint)
+    provider_key = resolved["provider_key"]
+    mode = resolved["mode"]
+    base_url = resolved["base_url"]
+    model = resolved["model"]
+    temperature = resolved["temperature"]
+    timeout = resolved["timeout"]
+    api_key = resolved["api_key"]
 
     LOGGER.info(
         "触发 LLM 请求：provider=%s model=%s base=%s",
@@ -151,28 +204,36 @@ def _call_endpoint(endpoint: LLMEndpoint, prompt: str, system: Optional[str]) ->
         extra=LOG_EXTRA,
     )
 
-    if mode != "ollama":
-        if not api_key:
-            raise LLMError(f"缺少 {provider_key} API Key (model={model})")
-        return _request_openai(
-            model,
-            prompt,
-            base_url=base_url,
-            api_key=api_key,
-            temperature=temperature,
+    if mode == "ollama":
+        if tools:
+            raise LLMError("当前 provider 不支持函数调用/工具模式")
+        payload = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+            "options": {"temperature": temperature},
+        }
+        response = requests.post(
+            f"{base_url.rstrip('/')}/api/chat",
+            json=payload,
             timeout=timeout,
-            system=system,
         )
-    if base_url:
-        return _request_ollama(
-            model,
-            prompt,
-            base_url=base_url,
-            temperature=temperature,
-            timeout=timeout,
-            system=system,
-        )
-    raise LLMError(f"不支持的 LLM provider: {endpoint.provider}")
+        if response.status_code != 200:
+            raise LLMError(f"Ollama 调用失败: {response.status_code} {response.text}")
+        return response.json()
+
+    if not api_key:
+        raise LLMError(f"缺少 {provider_key} API Key (model={model})")
+    return _request_openai_chat(
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+        messages=messages,
+        temperature=temperature,
+        timeout=timeout,
+        tools=tools,
+        tool_choice=tool_choice,
+    )
 
 
 def _normalize_response(text: str) -> str:

@@ -6,11 +6,11 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from app.agents.base import AgentAction
-from app.llm.client import run_llm_with_config
+from app.llm.client import call_endpoint_with_messages, run_llm_with_config, LLMError
 from app.llm.prompts import department_prompt
 from app.utils.config import AppConfig, DepartmentSettings, LLMConfig
 from app.utils.logging import get_logger
-from app.utils.data_access import DataBroker, parse_field_path
+from app.utils.data_access import DataBroker
 
 LOGGER = get_logger(__name__)
 LOG_EXTRA = {"stage": "department"}
@@ -85,73 +85,94 @@ class DepartmentAgent:
             "你是一个多智能体量化投研系统中的分部决策者，需要根据提供的结构化信息给出买卖意见。"
         )
         llm_cfg = self._get_llm_config()
-        supplement_chunks: List[str] = []
+
+        if llm_cfg.strategy not in (None, "", "single") or llm_cfg.ensemble:
+            LOGGER.warning(
+                "部门 %s 当前配置不支持函数调用模式，回退至传统提示",
+                self.settings.code,
+                extra=LOG_EXTRA,
+            )
+            return self._analyze_legacy(mutable_context, system_prompt)
+
+        tools = self._build_tools()
+        messages: List[Dict[str, object]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append(
+            {
+                "role": "user",
+                "content": department_prompt(self.settings, mutable_context),
+            }
+        )
+
         transcript: List[str] = []
-        delivered_requests = {
+        delivered_requests: set[Tuple[str, int]] = {
             (field, 1)
             for field in (mutable_context.raw.get("scope_values") or {}).keys()
         }
 
-        response = ""
-        decision_data: Dict[str, Any] = {}
+        primary_endpoint = llm_cfg.primary
+        final_message: Optional[Dict[str, Any]] = None
+
         for round_idx in range(self._max_rounds):
-            supplement_text = "\n\n".join(chunk for chunk in supplement_chunks if chunk)
-            prompt = department_prompt(self.settings, mutable_context, supplements=supplement_text)
             try:
-                response = run_llm_with_config(llm_cfg, prompt, system=system_prompt)
-            except Exception as exc:  # noqa: BLE001
-                LOGGER.exception(
-                    "部门 %s 调用 LLM 失败：%s",
+                response = call_endpoint_with_messages(
+                    primary_endpoint,
+                    messages,
+                    tools=tools,
+                    tool_choice="auto",
+                )
+            except LLMError as exc:
+                LOGGER.warning(
+                    "部门 %s 函数调用失败，回退传统提示：%s",
                     self.settings.code,
                     exc,
                     extra=LOG_EXTRA,
                 )
-                return DepartmentDecision(
-                    department=self.settings.code,
-                    action=AgentAction.HOLD,
-                    confidence=0.0,
-                    summary=f"LLM 调用失败：{exc}",
-                    raw_response=str(exc),
-                )
+                return self._analyze_legacy(mutable_context, system_prompt)
 
-            transcript.append(response)
-            decision_data = _parse_department_response(response)
-            data_requests = _parse_data_requests(decision_data)
-            filtered_requests = [
-                req
-                for req in data_requests
-                if (req.field, req.window) not in delivered_requests
-            ]
+            choice = (response.get("choices") or [{}])[0]
+            message = choice.get("message", {})
+            transcript.append(_message_to_text(message))
 
-            if filtered_requests and round_idx < self._max_rounds - 1:
-                lines, payload, delivered = self._fulfill_data_requests(
-                    mutable_context, filtered_requests
-                )
-                if payload:
-                    supplement_chunks.append(
-                        f"回合 {round_idx + 1} 追加数据:\n" + "\n".join(lines)
+            tool_calls = message.get("tool_calls") or []
+            if tool_calls:
+                for call in tool_calls:
+                    tool_response, delivered = self._handle_tool_call(
+                        mutable_context,
+                        call,
+                        delivered_requests,
+                        round_idx,
                     )
-                    mutable_context.raw.setdefault("supplement_data", []).extend(payload)
-                    mutable_context.raw.setdefault("supplement_rounds", []).append(
+                    transcript.append(
+                        json.dumps({"tool_response": tool_response}, ensure_ascii=False)
+                    )
+                    messages.append(
                         {
-                            "round": round_idx + 1,
-                            "requests": [req.__dict__ for req in filtered_requests],
-                            "data": payload,
+                            "role": "tool",
+                            "tool_call_id": call.get("id"),
+                            "name": call.get("function", {}).get("name"),
+                            "content": json.dumps(tool_response, ensure_ascii=False),
                         }
                     )
                     delivered_requests.update(delivered)
-                    decision_data.pop("data_requests", None)
-                    continue
-                LOGGER.debug(
-                    "部门 %s 数据请求无结果：%s",
-                    self.settings.code,
-                    filtered_requests,
-                    extra=LOG_EXTRA,
-                )
-            decision_data.pop("data_requests", None)
+                continue
+
+            final_message = message
             break
 
+        if final_message is None:
+            LOGGER.warning(
+                "部门 %s 函数调用达到轮次上限仍未返回文本，使用最后一次消息",
+                self.settings.code,
+                extra=LOG_EXTRA,
+            )
+            final_message = message
+
         mutable_context.raw["supplement_transcript"] = list(transcript)
+
+        content_text = _extract_message_content(final_message)
+        decision_data = _parse_department_response(content_text)
 
         action = _normalize_action(decision_data.get("action"))
         confidence = _clamp_float(decision_data.get("confidence"), default=0.5)
@@ -170,7 +191,7 @@ class DepartmentAgent:
             summary=summary or "未提供摘要",
             signals=[str(sig) for sig in signals if sig],
             risks=[str(risk) for risk in risks if risk],
-            raw_response="\n\n".join(transcript) if transcript else response,
+            raw_response=content_text,
             supplements=list(mutable_context.raw.get("supplement_data", [])),
             dialogue=list(transcript),
         )
@@ -208,16 +229,16 @@ class DepartmentAgent:
             field = req.field.strip()
             if not field:
                 continue
+            resolved = self._broker.resolve_field(field)
+            if not resolved:
+                lines.append(f"- {field}: 字段不存在或不可用")
+                continue
             if req.window <= 1:
                 if field not in latest_fields:
                     latest_fields.append(field)
                 delivered.add((field, 1))
                 continue
-            parsed = parse_field_path(field)
-            if not parsed:
-                lines.append(f"- {field}: 字段不合法，已忽略")
-                continue
-            series_requests.append((req, parsed))
+            series_requests.append((req, resolved))
             delivered.add((field, req.window))
 
         if latest_fields:
@@ -251,11 +272,186 @@ class DepartmentAgent:
                 lines.append(
                     f"- {req.field} (window={req.window}): (数据缺失)"
                 )
-            payload.append({"field": req.field, "window": req.window, "values": series})
+            payload.append(
+                {
+                    "field": req.field,
+                    "window": req.window,
+                    "values": [
+                        {"trade_date": dt, "value": val}
+                        for dt, val in series
+                    ],
+                }
+            )
 
         return lines, payload, delivered
 
 
+    def _handle_tool_call(
+        self,
+        context: DepartmentContext,
+        call: Mapping[str, Any],
+        delivered_requests: set[Tuple[str, int]],
+        round_idx: int,
+    ) -> Tuple[Dict[str, Any], set[Tuple[str, int]]]:
+        function_block = call.get("function") or {}
+        name = function_block.get("name") or ""
+        if name != "fetch_data":
+            LOGGER.warning(
+                "部门 %s 收到未知工具调用：%s",
+                self.settings.code,
+                name,
+                extra=LOG_EXTRA,
+            )
+            return {
+                "status": "error",
+                "message": f"未知工具 {name}",
+            }, set()
+
+        args = _parse_tool_arguments(function_block.get("arguments"))
+        raw_requests = args.get("requests") or []
+        requests: List[DataRequest] = []
+        skipped: List[str] = []
+        for item in raw_requests:
+            field = str(item.get("field", "")).strip()
+            if not field:
+                continue
+            try:
+                window = int(item.get("window", 1))
+            except (TypeError, ValueError):
+                window = 1
+            window = max(1, min(window, getattr(self._broker, "MAX_WINDOW", 120)))
+            key = (field, window)
+            if key in delivered_requests:
+                skipped.append(field)
+                continue
+            requests.append(DataRequest(field=field, window=window))
+
+        if not requests:
+            return {
+                "status": "ok",
+                "round": round_idx + 1,
+                "results": [],
+                "skipped": skipped,
+            }, set()
+
+        lines, payload, delivered = self._fulfill_data_requests(context, requests)
+        if payload:
+            context.raw.setdefault("supplement_data", []).extend(payload)
+            context.raw.setdefault("supplement_rounds", []).append(
+                {
+                    "round": round_idx + 1,
+                    "requests": [req.__dict__ for req in requests],
+                    "data": payload,
+                    "notes": lines,
+                }
+            )
+        if lines:
+            context.raw.setdefault("supplement_notes", []).append(
+                {
+                    "round": round_idx + 1,
+                    "lines": lines,
+                }
+            )
+
+        response_payload = {
+            "status": "ok",
+            "round": round_idx + 1,
+            "results": payload,
+            "notes": lines,
+            "skipped": skipped,
+        }
+        return response_payload, delivered
+
+
+    def _build_tools(self) -> List[Dict[str, Any]]:
+        max_window = getattr(self._broker, "MAX_WINDOW", 120)
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "fetch_data",
+                    "description": (
+                        "根据字段请求数据库中的最新值或时间序列。支持 table.column 格式的字段，"
+                        "window 表示希望返回的最近数据点数量。"
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "requests": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "field": {
+                                            "type": "string",
+                                            "description": "数据字段，格式为 table.column",
+                                        },
+                                        "window": {
+                                            "type": "integer",
+                                            "minimum": 1,
+                                            "maximum": max_window,
+                                            "description": "返回最近多少个数据点，默认为 1",
+                                        },
+                                    },
+                                    "required": ["field"],
+                                },
+                                "minItems": 1,
+                            }
+                        },
+                        "required": ["requests"],
+                    },
+                },
+            }
+        ]
+
+    def _analyze_legacy(
+        self,
+        context: DepartmentContext,
+        system_prompt: str,
+    ) -> DepartmentDecision:
+        prompt = department_prompt(self.settings, context)
+        llm_cfg = self._get_llm_config()
+        try:
+            response = run_llm_with_config(llm_cfg, prompt, system=system_prompt)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception(
+                "部门 %s 调用 LLM 失败：%s",
+                self.settings.code,
+                exc,
+                extra=LOG_EXTRA,
+            )
+            return DepartmentDecision(
+                department=self.settings.code,
+                action=AgentAction.HOLD,
+                confidence=0.0,
+                summary=f"LLM 调用失败：{exc}",
+                raw_response=str(exc),
+            )
+
+        context.raw["supplement_transcript"] = [response]
+        decision_data = _parse_department_response(response)
+        action = _normalize_action(decision_data.get("action"))
+        confidence = _clamp_float(decision_data.get("confidence"), default=0.5)
+        summary = decision_data.get("summary") or decision_data.get("reason") or ""
+        signals = decision_data.get("signals") or decision_data.get("rationale") or []
+        if isinstance(signals, str):
+            signals = [signals]
+        risks = decision_data.get("risks") or decision_data.get("warnings") or []
+        if isinstance(risks, str):
+            risks = [risks]
+
+        decision = DepartmentDecision(
+            department=self.settings.code,
+            action=action,
+            confidence=confidence,
+            summary=summary or "未提供摘要",
+            signals=[str(sig) for sig in signals if sig],
+            risks=[str(risk) for risk in risks if risk],
+            raw_response=response,
+            supplements=list(context.raw.get("supplement_data", [])),
+            dialogue=[response],
+        )
+        return decision
 def _ensure_mutable_context(context: DepartmentContext) -> DepartmentContext:
     if not isinstance(context.features, dict):
         context.features = dict(context.features or {})
@@ -300,6 +496,54 @@ def _parse_data_requests(payload: Mapping[str, Any]) -> List[DataRequest]:
         seen.add(key)
         requests.append(DataRequest(field=field, window=window))
     return requests
+
+
+def _parse_tool_arguments(payload: Any) -> Dict[str, Any]:
+    if isinstance(payload, dict):
+        return dict(payload)
+    if isinstance(payload, str):
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError:
+            LOGGER.debug("工具参数解析失败：%s", payload, extra=LOG_EXTRA)
+            return {}
+        if isinstance(data, dict):
+            return data
+    return {}
+
+
+def _message_to_text(message: Mapping[str, Any]) -> str:
+    content = message.get("content")
+    if isinstance(content, list):
+        parts: List[str] = []
+        for item in content:
+            if isinstance(item, Mapping) and "text" in item:
+                parts.append(str(item.get("text", "")))
+            else:
+                parts.append(str(item))
+        if parts:
+            return "".join(parts)
+    elif isinstance(content, str) and content.strip():
+        return content
+    tool_calls = message.get("tool_calls")
+    if tool_calls:
+        return json.dumps({"tool_calls": tool_calls}, ensure_ascii=False)
+    return ""
+
+
+def _extract_message_content(message: Mapping[str, Any]) -> str:
+    content = message.get("content")
+    if isinstance(content, list):
+        texts = [
+            str(item.get("text", ""))
+            for item in content
+            if isinstance(item, Mapping) and "text" in item
+        ]
+        if texts:
+            return "".join(texts)
+    if isinstance(content, str):
+        return content
+    return json.dumps(message, ensure_ascii=False)
 
 
 class DepartmentManager:

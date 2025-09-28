@@ -36,9 +36,10 @@
 1. **配置声明角色**：在 `config.json`/`DepartmentSettings` 中补充 `description` 与 `data_scope`，`department_prompt()` 拼接角色指令，实现职责以 Prompt 管理而非硬编码。
 2. **统一数据层**：新增 `DataBroker`（或同类工具）封装常用查询，代理与部门通过声明式 JSON 请求所需表/字段/窗口，由服务端执行并返回特征。
 3. **双阶段 LLM 工作流**：第一阶段让 LLM 输出结构化 `data_requests`，服务端取数后将摘要回填，第二阶段再生成最终行动与解释，形成闭环。
-4. **审计与前端联动**：把角色提示、数据请求与执行摘要写入 `agent_utils` 附加字段，使 Streamlit 能完整呈现“角色 → 请求 → 决策”的链条。
+4. **函数式工具调用**：DeepSeek 等 OpenAI 兼容模型已通过 function calling 接口接入 `fetch_data` 工具，LLM 按 schema 返回字段/窗口请求，系统使用 `DataBroker` 校验并补数后回传 tool result，再继续对话生成最终意见，避免字段错误与手写 JSON 校验。
+5. **审计与前端联动**：把角色提示、数据请求与执行摘要写入 `agent_utils` 附加字段，使 Streamlit 能完整呈现“角色 → 请求 → 决策”的链条。
 
-目前部门 LLM 已支持通过在 JSON 中返回 `data_requests` 触发追加查询：系统会使用 `DataBroker` 验证字段后补充最近数据窗口，再带着查询结果进入下一轮提示，从而形成“请求→取数→复议”的闭环。
+目前部门 LLM 通过 function calling 暴露的 `fetch_data` 工具触发追加查询：模型按 schema 声明需要的 `table.column` 字段与窗口，系统使用 `DataBroker` 验证后补齐数据并作为工具响应回传，再带着查询结果进入下一轮提示，从而形成“请求 → 取数 → 复议”的闭环。
 
 上述调整可在单个部门先行做 PoC，验证闭环能力后再推广至全部角色。
 
