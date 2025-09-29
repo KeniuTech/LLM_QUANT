@@ -362,6 +362,67 @@ SCHEMA_STATEMENTS: Iterable[str] = (
       reason TEXT,
       PRIMARY KEY (trade_date, ts_code)
     );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS investment_pool (
+      trade_date TEXT,
+      ts_code TEXT,
+      score REAL,
+      status TEXT,
+      rationale TEXT,
+      tags TEXT,
+      metadata TEXT,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      PRIMARY KEY (trade_date, ts_code)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS portfolio_positions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts_code TEXT NOT NULL,
+      opened_date TEXT NOT NULL,
+      closed_date TEXT,
+      quantity REAL NOT NULL,
+      cost_price REAL NOT NULL,
+      market_price REAL,
+      market_value REAL,
+      realized_pnl REAL DEFAULT 0,
+      unrealized_pnl REAL DEFAULT 0,
+      target_weight REAL,
+      status TEXT NOT NULL DEFAULT 'open',
+      notes TEXT,
+      metadata TEXT,
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS portfolio_trades (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      trade_date TEXT NOT NULL,
+      ts_code TEXT NOT NULL,
+      action TEXT NOT NULL,
+      quantity REAL NOT NULL,
+      price REAL NOT NULL,
+      fee REAL DEFAULT 0,
+      order_id TEXT,
+      source TEXT,
+      notes TEXT,
+      metadata TEXT
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+      trade_date TEXT PRIMARY KEY,
+      total_value REAL,
+      cash REAL,
+      invested_value REAL,
+      unrealized_pnl REAL,
+      realized_pnl REAL,
+      net_flow REAL,
+      exposure REAL,
+      notes TEXT,
+      metadata TEXT
+    );
     """
 )
 
@@ -391,6 +452,10 @@ REQUIRED_TABLES = (
     "run_log",
     "agent_utils",
     "alloc_log",
+    "investment_pool",
+    "portfolio_positions",
+    "portfolio_trades",
+    "portfolio_snapshots",
 )
 
 
