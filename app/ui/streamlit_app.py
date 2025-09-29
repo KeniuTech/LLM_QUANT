@@ -65,6 +65,14 @@ _DECISION_ENV_SINGLE_RESULT_KEY = "decision_env_single_result"
 _DECISION_ENV_BATCH_RESULTS_KEY = "decision_env_batch_results"
 _DASHBOARD_CONTAINERS: Optional[tuple[object, object]] = None
 _DASHBOARD_ELEMENTS: Optional[Dict[str, object]] = None
+_SIDEBAR_LISTENER_ATTACHED = False
+
+
+def _sidebar_metrics_listener(metrics: Dict[str, object]) -> None:
+    try:
+        _update_dashboard_sidebar(metrics)
+    except Exception:  # noqa: BLE001
+        LOGGER.debug("侧边栏监听器刷新失败", exc_info=True, extra=LOG_EXTRA)
 
 
 def render_global_dashboard() -> None:
@@ -72,11 +80,15 @@ def render_global_dashboard() -> None:
 
     global _DASHBOARD_CONTAINERS
     global _DASHBOARD_ELEMENTS
+    global _SIDEBAR_LISTENER_ATTACHED
 
     metrics_container = st.sidebar.container()
     decisions_container = st.sidebar.container()
     _DASHBOARD_CONTAINERS = (metrics_container, decisions_container)
     _DASHBOARD_ELEMENTS = _ensure_dashboard_elements(metrics_container, decisions_container)
+    if not _SIDEBAR_LISTENER_ATTACHED:
+        register_llm_metrics_listener(_sidebar_metrics_listener)
+        _SIDEBAR_LISTENER_ATTACHED = True
     _update_dashboard_sidebar()
 
 
