@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import asdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -210,10 +210,46 @@ def _load_daily_frame(ts_code: str, start: date, end: date) -> pd.DataFrame:
     return df
 
 
+def _get_latest_trade_date() -> Optional[date]:
+    try:
+        with db_session(read_only=True) as conn:
+            row = conn.execute(
+                "SELECT trade_date FROM daily ORDER BY trade_date DESC LIMIT 1"
+            ).fetchone()
+    except Exception:  # noqa: BLE001
+        LOGGER.exception("查询最新交易日失败", extra=LOG_EXTRA)
+        return None
+    if not row:
+        return None
+    raw_value = row["trade_date"]
+    if not raw_value:
+        return None
+    try:
+        return datetime.strptime(str(raw_value), "%Y%m%d").date()
+    except ValueError:
+        try:
+            return datetime.fromisoformat(str(raw_value)).date()
+        except ValueError:
+            LOGGER.warning("无法解析交易日：%s", raw_value, extra=LOG_EXTRA)
+            return None
+
+
+def _default_backtest_range(window_days: int = 60) -> tuple[date, date]:
+    latest = _get_latest_trade_date() or date.today()
+    start = latest - timedelta(days=window_days)
+    if start > latest:
+        start = latest
+    return start, latest
+
+
 def render_today_plan() -> None:
     LOGGER.info("渲染今日计划页面", extra=LOG_EXTRA)
     st.header("今日计划")
-    st.caption("统计与决策概览现已移至左侧“系统监控”侧栏。")
+    latest_trade_date = _get_latest_trade_date()
+    if latest_trade_date:
+        st.caption(f"最新交易日：{latest_trade_date.isoformat()}（统计数据请见左侧系统监控）")
+    else:
+        st.caption("统计与决策概览现已移至左侧“系统监控”侧栏。")
     try:
         with db_session(read_only=True) as conn:
             date_rows = conn.execute(
@@ -419,8 +455,7 @@ def render_backtest() -> None:
     st.header("回测与复盘")
     st.write("在此运行回测、展示净值曲线与代理贡献。")
 
-    default_start = date(2020, 1, 1)
-    default_end = date(2020, 3, 31)
+    default_start, default_end = _default_backtest_range(window_days=60)
     LOGGER.debug(
         "回测默认参数：start=%s end=%s universe=%s target=%s stop=%s hold_days=%s",
         default_start,
