@@ -3,9 +3,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Optional
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _default_root() -> Path:
@@ -26,7 +30,13 @@ class DataPaths:
         self.database = self.root / "llm_quant.db"
         self.backups = self.root / "backups"
         self.backups.mkdir(parents=True, exist_ok=True)
-        self.config_file = self.root / "config.json"
+        config_override = os.getenv("LLM_QUANT_CONFIG_PATH")
+        if config_override:
+            config_path = Path(config_override).expanduser()
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            config_path = self.root / "config.json"
+        self.config_file = config_path
 
 
 @dataclass
@@ -38,6 +48,7 @@ class AgentWeights:
     news: float = 0.20
     liquidity: float = 0.15
     macro: float = 0.15
+    risk: float = 1.0
 
     def as_dict(self) -> Dict[str, float]:
         return {
@@ -46,6 +57,7 @@ class AgentWeights:
             "A_news": self.news,
             "A_liq": self.liquidity,
             "A_macro": self.macro,
+            "A_risk": self.risk,
         }
 
     def update_from_dict(self, data: Mapping[str, float]) -> None:
@@ -60,6 +72,8 @@ class AgentWeights:
             "liquidity": "liquidity",
             "A_macro": "macro",
             "macro": "macro",
+            "A_risk": "risk",
+            "risk": "risk",
         }
         for key, attr in mapping.items():
             if key in data and data[key] is not None:
@@ -581,12 +595,25 @@ def save_config(cfg: AppConfig | None = None) -> None:
             for code, dept in cfg.departments.items()
         },
     }
+    serialized = json.dumps(payload, ensure_ascii=False, indent=2)
+
+    try:
+        existing = path.read_text(encoding="utf-8")
+    except OSError:
+        existing = None
+
+    if existing == serialized:
+        LOGGER.info("配置未变更，跳过写入：%s", path)
+        return
+
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("w", encoding="utf-8") as fh:
-            json.dump(payload, fh, ensure_ascii=False, indent=2)
+        tmp_path = path.with_suffix(path.suffix + ".tmp") if path.suffix else path.with_name(path.name + ".tmp")
+        tmp_path.write_text(serialized, encoding="utf-8")
+        tmp_path.replace(path)
+        LOGGER.info("配置已写入：%s", path)
     except OSError:
-        pass
+        LOGGER.exception("配置写入失败：%s", path)
 
 
 def _load_env_defaults(cfg: AppConfig) -> None:

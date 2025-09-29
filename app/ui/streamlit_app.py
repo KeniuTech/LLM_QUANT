@@ -914,9 +914,14 @@ def render_backtest() -> None:
                                             "保存这些权重为默认配置",
                                             key="save_decision_env_weights_single",
                                         ):
-                                            cfg.agent_weights.update_from_dict(weights_dict)
-                                            save_config(cfg)
-                                            st.success("代理权重已写入 config.json")
+                                            try:
+                                                cfg.agent_weights.update_from_dict(weights_dict)
+                                                save_config(cfg)
+                                            except Exception as exc:  # noqa: BLE001
+                                                LOGGER.exception("保存权重失败", extra={**LOG_EXTRA, "error": str(exc)})
+                                                st.error(f"写入配置失败：{exc}")
+                                            else:
+                                                st.success("代理权重已写入 config.json")
 
                                     nav_series = info.get("nav_series")
                                     if nav_series:
@@ -1085,11 +1090,16 @@ def render_backtest() -> None:
                                             "保存所选权重为默认配置",
                                             key="save_decision_env_weights_batch",
                                         ):
-                                            cfg.agent_weights.update_from_dict(selected_row.get("权重", {}))
-                                            save_config(cfg)
-                                            st.success(
-                                                f"已将序号 {selected_row['序号']} 的权重写入 config.json"
-                                            )
+                                            try:
+                                                cfg.agent_weights.update_from_dict(selected_row.get("权重", {}))
+                                                save_config(cfg)
+                                            except Exception as exc:  # noqa: BLE001
+                                                LOGGER.exception("批量保存权重失败", extra={**LOG_EXTRA, "error": str(exc)})
+                                                st.error(f"写入配置失败：{exc}")
+                                            else:
+                                                st.success(
+                                                    f"已将序号 {selected_row['序号']} 的权重写入 config.json"
+                                                )
                                     else:
                                         st.caption("暂无成功的结果可供保存。")
 
