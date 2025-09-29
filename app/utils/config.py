@@ -243,6 +243,7 @@ def _default_departments() -> Dict[str, DepartmentSettings]:
                 "daily_basic.turnover_rate",
                 "factors.mom_20",
                 "factors.mom_60",
+                "factors.volat_20",
             ],
             "prompt": "你主导动量风格研究，关注价格与成交量的加速变化，需在保持纪律的前提下判定短期多空倾向。",
         },
@@ -253,8 +254,9 @@ def _default_departments() -> Dict[str, DepartmentSettings]:
             "data_scope": [
                 "daily_basic.pe",
                 "daily_basic.pb",
-                "daily_basic.roe",
-                "fundamental.growth",
+                "daily_basic.ps",
+                "daily_basic.dv_ratio",
+                "factors.turn_20",
             ],
             "prompt": "你负责价值与质量评估，应结合估值分位、盈利持续性及安全边际给出配置建议。",
         },
@@ -265,7 +267,6 @@ def _default_departments() -> Dict[str, DepartmentSettings]:
             "data_scope": [
                 "news.sentiment_index",
                 "news.heat_score",
-                "events.latest_headlines",
             ],
             "prompt": "你专注新闻和事件驱动，应评估正负面舆情对标的短线波动的可能影响。",
         },
@@ -275,8 +276,11 @@ def _default_departments() -> Dict[str, DepartmentSettings]:
             "description": "衡量成交活跃度与交易成本，控制进出场的实现可能性。",
             "data_scope": [
                 "daily_basic.volume_ratio",
+                "daily_basic.turnover_rate",
                 "daily_basic.turnover_rate_f",
-                "market.spread_estimate",
+                "factors.turn_20",
+                "stk_limit.up_limit",
+                "stk_limit.down_limit",
             ],
             "prompt": "你负责评估该标的的流动性与滑点风险，需要提出可执行的仓位调整建议。",
         },
@@ -286,8 +290,8 @@ def _default_departments() -> Dict[str, DepartmentSettings]:
             "description": "追踪宏观与行业景气度，为行业配置和风险偏好提供参考。",
             "data_scope": [
                 "macro.industry_heat",
-                "macro.liquidity_cycle",
                 "index.performance_peers",
+                "macro.relative_strength",
             ],
             "prompt": "你负责宏观与行业研判，应结合宏观周期、行业景气与相对强弱给出方向性意见。",
         },
@@ -296,9 +300,10 @@ def _default_departments() -> Dict[str, DepartmentSettings]:
             "title": "风险控制部门",
             "description": "监控极端风险、合规与交易限制，必要时行使否决。",
             "data_scope": [
-                "market.limit_flags",
-                "portfolio.position",
-                "risk.alerts",
+                "daily.pct_chg",
+                "suspend.suspend_type",
+                "stk_limit.up_limit",
+                "stk_limit.down_limit",
             ],
             "prompt": "你负责风险控制，应识别停牌、涨跌停、持仓约束等因素，必要时提出减仓或观望建议。",
         },
@@ -608,9 +613,8 @@ def save_config(cfg: AppConfig | None = None) -> None:
 
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = path.with_suffix(path.suffix + ".tmp") if path.suffix else path.with_name(path.name + ".tmp")
-        tmp_path.write_text(serialized, encoding="utf-8")
-        tmp_path.replace(path)
+        with path.open("w", encoding="utf-8") as fh:
+            fh.write(serialized)
         LOGGER.info("配置已写入：%s", path)
     except OSError:
         LOGGER.exception("配置写入失败：%s", path)

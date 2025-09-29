@@ -74,7 +74,15 @@ class DepartmentDecision:
 class DepartmentAgent:
     """Wraps LLM ensemble logic for a single analytical department."""
 
-    ALLOWED_TABLES: ClassVar[List[str]] = ["daily", "daily_basic"]
+    ALLOWED_TABLES: ClassVar[List[str]] = [
+        "daily",
+        "daily_basic",
+        "stk_limit",
+        "suspend",
+        "heat_daily",
+        "news",
+        "index_daily",
+    ]
 
     def __init__(
         self,

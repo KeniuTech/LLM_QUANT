@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import date
-from statistics import mean, pstdev
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
 
 from app.agents.base import AgentAction, AgentContext
@@ -16,49 +15,12 @@ from app.utils.data_access import DataBroker
 from app.utils.config import get_config
 from app.utils.db import db_session
 from app.utils.logging import get_logger
+from app.core.indicators import momentum, normalize, rolling_mean, volatility
 
 
 LOGGER = get_logger(__name__)
 LOG_EXTRA = {"stage": "backtest"}
 
-
-def _compute_momentum(values: List[float], window: int) -> float:
-    if window <= 0 or len(values) < window:
-        return 0.0
-    latest = values[0]
-    past = values[window - 1]
-    if past is None or past == 0:
-        return 0.0
-    try:
-        return (latest / past) - 1.0
-    except ZeroDivisionError:
-        return 0.0
-
-
-def _compute_volatility(values: List[float], window: int) -> float:
-    if len(values) < 2 or window <= 1:
-        return 0.0
-    limit = min(window, len(values) - 1)
-    returns: List[float] = []
-    for idx in range(limit):
-        current = values[idx]
-        previous = values[idx + 1]
-        if previous is None or previous == 0:
-            continue
-        returns.append((current / previous) - 1.0)
-    if len(returns) < 2:
-        return 0.0
-    return float(pstdev(returns))
-
-
-def _normalize(value: Any, factor: float) -> float:
-    try:
-        numeric = float(value)
-    except (TypeError, ValueError):
-        return 0.0
-    if factor <= 0:
-        return max(0.0, min(1.0, numeric))
-    return max(0.0, min(1.0, numeric / factor))
 
 
 @dataclass
@@ -143,9 +105,9 @@ class BacktestEngine:
                 window=60,
             )
             close_values = [value for _date, value in closes]
-            mom20 = _compute_momentum(close_values, 20)
-            mom60 = _compute_momentum(close_values, 60)
-            volat20 = _compute_volatility(close_values, 20)
+            mom20 = momentum(close_values, 20)
+            mom60 = momentum(close_values, 60)
+            volat20 = volatility(close_values, 20)
 
             turnover_series = self.data_broker.fetch_series(
                 "daily_basic",
@@ -155,10 +117,31 @@ class BacktestEngine:
                 window=20,
             )
             turnover_values = [value for _date, value in turnover_series]
-            turn20 = mean(turnover_values) if turnover_values else 0.0
+            turn20 = rolling_mean(turnover_values, 20)
 
-            liquidity_score = _normalize(turn20, factor=20.0)
-            cost_penalty = _normalize(scope_values.get("daily_basic.volume_ratio", 0.0), factor=50.0)
+            liquidity_score = normalize(turn20, factor=20.0)
+            cost_penalty = normalize(
+                scope_values.get("daily_basic.volume_ratio", 0.0),
+                factor=50.0,
+            )
+
+            scope_values.setdefault("factors.mom_20", mom20)
+            scope_values.setdefault("factors.mom_60", mom60)
+            scope_values.setdefault("factors.volat_20", volat20)
+            scope_values.setdefault("factors.turn_20", turn20)
+            scope_values.setdefault("news.sentiment_index", 0.0)
+            scope_values.setdefault("news.heat_score", 0.0)
+            if scope_values.get("macro.industry_heat") is None:
+                scope_values["macro.industry_heat"] = 0.5
+            if scope_values.get("macro.relative_strength") is None:
+                peer_strength = scope_values.get("index.performance_peers")
+                if peer_strength is None:
+                    peer_strength = 0.5
+                scope_values["macro.relative_strength"] = peer_strength
+            scope_values.setdefault(
+                "index.performance_peers",
+                scope_values.get("macro.relative_strength", 0.5),
+            )
 
             latest_close = scope_values.get("daily.close", 0.0)
             latest_pct = scope_values.get("daily.pct_chg", 0.0)

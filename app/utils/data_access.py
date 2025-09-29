@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import re
+import sqlite3
 from dataclasses import dataclass
-from typing import ClassVar, Dict, Iterable, List, Optional, Sequence, Tuple
+from datetime import datetime, timedelta
+from typing import Any, ClassVar, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from .db import db_session
 from .logging import get_logger
+from app.core.indicators import momentum, normalize, rolling_mean, volatility
 
 LOGGER = get_logger(__name__)
 LOG_EXTRA = {"stage": "data_broker"}
@@ -38,6 +41,27 @@ def parse_field_path(path: str) -> Tuple[str, str] | None:
     return _safe_split(path)
 
 
+def _parse_trade_date(value: object) -> Optional[datetime]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    text = text.replace("-", "")
+    try:
+        return datetime.strptime(text[:8], "%Y%m%d")
+    except ValueError:
+        return None
+
+
+def _start_of_day(dt: datetime) -> str:
+    return dt.strftime("%Y-%m-%d 00:00:00")
+
+
+def _end_of_day(dt: datetime) -> str:
+    return dt.strftime("%Y-%m-%d 23:59:59")
+
+
 @dataclass
 class DataBroker:
     """Lightweight data access helper for agent/LLM consumption."""
@@ -65,60 +89,77 @@ class DataBroker:
         },
     }
     MAX_WINDOW: ClassVar[int] = 120
+    BENCHMARK_INDEX: ClassVar[str] = "000300.SH"
 
     def fetch_latest(
         self,
         ts_code: str,
         trade_date: str,
         fields: Iterable[str],
-    ) -> Dict[str, float]:
+    ) -> Dict[str, Any]:
         """Fetch the latest value (<= trade_date) for each requested field."""
 
         grouped: Dict[str, List[str]] = {}
         field_map: Dict[Tuple[str, str], List[str]] = {}
+        derived_cache: Dict[str, Any] = {}
+        results: Dict[str, Any] = {}
         for item in fields:
             if not item:
                 continue
-            resolved = self.resolve_field(str(item))
+            field_name = str(item)
+            resolved = self.resolve_field(field_name)
             if not resolved:
+                derived = self._resolve_derived_field(
+                    ts_code,
+                    trade_date,
+                    field_name,
+                    derived_cache,
+                )
+                if derived is not None:
+                    results[field_name] = derived
                 continue
             table, column = resolved
             grouped.setdefault(table, [])
             if column not in grouped[table]:
                 grouped[table].append(column)
-            field_map.setdefault((table, column), []).append(str(item))
+            field_map.setdefault((table, column), []).append(field_name)
 
         if not grouped:
-            return {}
+            return results
 
-        results: Dict[str, float] = {}
-        with db_session(read_only=True) as conn:
-            for table, columns in grouped.items():
-                joined_cols = ", ".join(columns)
-                query = (
-                    f"SELECT trade_date, {joined_cols} FROM {table} "
-                    "WHERE ts_code = ? AND trade_date <= ? "
-                    "ORDER BY trade_date DESC LIMIT 1"
-                )
-                try:
-                    row = conn.execute(query, (ts_code, trade_date)).fetchone()
-                except Exception as exc:  # noqa: BLE001
-                    LOGGER.debug(
-                        "查询失败 table=%s fields=%s err=%s",
-                        table,
-                        columns,
-                        exc,
-                        extra=LOG_EXTRA,
+        try:
+            with db_session(read_only=True) as conn:
+                for table, columns in grouped.items():
+                    joined_cols = ", ".join(columns)
+                    query = (
+                        f"SELECT trade_date, {joined_cols} FROM {table} "
+                        "WHERE ts_code = ? AND trade_date <= ? "
+                        "ORDER BY trade_date DESC LIMIT 1"
                     )
-                    continue
-                if not row:
-                    continue
-                for column in columns:
-                    value = row[column]
-                    if value is None:
+                    try:
+                        row = conn.execute(query, (ts_code, trade_date)).fetchone()
+                    except Exception as exc:  # noqa: BLE001
+                        LOGGER.debug(
+                            "查询失败 table=%s fields=%s err=%s",
+                            table,
+                            columns,
+                            exc,
+                            extra=LOG_EXTRA,
+                        )
                         continue
-                    for original in field_map.get((table, column), [f"{table}.{column}"]):
-                        results[original] = float(value)
+                    if not row:
+                        continue
+                    for column in columns:
+                        value = row[column]
+                        if value is None:
+                            continue
+                        for original in field_map.get((table, column), [f"{table}.{column}"]):
+                            try:
+                                results[original] = float(value)
+                            except (TypeError, ValueError):
+                                results[original] = value
+        except sqlite3.OperationalError as exc:
+            LOGGER.debug("数据库只读连接失败：%s", exc, extra=LOG_EXTRA)
         return results
 
     def fetch_series(
@@ -149,18 +190,28 @@ class DataBroker:
             "WHERE ts_code = ? AND trade_date <= ? "
             "ORDER BY trade_date DESC LIMIT ?"
         )
-        with db_session(read_only=True) as conn:
-            try:
-                rows = conn.execute(query, (ts_code, end_date, window)).fetchall()
-            except Exception as exc:  # noqa: BLE001
-                LOGGER.debug(
-                    "时间序列查询失败 table=%s column=%s err=%s",
-                    table,
-                    column,
-                    exc,
-                    extra=LOG_EXTRA,
-                )
-                return []
+        try:
+            with db_session(read_only=True) as conn:
+                try:
+                    rows = conn.execute(query, (ts_code, end_date, window)).fetchall()
+                except Exception as exc:  # noqa: BLE001
+                    LOGGER.debug(
+                        "时间序列查询失败 table=%s column=%s err=%s",
+                        table,
+                        column,
+                        exc,
+                        extra=LOG_EXTRA,
+                    )
+                    return []
+        except sqlite3.OperationalError as exc:
+            LOGGER.debug(
+                "时间序列连接失败 table=%s column=%s err=%s",
+                table,
+                column,
+                exc,
+                extra=LOG_EXTRA,
+            )
+            return []
         series: List[Tuple[str, float]] = []
         for row in rows:
             value = row[resolved]
@@ -185,18 +236,27 @@ class DataBroker:
             f"SELECT 1 FROM {table} WHERE ts_code = ? AND {where_clause} LIMIT 1"
         )
         bind_params = (ts_code, *params)
-        with db_session(read_only=True) as conn:
-            try:
-                row = conn.execute(query, bind_params).fetchone()
-            except Exception as exc:  # noqa: BLE001
-                LOGGER.debug(
-                    "flag 查询失败 table=%s where=%s err=%s",
-                    table,
-                    where_clause,
-                    exc,
-                    extra=LOG_EXTRA,
-                )
-                return False
+        try:
+            with db_session(read_only=True) as conn:
+                try:
+                    row = conn.execute(query, bind_params).fetchone()
+                except Exception as exc:  # noqa: BLE001
+                    LOGGER.debug(
+                        "flag 查询失败 table=%s where=%s err=%s",
+                        table,
+                        where_clause,
+                        exc,
+                        extra=LOG_EXTRA,
+                    )
+                    return False
+        except sqlite3.OperationalError as exc:
+            LOGGER.debug(
+                "flag 查询连接失败 table=%s err=%s",
+                table,
+                exc,
+                extra=LOG_EXTRA,
+            )
+            return False
         return row is not None
 
     def fetch_table_rows(
@@ -231,22 +291,287 @@ class DataBroker:
             params = (ts_code, window)
 
         results: List[Dict[str, object]] = []
-        with db_session(read_only=True) as conn:
-            try:
-                rows = conn.execute(query, params).fetchall()
-            except Exception as exc:  # noqa: BLE001
-                LOGGER.debug(
-                    "表查询失败 table=%s err=%s",
-                    table,
-                    exc,
-                    extra=LOG_EXTRA,
-                )
-                return []
+        try:
+            with db_session(read_only=True) as conn:
+                try:
+                    rows = conn.execute(query, params).fetchall()
+                except Exception as exc:  # noqa: BLE001
+                    LOGGER.debug(
+                        "表查询失败 table=%s err=%s",
+                        table,
+                        exc,
+                        extra=LOG_EXTRA,
+                    )
+                    return []
+        except sqlite3.OperationalError as exc:
+            LOGGER.debug(
+                "表连接失败 table=%s err=%s",
+                table,
+                exc,
+                extra=LOG_EXTRA,
+            )
+            return []
 
         for row in rows:
             record = {col: row[col] for col in columns}
             results.append(record)
         return results
+
+    def _resolve_derived_field(
+        self,
+        ts_code: str,
+        trade_date: str,
+        field: str,
+        cache: Dict[str, Any],
+    ) -> Optional[Any]:
+        if field in cache:
+            return cache[field]
+
+        value: Optional[Any] = None
+        if field == "factors.mom_20":
+            value = self._derived_price_momentum(ts_code, trade_date, 20)
+        elif field == "factors.mom_60":
+            value = self._derived_price_momentum(ts_code, trade_date, 60)
+        elif field == "factors.volat_20":
+            value = self._derived_price_volatility(ts_code, trade_date, 20)
+        elif field == "factors.turn_20":
+            value = self._derived_turnover_mean(ts_code, trade_date, 20)
+        elif field == "news.sentiment_index":
+            rows = cache.get("__news_rows__")
+            if rows is None:
+                rows = self._fetch_recent_news(ts_code, trade_date)
+                cache["__news_rows__"] = rows
+            value = self._news_sentiment_from_rows(rows)
+        elif field == "news.heat_score":
+            rows = cache.get("__news_rows__")
+            if rows is None:
+                rows = self._fetch_recent_news(ts_code, trade_date)
+                cache["__news_rows__"] = rows
+            value = self._news_heat_from_rows(rows)
+        elif field == "macro.industry_heat":
+            value = self._derived_industry_heat(ts_code, trade_date)
+        elif field in {"macro.relative_strength", "index.performance_peers"}:
+            value = self._derived_relative_strength(ts_code, trade_date, cache)
+
+        cache[field] = value
+        return value
+
+    def _derived_price_momentum(
+        self,
+        ts_code: str,
+        trade_date: str,
+        window: int,
+    ) -> Optional[float]:
+        series = self.fetch_series("daily", "close", ts_code, trade_date, window)
+        values = [value for _dt, value in series]
+        if not values:
+            return None
+        return momentum(values, window)
+
+    def _derived_price_volatility(
+        self,
+        ts_code: str,
+        trade_date: str,
+        window: int,
+    ) -> Optional[float]:
+        series = self.fetch_series("daily", "close", ts_code, trade_date, window)
+        values = [value for _dt, value in series]
+        if len(values) < 2:
+            return None
+        return volatility(values, window)
+
+    def _derived_turnover_mean(
+        self,
+        ts_code: str,
+        trade_date: str,
+        window: int,
+    ) -> Optional[float]:
+        series = self.fetch_series(
+            "daily_basic",
+            "turnover_rate",
+            ts_code,
+            trade_date,
+            window,
+        )
+        values = [value for _dt, value in series]
+        if not values:
+            return None
+        return rolling_mean(values, window)
+
+    def _fetch_recent_news(
+        self,
+        ts_code: str,
+        trade_date: str,
+        days: int = 3,
+        limit: int = 120,
+    ) -> List[Dict[str, Any]]:
+        baseline = _parse_trade_date(trade_date)
+        if baseline is None:
+            return []
+        start = _start_of_day(baseline - timedelta(days=days))
+        end = _end_of_day(baseline)
+        query = (
+            "SELECT sentiment, heat FROM news "
+            "WHERE ts_code = ? AND pub_time BETWEEN ? AND ? "
+            "ORDER BY pub_time DESC LIMIT ?"
+        )
+        try:
+            with db_session(read_only=True) as conn:
+                rows = conn.execute(query, (ts_code, start, end, limit)).fetchall()
+        except sqlite3.OperationalError as exc:
+            LOGGER.debug(
+                "新闻查询连接失败 ts_code=%s err=%s",
+                ts_code,
+                exc,
+                extra=LOG_EXTRA,
+            )
+            return []
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.debug(
+                "新闻查询失败 ts_code=%s err=%s",
+                ts_code,
+                exc,
+                extra=LOG_EXTRA,
+            )
+            return []
+        return [dict(row) for row in rows]
+
+    @staticmethod
+    def _news_sentiment_from_rows(rows: List[Dict[str, Any]]) -> Optional[float]:
+        sentiments: List[float] = []
+        for row in rows:
+            value = row.get("sentiment")
+            if value is None:
+                continue
+            try:
+                sentiments.append(float(value))
+            except (TypeError, ValueError):
+                continue
+        if not sentiments:
+            return None
+        avg = sum(sentiments) / len(sentiments)
+        return max(-1.0, min(1.0, avg))
+
+    @staticmethod
+    def _news_heat_from_rows(rows: List[Dict[str, Any]]) -> Optional[float]:
+        if not rows:
+            return None
+        total_heat = 0.0
+        for row in rows:
+            value = row.get("heat")
+            if value is None:
+                continue
+            try:
+                total_heat += max(float(value), 0.0)
+            except (TypeError, ValueError):
+                continue
+        if total_heat > 0:
+            return normalize(total_heat, factor=100.0)
+        return normalize(len(rows), factor=20.0)
+
+    def _derived_industry_heat(self, ts_code: str, trade_date: str) -> Optional[float]:
+        industry = self._lookup_industry(ts_code)
+        if not industry:
+            return None
+        query = (
+            "SELECT heat FROM heat_daily "
+            "WHERE scope = ? AND key = ? AND trade_date <= ? "
+            "ORDER BY trade_date DESC LIMIT 1"
+        )
+        try:
+            with db_session(read_only=True) as conn:
+                row = conn.execute(query, ("industry", industry, trade_date)).fetchone()
+        except sqlite3.OperationalError as exc:
+            LOGGER.debug(
+                "行业热度查询失败 ts_code=%s err=%s",
+                ts_code,
+                exc,
+                extra=LOG_EXTRA,
+            )
+            return None
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.debug(
+                "行业热度读取异常 ts_code=%s err=%s",
+                ts_code,
+                exc,
+                extra=LOG_EXTRA,
+            )
+            return None
+        if not row:
+            return None
+        heat_value = row["heat"]
+        if heat_value is None:
+            return None
+        return normalize(heat_value, factor=100.0)
+
+    def _lookup_industry(self, ts_code: str) -> Optional[str]:
+        cache = getattr(self, "_industry_cache", None)
+        if cache is None:
+            cache = {}
+            self._industry_cache = cache
+        if ts_code in cache:
+            return cache[ts_code]
+        query = "SELECT industry FROM stock_basic WHERE ts_code = ?"
+        try:
+            with db_session(read_only=True) as conn:
+                row = conn.execute(query, (ts_code,)).fetchone()
+        except sqlite3.OperationalError as exc:
+            LOGGER.debug(
+                "行业查询连接失败 ts_code=%s err=%s",
+                ts_code,
+                exc,
+                extra=LOG_EXTRA,
+            )
+            cache[ts_code] = None
+            return None
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.debug(
+                "行业查询失败 ts_code=%s err=%s",
+                ts_code,
+                exc,
+                extra=LOG_EXTRA,
+            )
+            cache[ts_code] = None
+            return None
+        industry = None
+        if row:
+            industry = row["industry"]
+        cache[ts_code] = industry
+        return industry
+
+    def _derived_relative_strength(
+        self,
+        ts_code: str,
+        trade_date: str,
+        cache: Dict[str, Any],
+    ) -> Optional[float]:
+        window = 20
+        series = self.fetch_series("daily", "close", ts_code, trade_date, max(window, 30))
+        values = [value for _dt, value in series]
+        if not values:
+            return None
+        stock_momentum = momentum(values, window)
+        bench_key = f"__benchmark_mom_{window}"
+        benchmark = cache.get(bench_key)
+        if benchmark is None:
+            benchmark = self._index_momentum(trade_date, window)
+            cache[bench_key] = benchmark
+        diff = stock_momentum if benchmark is None else stock_momentum - benchmark
+        diff = max(-0.2, min(0.2, diff))
+        return (diff + 0.2) / 0.4
+
+    def _index_momentum(self, trade_date: str, window: int) -> Optional[float]:
+        series = self.fetch_series(
+            "index_daily",
+            "close",
+            self.BENCHMARK_INDEX,
+            trade_date,
+            window,
+        )
+        values = [value for _dt, value in series]
+        if not values:
+            return None
+        return momentum(values, window)
 
     def resolve_field(self, field: str) -> Optional[Tuple[str, str]]:
         normalized = _safe_split(field)
