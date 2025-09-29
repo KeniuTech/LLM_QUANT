@@ -423,6 +423,18 @@ SCHEMA_STATEMENTS: Iterable[str] = (
       notes TEXT,
       metadata TEXT
     );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS tuning_results (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      experiment_id TEXT,
+      strategy TEXT,
+      action TEXT,
+      weights TEXT,
+      reward REAL,
+      metrics TEXT,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
     """
 )
 
@@ -456,6 +468,7 @@ REQUIRED_TABLES = (
     "portfolio_positions",
     "portfolio_trades",
     "portfolio_snapshots",
+    "tuning_results",
 )
 
 

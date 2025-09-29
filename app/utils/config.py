@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 import json
 import os
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Mapping, Optional
 
 
 def _default_root() -> Path:
@@ -47,6 +47,32 @@ class AgentWeights:
             "A_liq": self.liquidity,
             "A_macro": self.macro,
         }
+
+    def update_from_dict(self, data: Mapping[str, float]) -> None:
+        mapping = {
+            "A_mom": "momentum",
+            "momentum": "momentum",
+            "A_val": "value",
+            "value": "value",
+            "A_news": "news",
+            "news": "news",
+            "A_liq": "liquidity",
+            "liquidity": "liquidity",
+            "A_macro": "macro",
+            "macro": "macro",
+        }
+        for key, attr in mapping.items():
+            if key in data and data[key] is not None:
+                try:
+                    setattr(self, attr, float(data[key]))
+                except (TypeError, ValueError):
+                    continue
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, float]) -> "AgentWeights":
+        inst = cls()
+        inst.update_from_dict(data)
+        return inst
 
 DEFAULT_LLM_MODEL_OPTIONS: Dict[str, Dict[str, object]] = {
     "ollama": {
@@ -357,6 +383,10 @@ def _load_from_file(cfg: AppConfig) -> None:
     if "decision_method" in payload:
         cfg.decision_method = str(payload.get("decision_method") or cfg.decision_method)
 
+    weights_payload = payload.get("agent_weights")
+    if isinstance(weights_payload, dict):
+        cfg.agent_weights.update_from_dict(weights_payload)
+
     legacy_profiles: Dict[str, Dict[str, object]] = {}
     legacy_routes: Dict[str, Dict[str, object]] = {}
 
@@ -523,6 +553,7 @@ def save_config(cfg: AppConfig | None = None) -> None:
         "tushare_token": cfg.tushare_token,
         "force_refresh": cfg.force_refresh,
         "decision_method": cfg.decision_method,
+        "agent_weights": cfg.agent_weights.as_dict(),
         "llm": {
             "strategy": cfg.llm.strategy if cfg.llm.strategy in ALLOWED_LLM_STRATEGIES else "single",
             "majority_threshold": cfg.llm.majority_threshold,

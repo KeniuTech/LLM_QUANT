@@ -13,6 +13,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import json
+from datetime import datetime
+import uuid
 
 import pandas as pd
 import plotly.express as px
@@ -24,6 +26,7 @@ import streamlit as st
 from app.agents.base import AgentContext
 from app.agents.game import Decision
 from app.backtest.engine import BtConfig, run_backtest
+from app.backtest.decision_env import DecisionEnv, ParameterSpec
 from app.data.schema import initialize_database
 from app.ingest.checker import run_boot_check
 from app.ingest.tushare import FetchJob, run_ingestion
@@ -53,6 +56,8 @@ from app.utils.portfolio import (
     list_positions,
     list_recent_trades,
 )
+from app.agents.registry import default_agents
+from app.utils.tuning import log_tuning_result
 
 
 LOGGER = get_logger(__name__)
@@ -623,6 +628,7 @@ def render_backtest() -> None:
     st.header("回测与复盘")
     st.write("在此运行回测、展示净值曲线与代理贡献。")
 
+    cfg = get_config()
     default_start, default_end = _default_backtest_range(window_days=60)
     LOGGER.debug(
         "回测默认参数：start=%s end=%s universe=%s target=%s stop=%s hold_days=%s",
@@ -745,6 +751,347 @@ def render_backtest() -> None:
             LOGGER.exception("回测执行失败", extra=LOG_EXTRA)
             status_box.update(label="回测执行失败", state="error")
             st.error(f"回测执行失败：{exc}")
+
+    with st.expander("离线调参实验 (DecisionEnv)", expanded=False):
+        st.caption(
+            "使用 DecisionEnv 对代理权重做离线调参。请选择需要优化的代理并设定权重范围，"
+            "系统会运行一次回测并返回收益、回撤等指标。若 LLM 网络不可用，将返回失败标记。"
+        )
+
+        disable_departments = st.checkbox(
+            "禁用部门 LLM（仅规则代理，适合离线快速评估）",
+            value=True,
+            help="关闭部门调用后不依赖外部 LLM 网络，仅根据规则代理权重模拟。",
+        )
+
+        default_experiment_id = f"streamlit_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        experiment_id = st.text_input(
+            "实验 ID",
+            value=default_experiment_id,
+            help="用于在 tuning_results 表中区分不同实验。",
+        )
+        strategy_label = st.text_input(
+            "策略说明",
+            value="DecisionEnv",
+            help="可选：为本次调参记录一个策略名称或备注。",
+        )
+
+        agent_objects = default_agents()
+        agent_names = [agent.name for agent in agent_objects]
+        if not agent_names:
+            st.info("暂无可调整的代理。")
+        else:
+            selected_agents = st.multiselect(
+                "选择调参的代理权重",
+                agent_names,
+                default=agent_names[:2],
+                key="decision_env_agents",
+            )
+
+            specs: List[ParameterSpec] = []
+            action_values: List[float] = []
+            range_valid = True
+            for idx, agent_name in enumerate(selected_agents):
+                col_min, col_max, col_action = st.columns([1, 1, 2])
+                min_key = f"decision_env_min_{agent_name}"
+                max_key = f"decision_env_max_{agent_name}"
+                action_key = f"decision_env_action_{agent_name}"
+                default_min = 0.0
+                default_max = 1.0
+                min_val = col_min.number_input(
+                    f"{agent_name} 最小权重",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=default_min,
+                    step=0.05,
+                    key=min_key,
+                )
+                max_val = col_max.number_input(
+                    f"{agent_name} 最大权重",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=default_max,
+                    step=0.05,
+                    key=max_key,
+                )
+                if max_val <= min_val:
+                    range_valid = False
+                action_val = col_action.slider(
+                    f"{agent_name} 动作 (0-1)",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=0.5,
+                    step=0.01,
+                    key=action_key,
+                )
+                specs.append(
+                    ParameterSpec(
+                        name=f"weight_{agent_name}",
+                        target=f"agent_weights.{agent_name}",
+                        minimum=min_val,
+                        maximum=max_val,
+                    )
+                )
+                action_values.append(action_val)
+
+            run_decision_env = st.button("执行单次调参", key="run_decision_env_button")
+            if run_decision_env:
+                if not selected_agents:
+                    st.warning("请至少选择一个代理进行调参。")
+                elif not range_valid:
+                    st.error("请确保所有代理的最大权重大于最小权重。")
+                else:
+                    baseline_weights = cfg.agent_weights.as_dict()
+                    for agent in agent_objects:
+                        baseline_weights.setdefault(agent.name, 1.0)
+
+                    universe_env = [code.strip() for code in universe_text.split(',') if code.strip()]
+                    if not universe_env:
+                        st.error("请先指定至少一个股票代码。")
+                    else:
+                        bt_cfg_env = BtConfig(
+                            id="decision_env_streamlit",
+                            name="DecisionEnv Streamlit",
+                            start_date=start_date,
+                            end_date=end_date,
+                            universe=universe_env,
+                            params={
+                                "target": target,
+                                "stop": stop,
+                                "hold_days": int(hold_days),
+                            },
+                            method=cfg.decision_method,
+                        )
+                        env = DecisionEnv(
+                            bt_config=bt_cfg_env,
+                            parameter_specs=specs,
+                            baseline_weights=baseline_weights,
+                            disable_departments=disable_departments,
+                        )
+                        env.reset()
+                        with st.spinner("正在执行离线调参……"):
+                            try:
+                                observation, reward, done, info = env.step(action_values)
+                            except Exception as exc:  # noqa: BLE001
+                                LOGGER.exception("DecisionEnv 调用失败", extra=LOG_EXTRA)
+                                st.error(f"离线调参失败：{exc}")
+                            else:
+                                if observation.get("failure"):
+                                    st.error("调参失败：回测执行未完成，可能是 LLM 网络不可用或参数异常。")
+                                    st.json(observation)
+                                else:
+                                    st.success("离线调参完成")
+                                    col_metrics = st.columns(4)
+                                    col_metrics[0].metric("总收益", f"{observation.get('total_return', 0.0):+.2%}")
+                                    col_metrics[1].metric("最大回撤", f"{observation.get('max_drawdown', 0.0):+.2%}")
+                                    col_metrics[2].metric("波动率", f"{observation.get('volatility', 0.0):+.2%}")
+                                    col_metrics[3].metric("奖励", f"{reward:+.4f}")
+
+                                    st.write("调参后权重：")
+                                    weights_dict = info.get("weights", {})
+                                    st.json(weights_dict)
+                                    action_payload = {
+                                        name: value
+                                        for name, value in zip(selected_agents, action_values)
+                                    }
+                                    metrics_payload = dict(observation)
+                                    metrics_payload["reward"] = reward
+                                    try:
+                                        log_tuning_result(
+                                            experiment_id=experiment_id or str(uuid.uuid4()),
+                                            strategy=strategy_label or "DecisionEnv",
+                                            action=action_payload,
+                                            reward=reward,
+                                            metrics=metrics_payload,
+                                            weights=weights_dict,
+                                        )
+                                        st.caption("调参结果已写入 tuning_results 表。")
+                                    except Exception:  # noqa: BLE001
+                                        LOGGER.exception("记录调参结果失败", extra=LOG_EXTRA)
+
+                                    if weights_dict:
+                                        if st.button(
+                                            "保存这些权重为默认配置",
+                                            key="save_decision_env_weights_single",
+                                        ):
+                                            cfg.agent_weights.update_from_dict(weights_dict)
+                                            save_config(cfg)
+                                            st.success("代理权重已写入 config.json")
+
+                                    nav_series = info.get("nav_series")
+                                    if nav_series:
+                                        try:
+                                            nav_df = pd.DataFrame(nav_series)
+                                            if {"trade_date", "nav"}.issubset(nav_df.columns):
+                                                nav_df = nav_df.sort_values("trade_date")
+                                                nav_df["trade_date"] = pd.to_datetime(nav_df["trade_date"])
+                                                st.line_chart(nav_df.set_index("trade_date")["nav"], height=220)
+                                        except Exception:  # noqa: BLE001
+                                            LOGGER.debug("导航曲线绘制失败", extra=LOG_EXTRA)
+                                    trades = info.get("trades")
+                                    if trades:
+                                        st.write("成交记录：")
+                                        st.dataframe(pd.DataFrame(trades), hide_index=True, width='stretch')
+
+            st.divider()
+            st.caption("批量调参：在下方输入多组动作，每行表示一组 0-1 之间的值，用逗号分隔。")
+            default_grid = "\n".join(
+                [
+                    ",".join(["0.2" for _ in specs]),
+                    ",".join(["0.5" for _ in specs]),
+                    ",".join(["0.8" for _ in specs]),
+                ]
+            ) if specs else ""
+            action_grid_raw = st.text_area(
+                "动作列表",
+                value=default_grid,
+                height=120,
+                key="decision_env_batch_actions",
+            )
+            run_batch = st.button("批量执行调参", key="run_decision_env_batch")
+            if run_batch:
+                if not selected_agents:
+                    st.warning("请先选择调参代理。")
+                elif not range_valid:
+                    st.error("请确保所有代理的最大权重大于最小权重。")
+                else:
+                    lines = [line.strip() for line in action_grid_raw.splitlines() if line.strip()]
+                    if not lines:
+                        st.warning("请在文本框中输入至少一组动作。")
+                    else:
+                        parsed_actions: List[List[float]] = []
+                        for line in lines:
+                            try:
+                                values = [float(val.strip()) for val in line.split(',') if val.strip()]
+                            except ValueError:
+                                st.error(f"无法解析动作行：{line}")
+                                parsed_actions = []
+                                break
+                            if len(values) != len(specs):
+                                st.error(f"动作维度不匹配（期望 {len(specs)} 个值）：{line}")
+                                parsed_actions = []
+                                break
+                            parsed_actions.append(values)
+                        if parsed_actions:
+                            baseline_weights = cfg.agent_weights.as_dict()
+                            for agent in agent_objects:
+                                baseline_weights.setdefault(agent.name, 1.0)
+
+                            universe_env = [code.strip() for code in universe_text.split(',') if code.strip()]
+                            if not universe_env:
+                                st.error("请先指定至少一个股票代码。")
+                            else:
+                                bt_cfg_env = BtConfig(
+                                    id="decision_env_streamlit_batch",
+                                    name="DecisionEnv Batch",
+                                    start_date=start_date,
+                                    end_date=end_date,
+                                    universe=universe_env,
+                                    params={
+                                        "target": target,
+                                        "stop": stop,
+                                        "hold_days": int(hold_days),
+                                    },
+                                    method=cfg.decision_method,
+                                )
+                                env = DecisionEnv(
+                                    bt_config=bt_cfg_env,
+                                    parameter_specs=specs,
+                                    baseline_weights=baseline_weights,
+                                    disable_departments=disable_departments,
+                                )
+                                results: List[Dict[str, object]] = []
+                                with st.spinner("正在批量执行调参……"):
+                                    for idx, action_vals in enumerate(parsed_actions, start=1):
+                                        env.reset()
+                                        try:
+                                            observation, reward, done, info = env.step(action_vals)
+                                        except Exception as exc:  # noqa: BLE001
+                                            LOGGER.exception("批量调参失败", extra=LOG_EXTRA)
+                                            results.append(
+                                                {
+                                                    "序号": idx,
+                                                    "动作": action_vals,
+                                                    "状态": "error",
+                                                    "错误": str(exc),
+                                                }
+                                            )
+                                            continue
+                                        if observation.get("failure"):
+                                            results.append(
+                                                {
+                                                    "序号": idx,
+                                                    "动作": action_vals,
+                                                    "状态": "failure",
+                                                    "奖励": -1.0,
+                                                }
+                                            )
+                                        else:
+                                            action_payload = {
+                                                name: value
+                                                for name, value in zip(selected_agents, action_vals)
+                                            }
+                                            metrics_payload = dict(observation)
+                                            metrics_payload["reward"] = reward
+                                            weights_payload = info.get("weights", {})
+                                            try:
+                                                log_tuning_result(
+                                                    experiment_id=experiment_id or str(uuid.uuid4()),
+                                                    strategy=strategy_label or "DecisionEnv",
+                                                    action=action_payload,
+                                                    reward=reward,
+                                                    metrics=metrics_payload,
+                                                    weights=weights_payload,
+                                                )
+                                            except Exception:  # noqa: BLE001
+                                                LOGGER.exception("记录调参结果失败", extra=LOG_EXTRA)
+                                            results.append(
+                                                {
+                                                    "序号": idx,
+                                                    "动作": action_vals,
+                                                    "状态": "ok",
+                                                    "总收益": observation.get("total_return", 0.0),
+                                                    "最大回撤": observation.get("max_drawdown", 0.0),
+                                                    "波动率": observation.get("volatility", 0.0),
+                                                    "奖励": reward,
+                                                    "权重": weights_payload,
+                                                }
+                                            )
+                                if results:
+                                    st.write("批量调参结果：")
+                                    results_df = pd.DataFrame(results)
+                                    st.dataframe(results_df, hide_index=True, width='stretch')
+                                    selectable = [
+                                        row
+                                        for row in results
+                                        if row.get("状态") == "ok" and row.get("权重")
+                                    ]
+                                    if selectable:
+                                        option_labels = [
+                                            f"序号 {row['序号']} | 奖励 {row.get('奖励', 0.0):+.4f}"
+                                            for row in selectable
+                                        ]
+                                        selected_label = st.selectbox(
+                                            "选择要保存的记录",
+                                            option_labels,
+                                            key="decision_env_batch_select",
+                                        )
+                                        selected_row = None
+                                        for label, row in zip(option_labels, selectable):
+                                            if label == selected_label:
+                                                selected_row = row
+                                                break
+                                        if selected_row and st.button(
+                                            "保存所选权重为默认配置",
+                                            key="save_decision_env_weights_batch",
+                                        ):
+                                            cfg.agent_weights.update_from_dict(selected_row.get("权重", {}))
+                                            save_config(cfg)
+                                            st.success(
+                                                f"已将序号 {selected_row['序号']} 的权重写入 config.json"
+                                            )
+                                    else:
+                                        st.caption("暂无成功的结果可供保存。")
 
 
 def render_settings() -> None:
