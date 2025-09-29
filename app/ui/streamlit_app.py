@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from dataclasses import asdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -28,9 +29,10 @@ from app.ingest.checker import run_boot_check
 from app.ingest.tushare import FetchJob, run_ingestion
 from app.llm.client import llm_config_snapshot, run_llm
 from app.llm.metrics import (
+    recent_decisions as llm_recent_decisions,
+    register_listener as register_llm_metrics_listener,
     reset as reset_llm_metrics,
     snapshot as snapshot_llm_metrics,
-    recent_decisions as llm_recent_decisions,
 )
 from app.utils.config import (
     ALLOWED_LLM_STRATEGIES,
@@ -49,6 +51,11 @@ from app.utils.logging import get_logger
 
 LOGGER = get_logger(__name__)
 LOG_EXTRA = {"stage": "ui"}
+_SIDEBAR_THROTTLE_SECONDS = 0.75
+
+
+def _sidebar_metrics_listener(metrics: Dict[str, object]) -> None:
+    _update_dashboard_sidebar(metrics, throttled=True)
 
 
 def render_global_dashboard() -> None:
@@ -56,54 +63,118 @@ def render_global_dashboard() -> None:
 
     metrics_container = st.sidebar.container()
     decisions_container = st.sidebar.container()
-    st.session_state["dashboard_placeholders"] = (metrics_container, decisions_container)
+    st.session_state["dashboard_containers"] = (metrics_container, decisions_container)
+    _ensure_dashboard_elements(metrics_container, decisions_container)
+    if not st.session_state.get("dashboard_listener_registered"):
+        register_llm_metrics_listener(_sidebar_metrics_listener)
+        st.session_state["dashboard_listener_registered"] = True
     _update_dashboard_sidebar()
 
 
-def _update_dashboard_sidebar(metrics: Optional[Dict[str, object]] = None) -> None:
-    placeholders = st.session_state.get("dashboard_placeholders")
-    if not placeholders:
+def _update_dashboard_sidebar(
+    metrics: Optional[Dict[str, object]] = None,
+    *,
+    throttled: bool = False,
+) -> None:
+    containers = st.session_state.get("dashboard_containers")
+    if not containers:
         return
-    metrics_container, decisions_container = placeholders
+    metrics_container, decisions_container = containers
+    elements = st.session_state.get("dashboard_elements")
+    if elements is None:
+        elements = _ensure_dashboard_elements(metrics_container, decisions_container)
+
+    if throttled:
+        now = time.monotonic()
+        last_update = st.session_state.get("dashboard_last_update_ts", 0.0)
+        if now - last_update < _SIDEBAR_THROTTLE_SECONDS:
+            if metrics is not None:
+                st.session_state["dashboard_pending_metrics"] = metrics
+            return
+        st.session_state["dashboard_last_update_ts"] = now
+    else:
+        st.session_state["dashboard_last_update_ts"] = time.monotonic()
+
+    if metrics is None:
+        metrics = st.session_state.pop("dashboard_pending_metrics", None)
+        if metrics is None:
+            metrics = snapshot_llm_metrics()
+    else:
+        st.session_state.pop("dashboard_pending_metrics", None)
+
     metrics = metrics or snapshot_llm_metrics()
 
-    metrics_container.empty()
-    with metrics_container.container():
-        st.header("系统监控")
-        col_a, col_b, col_c = st.columns(3)
-        col_a.metric("LLM 调用", metrics.get("total_calls", 0))
-        col_b.metric("Prompt Tokens", metrics.get("total_prompt_tokens", 0))
-        col_c.metric("Completion Tokens", metrics.get("total_completion_tokens", 0))
+    elements["metrics_calls"].metric("LLM 调用", metrics.get("total_calls", 0))
+    elements["metrics_prompt"].metric("Prompt Tokens", metrics.get("total_prompt_tokens", 0))
+    elements["metrics_completion"].metric(
+        "Completion Tokens", metrics.get("total_completion_tokens", 0)
+    )
 
-        provider_calls = metrics.get("provider_calls", {})
-        model_calls = metrics.get("model_calls", {})
-        if provider_calls or model_calls:
-            with st.expander("调用分布", expanded=False):
-                if provider_calls:
-                    st.write("按 Provider：")
-                    st.json(provider_calls)
-                if model_calls:
-                    st.write("按模型：")
-                    st.json(model_calls)
+    provider_calls = metrics.get("provider_calls", {})
+    model_calls = metrics.get("model_calls", {})
+    provider_placeholder = elements["provider_distribution"]
+    provider_placeholder.empty()
+    if provider_calls:
+        provider_placeholder.json(provider_calls)
+    else:
+        provider_placeholder.info("暂无 Provider 分布数据。")
 
-    decisions_container.empty()
-    with decisions_container.container():
-        st.subheader("最新决策")
-        decisions = metrics.get("recent_decisions") or llm_recent_decisions(10)
-        if decisions:
-            for record in reversed(decisions[-10:]):
-                ts_code = record.get("ts_code")
-                trade_date = record.get("trade_date")
-                action = record.get("action")
-                confidence = record.get("confidence", 0.0)
-                summary = record.get("summary")
-                st.markdown(
-                    f"**{trade_date} {ts_code}** → {action} (置信度 {confidence:.2f})"
-                )
-                if summary:
-                    st.caption(summary)
-        else:
-            st.caption("暂无决策记录。执行回测或实时评估后可在此查看。")
+    model_placeholder = elements["model_distribution"]
+    model_placeholder.empty()
+    if model_calls:
+        model_placeholder.json(model_calls)
+    else:
+        model_placeholder.info("暂无模型分布数据。")
+
+    decisions = metrics.get("recent_decisions") or llm_recent_decisions(10)
+    if decisions:
+        lines = []
+        for record in reversed(decisions[-10:]):
+            ts_code = record.get("ts_code")
+            trade_date = record.get("trade_date")
+            action = record.get("action")
+            confidence = record.get("confidence", 0.0)
+            summary = record.get("summary")
+            line = f"**{trade_date} {ts_code}** → {action} (置信度 {confidence:.2f})"
+            if summary:
+                line += f"\n<small>{summary}</small>"
+            lines.append(line)
+        decisions_placeholder = elements["decisions_list"]
+        decisions_placeholder.empty()
+        decisions_placeholder.markdown("\n\n".join(lines), unsafe_allow_html=True)
+    else:
+        decisions_placeholder = elements["decisions_list"]
+        decisions_placeholder.empty()
+        decisions_placeholder.info("暂无决策记录。执行回测或实时评估后可在此查看。")
+
+
+def _ensure_dashboard_elements(metrics_container, decisions_container) -> Dict[str, object]:
+    elements = st.session_state.get("dashboard_elements")
+    if elements:
+        return elements
+
+    metrics_container.header("系统监控")
+    col_a, col_b, col_c = metrics_container.columns(3)
+    metrics_calls = col_a.empty()
+    metrics_prompt = col_b.empty()
+    metrics_completion = col_c.empty()
+    distribution_expander = metrics_container.expander("调用分布", expanded=False)
+    provider_distribution = distribution_expander.empty()
+    model_distribution = distribution_expander.empty()
+
+    decisions_container.subheader("最新决策")
+    decisions_list = decisions_container.empty()
+
+    elements = {
+        "metrics_calls": metrics_calls,
+        "metrics_prompt": metrics_prompt,
+        "metrics_completion": metrics_completion,
+        "provider_distribution": provider_distribution,
+        "model_distribution": model_distribution,
+        "decisions_list": decisions_list,
+    }
+    st.session_state["dashboard_elements"] = elements
+    return elements
 
 def _discover_provider_models(provider: LLMProvider, base_override: str = "", api_override: Optional[str] = None) -> tuple[list[str], Optional[str]]:
     """Attempt to query provider API and return available model ids."""
@@ -335,6 +406,7 @@ def render_today_plan() -> None:
                 "turnover_series": utils.get("_turnover_series", []),
                 "department_supplements": utils.get("_department_supplements", {}),
                 "department_dialogue": utils.get("_department_dialogue", {}),
+                "department_telemetry": utils.get("_department_telemetry", {}),
             }
             continue
 
@@ -344,6 +416,7 @@ def render_today_plan() -> None:
             risks = utils.get("_risks", [])
             supplements = utils.get("_supplements", [])
             dialogue = utils.get("_dialogue", [])
+            telemetry = utils.get("_telemetry", {})
             dept_records.append(
                 {
                     "部门": code,
@@ -362,6 +435,7 @@ def render_today_plan() -> None:
                 "summary": utils.get("_summary", ""),
                 "signals": signals,
                 "risks": risks,
+                "telemetry": telemetry if isinstance(telemetry, dict) else {},
             }
         else:
             score_map = {
@@ -407,6 +481,7 @@ def render_today_plan() -> None:
                 st.json(global_info["turnover_series"])
         dept_sup = global_info.get("department_supplements") or {}
         dept_dialogue = global_info.get("department_dialogue") or {}
+        dept_telemetry = global_info.get("department_telemetry") or {}
         if dept_sup or dept_dialogue:
             with st.expander("部门补数与对话记录", expanded=False):
                 if dept_sup:
@@ -415,6 +490,9 @@ def render_today_plan() -> None:
                 if dept_dialogue:
                     st.write("对话片段：")
                     st.json(dept_dialogue)
+        if dept_telemetry:
+            with st.expander("部门 LLM 元数据", expanded=False):
+                st.json(dept_telemetry)
     else:
         st.info("暂未写入全局策略摘要。")
 
@@ -437,6 +515,10 @@ def render_today_plan() -> None:
                         st.markdown(f"**回合 {idx}:** {line}")
                 else:
                     st.caption("无额外对话。")
+                telemetry = details.get("telemetry") or {}
+                if telemetry:
+                    st.write("LLM 元数据：")
+                    st.json(telemetry)
     else:
         st.info("暂无部门记录。")
 

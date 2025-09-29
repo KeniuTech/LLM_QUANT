@@ -324,6 +324,8 @@ class BacktestEngine:
                         metadata["_supplements"] = dept_decision.supplements
                     if dept_decision.dialogue:
                         metadata["_dialogue"] = dept_decision.dialogue
+                    if dept_decision.telemetry:
+                        metadata["_telemetry"] = dept_decision.telemetry
             payload_json = {**action_scores, **metadata}
             rows.append(
                 (
@@ -354,6 +356,11 @@ class BacktestEngine:
                 code: dept.dialogue
                 for code, dept in decision.department_decisions.items()
                 if dept.dialogue
+            },
+            "_department_telemetry": {
+                code: dept.telemetry
+                for code, dept in decision.department_decisions.items()
+                if dept.telemetry
             },
         }
         rows.append(

@@ -105,7 +105,7 @@ def _request_openai_chat(
     return response.json()
 
 
-def _prepare_endpoint(endpoint: LLMEndpoint) -> Dict[str, object]:
+def resolve_endpoint(endpoint: LLMEndpoint) -> Dict[str, object]:
     cfg = get_config()
     provider_key = (endpoint.provider or "ollama").lower()
     provider_cfg = cfg.llm_providers.get(provider_key)
@@ -152,7 +152,7 @@ def _prepare_endpoint(endpoint: LLMEndpoint) -> Dict[str, object]:
 
 
 def _call_endpoint(endpoint: LLMEndpoint, prompt: str, system: Optional[str]) -> str:
-    resolved = _prepare_endpoint(endpoint)
+    resolved = resolve_endpoint(endpoint)
     provider_key = resolved["provider_key"]
     mode = resolved["mode"]
     prompt_template = resolved["prompt_template"]
@@ -188,7 +188,7 @@ def call_endpoint_with_messages(
     tools: Optional[List[Dict[str, object]]] = None,
     tool_choice: Optional[object] = None,
 ) -> Dict[str, object]:
-    resolved = _prepare_endpoint(endpoint)
+    resolved = resolve_endpoint(endpoint)
     provider_key = resolved["provider_key"]
     mode = resolved["mode"]
     base_url = resolved["base_url"]

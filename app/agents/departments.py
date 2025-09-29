@@ -1,12 +1,18 @@
 """Department-level LLM agents coordinating multi-model decisions."""
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from typing import Any, Callable, ClassVar, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from app.agents.base import AgentAction
-from app.llm.client import call_endpoint_with_messages, run_llm_with_config, LLMError
+from app.llm.client import (
+    call_endpoint_with_messages,
+    resolve_endpoint,
+    run_llm_with_config,
+    LLMError,
+)
 from app.llm.prompts import department_prompt
 from app.utils.config import AppConfig, DepartmentSettings, LLMConfig
 from app.utils.logging import get_logger, get_conversation_logger
@@ -48,6 +54,7 @@ class DepartmentDecision:
     risks: List[str] = field(default_factory=list)
     supplements: List[Dict[str, Any]] = field(default_factory=list)
     dialogue: List[str] = field(default_factory=list)
+    telemetry: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -60,6 +67,7 @@ class DepartmentDecision:
             "raw_response": self.raw_response,
             "supplements": self.supplements,
             "dialogue": self.dialogue,
+            "telemetry": self.telemetry,
         }
 
 
@@ -102,18 +110,30 @@ class DepartmentAgent:
         messages: List[Dict[str, object]] = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
-        messages.append(
-            {
-                "role": "user",
-                "content": department_prompt(self.settings, mutable_context),
-            }
-        )
+        prompt_body = department_prompt(self.settings, mutable_context)
+        prompt_checksum = hashlib.sha1(prompt_body.encode("utf-8")).hexdigest()
+        prompt_preview = prompt_body[:240]
+        messages.append({"role": "user", "content": prompt_body})
 
         transcript: List[str] = []
         delivered_requests: set[Tuple[str, int, str]] = set()
 
         primary_endpoint = llm_cfg.primary
+        try:
+            resolved_primary = resolve_endpoint(primary_endpoint)
+        except LLMError as exc:
+            LOGGER.warning(
+                "部门 %s 无法解析 LLM 端点，回退传统提示：%s",
+                self.settings.code,
+                exc,
+                extra=LOG_EXTRA,
+            )
+            return self._analyze_legacy(mutable_context, system_prompt)
+
         final_message: Optional[Dict[str, Any]] = None
+        usage_records: List[Dict[str, Any]] = []
+        tool_call_records: List[Dict[str, Any]] = []
+        rounds_executed = 0
         CONV_LOGGER.info(
             "dept=%s ts_code=%s trade_date=%s start",
             self.settings.code,
@@ -138,6 +158,14 @@ class DepartmentAgent:
                 )
                 return self._analyze_legacy(mutable_context, system_prompt)
 
+            rounds_executed = round_idx + 1
+
+            usage = response.get("usage") if isinstance(response, Mapping) else None
+            if isinstance(usage, Mapping):
+                usage_payload = {"round": round_idx + 1}
+                usage_payload.update(dict(usage))
+                usage_records.append(usage_payload)
+
             choice = (response.get("choices") or [{}])[0]
             message = choice.get("message", {})
             transcript.append(_message_to_text(message))
@@ -159,11 +187,35 @@ class DepartmentAgent:
             tool_calls = message.get("tool_calls") or []
             if tool_calls:
                 for call in tool_calls:
+                    function_block = call.get("function") or {}
                     tool_response, delivered = self._handle_tool_call(
                         mutable_context,
                         call,
                         delivered_requests,
                         round_idx,
+                    )
+                    tables_summary: List[Dict[str, Any]] = []
+                    for item in tool_response.get("results") or []:
+                        if isinstance(item, Mapping):
+                            tables_summary.append(
+                                {
+                                    "table": item.get("table"),
+                                    "window": item.get("window"),
+                                    "trade_date": item.get("trade_date"),
+                                    "row_count": len(item.get("rows") or []),
+                                }
+                            )
+                    tool_call_records.append(
+                        {
+                            "round": round_idx + 1,
+                            "id": call.get("id"),
+                            "name": function_block.get("name"),
+                            "arguments": function_block.get("arguments"),
+                            "status": tool_response.get("status"),
+                            "results": len(tool_response.get("results") or []),
+                            "tables": tables_summary,
+                            "skipped": list(tool_response.get("skipped") or []),
+                        }
                     )
                     transcript.append(
                         json.dumps({"tool_response": tool_response}, ensure_ascii=False)
@@ -216,6 +268,64 @@ class DepartmentAgent:
         if isinstance(risks, str):
             risks = [risks]
 
+        def _safe_int(value: Any) -> int:
+            try:
+                return int(value)
+            except (TypeError, ValueError):  # noqa: PERF203 - clarity
+                return 0
+
+        prompt_tokens_total = 0
+        completion_tokens_total = 0
+        total_tokens_reported = 0
+        for usage_payload in usage_records:
+            prompt_tokens_total += _safe_int(
+                usage_payload.get("prompt_tokens")
+                or usage_payload.get("prompt_tokens_total")
+            )
+            completion_tokens_total += _safe_int(
+                usage_payload.get("completion_tokens")
+                or usage_payload.get("completion_tokens_total")
+            )
+            reported_total = _safe_int(
+                usage_payload.get("total_tokens")
+                or usage_payload.get("total_tokens_total")
+            )
+            if reported_total:
+                total_tokens_reported += reported_total
+
+        total_tokens = (
+            total_tokens_reported
+            if total_tokens_reported
+            else prompt_tokens_total + completion_tokens_total
+        )
+
+        telemetry: Dict[str, Any] = {
+            "provider": resolved_primary.get("provider_key"),
+            "model": resolved_primary.get("model"),
+            "temperature": resolved_primary.get("temperature"),
+            "timeout": resolved_primary.get("timeout"),
+            "endpoint_prompt_template": resolved_primary.get("prompt_template"),
+            "rounds": rounds_executed,
+            "tool_call_count": len(tool_call_records),
+            "tool_trace": tool_call_records,
+            "usage_by_round": usage_records,
+            "tokens": {
+                "prompt": prompt_tokens_total,
+                "completion": completion_tokens_total,
+                "total": total_tokens,
+            },
+            "prompt": {
+                "checksum": prompt_checksum,
+                "length": len(prompt_body),
+                "preview": prompt_preview,
+                "role_description": self.settings.description,
+                "instruction": self.settings.prompt,
+                "system": system_prompt,
+            },
+            "messages_exchanged": len(messages),
+            "supplement_rounds": len(tool_call_records),
+        }
+
         decision = DepartmentDecision(
             department=self.settings.code,
             action=action,
@@ -226,6 +336,7 @@ class DepartmentAgent:
             raw_response=content_text,
             supplements=list(mutable_context.raw.get("supplement_data", [])),
             dialogue=list(transcript),
+            telemetry=telemetry,
         )
         LOGGER.debug(
             "部门 %s 决策：action=%s confidence=%.2f",
@@ -240,6 +351,11 @@ class DepartmentAgent:
             decision.action.value,
             decision.confidence,
             summary or "",
+        )
+        CONV_LOGGER.info(
+            "dept=%s telemetry=%s",
+            self.settings.code,
+            json.dumps(telemetry, ensure_ascii=False),
         )
         return decision
 

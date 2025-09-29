@@ -1,10 +1,11 @@
 """Simple runtime metrics collector for LLM calls."""
 from __future__ import annotations
 
+import logging
 from collections import deque
 from dataclasses import dataclass, field
 from threading import Lock
-from typing import Deque, Dict, List, Optional
+from typing import Callable, Deque, Dict, List, Optional
 
 
 @dataclass
@@ -20,6 +21,9 @@ class _Metrics:
 
 _METRICS = _Metrics()
 _LOCK = Lock()
+_LISTENERS: List[Callable[[Dict[str, object]], None]] = []
+
+LOGGER = logging.getLogger(__name__)
 
 
 def record_call(
@@ -45,6 +49,7 @@ def record_call(
             _METRICS.total_prompt_tokens += int(prompt_tokens)
         if completion_tokens:
             _METRICS.total_completion_tokens += int(completion_tokens)
+    _notify_listeners()
 
 
 def snapshot(reset: bool = False) -> Dict[str, object]:
@@ -75,6 +80,7 @@ def reset() -> None:
     """Reset all collected metrics."""
 
     snapshot(reset=True)
+    _notify_listeners()
 
 
 def record_decision(
@@ -103,6 +109,7 @@ def record_decision(
         _METRICS.decision_action_counts[action] = (
             _METRICS.decision_action_counts.get(action, 0) + 1
         )
+    _notify_listeners()
 
 
 def recent_decisions(limit: int = 50) -> List[Dict[str, object]]:
@@ -112,3 +119,42 @@ def recent_decisions(limit: int = 50) -> List[Dict[str, object]]:
         if limit <= 0:
             return []
         return list(_METRICS.decisions)[-limit:]
+
+
+def register_listener(callback: Callable[[Dict[str, object]], None]) -> None:
+    """Register a callback invoked whenever metrics change."""
+
+    if not callable(callback):
+        return
+    with _LOCK:
+        if callback in _LISTENERS:
+            should_invoke = False
+        else:
+            _LISTENERS.append(callback)
+            should_invoke = True
+    if should_invoke:
+        try:
+            callback(snapshot())
+        except Exception:  # noqa: BLE001
+            LOGGER.exception("Metrics listener failed on initial callback")
+
+
+def unregister_listener(callback: Callable[[Dict[str, object]], None]) -> None:
+    """Remove a previously registered metrics callback."""
+
+    with _LOCK:
+        if callback in _LISTENERS:
+            _LISTENERS.remove(callback)
+
+
+def _notify_listeners() -> None:
+    with _LOCK:
+        listeners = list(_LISTENERS)
+    if not listeners:
+        return
+    data = snapshot()
+    for callback in listeners:
+        try:
+            callback(data)
+        except Exception:  # noqa: BLE001
+            LOGGER.exception("Metrics listener execution failed")
