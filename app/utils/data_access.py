@@ -118,12 +118,13 @@ class DataBroker:
             if cached is not None:
                 return deepcopy(cached)
 
-        grouped: Dict[str, List[Tuple[str, str]]] = {}
+        grouped: Dict[str, List[str]] = {}
+        field_map: Dict[Tuple[str, str], List[str]] = {}
         derived_cache: Dict[str, Any] = {}
         results: Dict[str, Any] = {}
         for field_name in field_list:
-            parsed = parse_field_path(field_name)
-            if not parsed:
+            resolved = self.resolve_field(field_name)
+            if not resolved:
                 derived = self._resolve_derived_field(
                     ts_code,
                     trade_date,
@@ -133,8 +134,11 @@ class DataBroker:
                 if derived is not None:
                     results[field_name] = derived
                 continue
-            table, column = parsed
-            grouped.setdefault(table, []).append((column, field_name))
+            table, column = resolved
+            grouped.setdefault(table, [])
+            if column not in grouped[table]:
+                grouped[table].append(column)
+            field_map.setdefault((table, column), []).append(field_name)
 
         if not grouped:
             if cache_key is not None and results:
@@ -148,9 +152,10 @@ class DataBroker:
 
         try:
             with db_session(read_only=True) as conn:
-                for table, items in grouped.items():
+                for table, columns in grouped.items():
+                    joined_cols = ", ".join(columns)
                     query = (
-                        f"SELECT * FROM {table} "
+                        f"SELECT trade_date, {joined_cols} FROM {table} "
                         "WHERE ts_code = ? AND trade_date <= ? "
                         "ORDER BY trade_date DESC LIMIT 1"
                     )
@@ -160,25 +165,22 @@ class DataBroker:
                         LOGGER.debug(
                             "查询失败 table=%s fields=%s err=%s",
                             table,
-                            [column for column, _field in items],
+                            columns,
                             exc,
                             extra=LOG_EXTRA,
                         )
                         continue
                     if not row:
                         continue
-                    available = row.keys()
-                    for column, original in items:
-                        resolved_column = self._resolve_column_in_row(table, column, available)
-                        if resolved_column is None:
-                            continue
-                        value = row[resolved_column]
+                    for column in columns:
+                        value = row[column]
                         if value is None:
                             continue
-                        try:
-                            results[original] = float(value)
-                        except (TypeError, ValueError):
-                            results[original] = value
+                        for original in field_map.get((table, column), [f"{table}.{column}"]):
+                            try:
+                                results[original] = float(value)
+                            except (TypeError, ValueError):
+                                results[original] = value
         except sqlite3.OperationalError as exc:
             LOGGER.debug("数据库只读连接失败：%s", exc, extra=LOG_EXTRA)
             if cache_key is not None:
@@ -695,22 +697,6 @@ class DataBroker:
         cache.move_to_end(key)
         while len(cache) > limit:
             cache.popitem(last=False)
-
-    def _resolve_column_in_row(
-        self,
-        table: str,
-        column: str,
-        available: Sequence[str],
-    ) -> Optional[str]:
-        alias_map = self.FIELD_ALIASES.get(table, {})
-        candidate = alias_map.get(column, column)
-        if candidate in available:
-            return candidate
-        lowered = candidate.lower()
-        for name in available:
-            if name.lower() == lowered:
-                return name
-        return None
 
     def _resolve_column(self, table: str, column: str) -> Optional[str]:
         columns = self._get_table_columns(table)

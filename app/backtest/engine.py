@@ -11,6 +11,7 @@ from app.agents.departments import DepartmentManager
 from app.agents.game import Decision, decide
 from app.llm.metrics import record_decision as metrics_record_decision
 from app.agents.registry import default_agents
+from app.data.schema import initialize_database
 from app.utils.data_access import DataBroker
 from app.utils.config import get_config
 from app.utils.db import db_session
@@ -62,6 +63,7 @@ class BacktestEngine:
             self.weights = weight_config
         else:
             self.weights = {agent.name: 1.0 for agent in self.agents}
+        initialize_database()
         self.department_manager = (
             DepartmentManager(app_cfg) if app_cfg.departments else None
         )
@@ -102,8 +104,6 @@ class BacktestEngine:
             "factors.mom_60",
             "factors.volat_20",
             "factors.turn_20",
-            "news.sentiment_index",
-            "news.heat_score",
         }
         self.required_fields = sorted(base_scope | department_scope)
 
