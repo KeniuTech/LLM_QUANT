@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import re
 import sqlite3
-from dataclasses import dataclass
+from collections import OrderedDict
+from copy import deepcopy
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, ClassVar, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -91,6 +93,16 @@ class DataBroker:
     MAX_WINDOW: ClassVar[int] = 120
     BENCHMARK_INDEX: ClassVar[str] = "000300.SH"
 
+    enable_cache: bool = True
+    latest_cache_size: int = 256
+    series_cache_size: int = 512
+    _latest_cache: OrderedDict = field(init=False, repr=False)
+    _series_cache: OrderedDict = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._latest_cache = OrderedDict()
+        self._series_cache = OrderedDict()
+
     def fetch_latest(
         self,
         ts_code: str,
@@ -98,15 +110,19 @@ class DataBroker:
         fields: Iterable[str],
     ) -> Dict[str, Any]:
         """Fetch the latest value (<= trade_date) for each requested field."""
+        field_list = [str(item) for item in fields if item]
+        cache_key: Optional[Tuple[Any, ...]] = None
+        if self.enable_cache and field_list:
+            cache_key = (ts_code, trade_date, tuple(sorted(field_list)))
+            cached = self._cache_lookup(self._latest_cache, cache_key)
+            if cached is not None:
+                return deepcopy(cached)
 
         grouped: Dict[str, List[str]] = {}
         field_map: Dict[Tuple[str, str], List[str]] = {}
         derived_cache: Dict[str, Any] = {}
         results: Dict[str, Any] = {}
-        for item in fields:
-            if not item:
-                continue
-            field_name = str(item)
+        for field_name in field_list:
             resolved = self.resolve_field(field_name)
             if not resolved:
                 derived = self._resolve_derived_field(
@@ -125,6 +141,13 @@ class DataBroker:
             field_map.setdefault((table, column), []).append(field_name)
 
         if not grouped:
+            if cache_key is not None and results:
+                self._cache_store(
+                    self._latest_cache,
+                    cache_key,
+                    deepcopy(results),
+                    self.latest_cache_size,
+                )
             return results
 
         try:
@@ -160,6 +183,23 @@ class DataBroker:
                                 results[original] = value
         except sqlite3.OperationalError as exc:
             LOGGER.debug("数据库只读连接失败：%s", exc, extra=LOG_EXTRA)
+            if cache_key is not None:
+                cached = self._cache_lookup(self._latest_cache, cache_key)
+                if cached is not None:
+                    LOGGER.debug(
+                        "使用缓存结果 ts_code=%s trade_date=%s",
+                        ts_code,
+                        trade_date,
+                        extra=LOG_EXTRA,
+                    )
+                    return deepcopy(cached)
+        if cache_key is not None and results:
+            self._cache_store(
+                self._latest_cache,
+                cache_key,
+                deepcopy(results),
+                self.latest_cache_size,
+            )
         return results
 
     def fetch_series(
@@ -185,6 +225,14 @@ class DataBroker:
             )
             return []
         table, resolved = resolved_field
+
+        cache_key: Optional[Tuple[Any, ...]] = None
+        if self.enable_cache:
+            cache_key = (table, resolved, ts_code, end_date, window)
+            cached = self._cache_lookup(self._series_cache, cache_key)
+            if cached is not None:
+                return [tuple(item) for item in cached]
+
         query = (
             f"SELECT trade_date, {resolved} FROM {table} "
             "WHERE ts_code = ? AND trade_date <= ? "
@@ -211,6 +259,17 @@ class DataBroker:
                 exc,
                 extra=LOG_EXTRA,
             )
+            if cache_key is not None:
+                cached = self._cache_lookup(self._series_cache, cache_key)
+                if cached is not None:
+                    LOGGER.debug(
+                        "使用缓存时间序列 table=%s column=%s ts_code=%s",
+                        table,
+                        resolved,
+                        ts_code,
+                        extra=LOG_EXTRA,
+                    )
+                    return [tuple(item) for item in cached]
             return []
         series: List[Tuple[str, float]] = []
         for row in rows:
@@ -218,6 +277,13 @@ class DataBroker:
             if value is None:
                 continue
             series.append((row["trade_date"], float(value)))
+        if cache_key is not None and series:
+            self._cache_store(
+                self._series_cache,
+                cache_key,
+                tuple(series),
+                self.series_cache_size,
+            )
         return series
 
     def fetch_flags(
@@ -611,6 +677,26 @@ class DataBroker:
         columns = [row["name"] for row in rows if row["name"]]
         cache[table] = columns
         return columns
+
+    def _cache_lookup(self, cache: OrderedDict, key: Tuple[Any, ...]) -> Optional[Any]:
+        if key in cache:
+            cache.move_to_end(key)
+            return cache[key]
+        return None
+
+    def _cache_store(
+        self,
+        cache: OrderedDict,
+        key: Tuple[Any, ...],
+        value: Any,
+        limit: int,
+    ) -> None:
+        if not self.enable_cache or limit <= 0:
+            return
+        cache[key] = value
+        cache.move_to_end(key)
+        while len(cache) > limit:
+            cache.popitem(last=False)
 
     def _resolve_column(self, table: str, column: str) -> Optional[str]:
         columns = self._get_table_columns(table)

@@ -21,6 +21,7 @@ from app.utils.config import get_config
 from app.utils.db import db_session
 from app.data.schema import initialize_database
 from app.utils.logging import get_logger
+from app.features.factors import compute_factor_range
 
 
 LOGGER = get_logger(__name__)
@@ -1616,4 +1617,20 @@ def run_ingestion(job: FetchJob, include_limits: bool = True) -> None:
         raise
     else:
         alerts.clear_warnings("TuShare")
+        if job.granularity == "daily":
+            try:
+                LOGGER.info("开始计算因子：%s", job.name, extra=LOG_EXTRA)
+                compute_factor_range(
+                    job.start,
+                    job.end,
+                    ts_codes=job.ts_codes,
+                    skip_existing=False,
+                )
+            except Exception as exc:
+                alerts.add_warning("Factors", f"因子计算失败：{job.name}", str(exc))
+                LOGGER.exception("因子计算失败 job=%s", job.name, extra=LOG_EXTRA)
+                raise
+            else:
+                alerts.clear_warnings("Factors")
+                LOGGER.info("因子计算完成：%s", job.name, extra=LOG_EXTRA)
         LOGGER.info("任务 %s 完成", job.name, extra=LOG_EXTRA)
