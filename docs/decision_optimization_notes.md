@@ -33,7 +33,7 @@
 ## 已完成的日志改进
 - `agent_utils` 表新增 `_telemetry` 与 `_department_telemetry` JSON 字段（存于 `utils` 列内部），记录每个部门的 provider、模型、温度、回合数、工具调用列表与 token 统计，可在 Streamlit “部门意见”详情页展开查看。
 - `app/data/logs/agent_*.log` 会追加 `telemetry` 行，保存每轮函数调用的摘要，方便离线分析提示版本与 LLM 配置对决策的影响。
-- Streamlit 侧边栏监听 `llm.metrics` 的实时事件，并以 ~0.75 秒节流频率刷新“系统监控”，既保证日志到达后快速更新，也避免刷屏造成 UI 闪烁。
+- Streamlit 侧边栏监听 `llm.metrics` 的实时事件，并使用原位组件刷新“系统监控”，避免增量追加或节流导致的失效，同时确保实时数据推送稳定。
 - 新增投资管理数据层：SQLite 中创建 `investment_pool`、`portfolio_positions`、`portfolio_trades`、`portfolio_snapshots` 四张表；`app/utils/portfolio.py` 提供访问接口，今日计划页可实时展示候选池、持仓与成交。
 - 回测引擎 `record_agent_state()` 现同步写入 `investment_pool`，将每日全局决策的置信度、部门标签与目标权重落库，作为后续提示参数调优与候选池管理的基础数据。
 - `app/backtest/decision_env.py` 引入 `DecisionEnv`，用单步 RL/Gym 风格接口封装回测：动作 → 权重映射 → 回测 → 奖励（收益 - 0.5×回撤），同时输出 NAV、交易与行动权重，方便与 Bandit/PPO 等算法对接。

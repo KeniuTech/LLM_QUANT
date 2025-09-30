@@ -259,8 +259,6 @@ class BacktestEngine:
                     decision_callback(ts_code, trade_date, context, decision)
                 except Exception:  # noqa: BLE001
                     LOGGER.exception("决策回调执行失败", extra=LOG_EXTRA)
-        # TODO: translate decisions into fills, holdings, and NAV updates.
-        _ = state
         return records
 
     def record_agent_state(self, context: AgentContext, decision: Decision) -> None:
@@ -700,10 +698,154 @@ def run_backtest(
 ) -> BacktestResult:
     engine = BacktestEngine(cfg)
     result = engine.run(decision_callback=decision_callback)
-    with db_session() as conn:
-        _ = conn
-        # Implementation should persist bt_nav, bt_trades, and bt_report rows.
+    _persist_backtest_results(cfg, result)
     return result
+
+
+def _persist_backtest_results(cfg: BtConfig, result: BacktestResult) -> None:
+    """Persist backtest configuration, NAV path, trades and summary metrics."""
+
+    nav_rows: List[tuple] = []
+    trade_rows: List[tuple] = []
+    summary_payload: Dict[str, object] = {}
+
+    if result.nav_series:
+        first_nav = float(result.nav_series[0].get("nav", 0.0) or 0.0)
+        peak_nav = first_nav
+        prev_nav: Optional[float] = None
+        max_drawdown = 0.0
+        for entry in result.nav_series:
+            trade_date = str(entry.get("trade_date", ""))
+            nav_val = float(entry.get("nav", 0.0) or 0.0)
+            cash = float(entry.get("cash", 0.0) or 0.0)
+            market_value = float(entry.get("market_value", 0.0) or 0.0)
+            realized = float(entry.get("realized_pnl", 0.0) or 0.0)
+            unrealized = float(entry.get("unrealized_pnl", 0.0) or 0.0)
+
+            if nav_val > peak_nav:
+                peak_nav = nav_val
+            drawdown = (peak_nav - nav_val) / peak_nav if peak_nav else 0.0
+            max_drawdown = max(max_drawdown, drawdown)
+
+            if prev_nav is None or prev_nav == 0.0:
+                ret_val = 0.0
+            else:
+                ret_val = (nav_val / prev_nav) - 1.0
+            prev_nav = nav_val
+
+            info_payload = {
+                "cash": cash,
+                "market_value": market_value,
+                "realized_pnl": realized,
+                "unrealized_pnl": unrealized,
+            }
+            nav_rows.append(
+                (
+                    cfg.id,
+                    trade_date,
+                    nav_val,
+                    float(ret_val),
+                    None,
+                    None,
+                    float(drawdown),
+                    json.dumps(info_payload, ensure_ascii=False),
+                )
+            )
+
+        last_nav = float(result.nav_series[-1].get("nav", 0.0) or 0.0)
+        total_return = (last_nav / first_nav - 1.0) if first_nav else 0.0
+        summary_payload.update(
+            {
+                "start_nav": first_nav,
+                "end_nav": last_nav,
+                "total_return": total_return,
+                "max_drawdown": max_drawdown,
+                "days": len(result.nav_series),
+            }
+        )
+
+    if result.trades:
+        for trade in result.trades:
+            trade_date = str(trade.get("trade_date", ""))
+            ts_code = str(trade.get("ts_code", ""))
+            side = str(trade.get("action", "")).lower()
+            price = float(trade.get("price", 0.0) or 0.0)
+            qty = float(trade.get("quantity", 0.0) or 0.0)
+            reason_payload = {
+                "confidence": trade.get("confidence"),
+                "target_weight": trade.get("target_weight"),
+                "value": trade.get("value"),
+            }
+            trade_rows.append(
+                (
+                    cfg.id,
+                    ts_code,
+                    trade_date,
+                    side,
+                    price,
+                    qty,
+                    json.dumps(reason_payload, ensure_ascii=False),
+                )
+            )
+        summary_payload["trade_count"] = len(trade_rows)
+
+    cfg_payload = {
+        "id": cfg.id,
+        "name": cfg.name,
+        "start_date": cfg.start_date.isoformat(),
+        "end_date": cfg.end_date.isoformat(),
+        "universe": cfg.universe,
+        "params": cfg.params,
+        "method": cfg.method,
+    }
+
+    with db_session() as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO bt_config (id, name, start_date, end_date, universe, params)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                cfg.id,
+                cfg.name,
+                cfg.start_date.isoformat(),
+                cfg.end_date.isoformat(),
+                ",".join(cfg.universe),
+                json.dumps(cfg.params, ensure_ascii=False),
+            ),
+        )
+
+        conn.execute("DELETE FROM bt_nav WHERE cfg_id = ?", (cfg.id,))
+        conn.execute("DELETE FROM bt_trades WHERE cfg_id = ?", (cfg.id,))
+        conn.execute("DELETE FROM bt_report WHERE cfg_id = ?", (cfg.id,))
+
+        if nav_rows:
+            conn.executemany(
+                """
+                INSERT INTO bt_nav (cfg_id, trade_date, nav, ret, pos_count, turnover, dd, info)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                nav_rows,
+            )
+
+        if trade_rows:
+            conn.executemany(
+                """
+                INSERT INTO bt_trades (cfg_id, ts_code, trade_date, side, price, qty, reason)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                trade_rows,
+            )
+
+        summary_payload.setdefault("universe", cfg.universe)
+        summary_payload.setdefault("method", cfg.method)
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO bt_report (cfg_id, summary)
+            VALUES (?, ?)
+            """,
+            (cfg.id, json.dumps(summary_payload, ensure_ascii=False, default=str)),
+        )
 
 
 def _candidate_status(action: AgentAction, requires_review: bool) -> str:

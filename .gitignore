@@ -26,6 +26,9 @@ app/data/*.json
 # Streamlit temporary files
 .streamlit/
 
+# Local references
+Refer-TradingAgents-CN
+
 # System files
 .DS_Store
 Thumbs.db
