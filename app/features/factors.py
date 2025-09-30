@@ -32,10 +32,15 @@ class FactorResult:
 
 
 DEFAULT_FACTORS: List[FactorSpec] = [
+    FactorSpec("mom_5", 5),
     FactorSpec("mom_20", 20),
     FactorSpec("mom_60", 60),
     FactorSpec("volat_20", 20),
     FactorSpec("turn_20", 20),
+    FactorSpec("turn_5", 5),
+    FactorSpec("val_pe_score", 0),
+    FactorSpec("val_pb_score", 0),
+    FactorSpec("volume_ratio_score", 0),
 ]
 
 
@@ -207,6 +212,18 @@ def _compute_security_factors(
         max_turn_window,
     )
 
+    latest_fields = broker.fetch_latest(
+        ts_code,
+        trade_date,
+        [
+            "daily_basic.pe",
+            "daily_basic.pb",
+            "daily_basic.ps",
+            "daily_basic.volume_ratio",
+            "daily.amount",
+        ],
+    )
+
     results: Dict[str, float | None] = {}
     for spec in specs:
         prefix = _factor_prefix(spec.name)
@@ -225,6 +242,15 @@ def _compute_security_factors(
                 results[spec.name] = rolling_mean(turnover_series, spec.window)
             else:
                 results[spec.name] = None
+        elif spec.name == "val_pe_score":
+            pe = latest_fields.get("daily_basic.pe")
+            results[spec.name] = _valuation_score(pe, scale=12.0)
+        elif spec.name == "val_pb_score":
+            pb = latest_fields.get("daily_basic.pb")
+            results[spec.name] = _valuation_score(pb, scale=2.5)
+        elif spec.name == "volume_ratio_score":
+            volume_ratio = latest_fields.get("daily_basic.volume_ratio")
+            results[spec.name] = _volume_ratio_score(volume_ratio)
         else:
             LOGGER.debug(
                 "忽略未识别的因子 name=%s ts_code=%s",
@@ -293,3 +319,24 @@ def _fetch_series_values(
 
 def _factor_prefix(name: str) -> str:
     return name.split("_", 1)[0] if name else ""
+
+
+def _valuation_score(value: object, *, scale: float) -> float:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if numeric <= 0:
+        return 0.0
+    score = scale / (scale + numeric)
+    return max(0.0, min(1.0, score))
+
+
+def _volume_ratio_score(value: object) -> float:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if numeric < 0:
+        numeric = 0.0
+    return max(0.0, min(1.0, numeric / 10.0))
