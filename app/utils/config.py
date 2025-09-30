@@ -334,7 +334,7 @@ class AppConfig:
     """User configurable settings persisted in a simple structure."""
 
     tushare_token: Optional[str] = None
-    rss_sources: Dict[str, bool] = field(default_factory=dict)
+    rss_sources: Dict[str, object] = field(default_factory=dict)
     decision_method: str = "nash"
     data_paths: DataPaths = field(default_factory=DataPaths)
     agent_weights: AgentWeights = field(default_factory=AgentWeights)
@@ -401,6 +401,14 @@ def _load_from_file(cfg: AppConfig) -> None:
         cfg.force_refresh = bool(payload.get("force_refresh"))
     if "decision_method" in payload:
         cfg.decision_method = str(payload.get("decision_method") or cfg.decision_method)
+
+    rss_payload = payload.get("rss_sources")
+    if isinstance(rss_payload, dict):
+        resolved_rss: Dict[str, object] = {}
+        for key, value in rss_payload.items():
+            if isinstance(value, (bool, dict)):
+                resolved_rss[str(key)] = value
+        cfg.rss_sources = resolved_rss
 
     weights_payload = payload.get("agent_weights")
     if isinstance(weights_payload, dict):
@@ -572,6 +580,7 @@ def save_config(cfg: AppConfig | None = None) -> None:
         "tushare_token": cfg.tushare_token,
         "force_refresh": cfg.force_refresh,
         "decision_method": cfg.decision_method,
+        "rss_sources": cfg.rss_sources,
         "agent_weights": cfg.agent_weights.as_dict(),
         "llm": {
             "strategy": cfg.llm.strategy if cfg.llm.strategy in ALLOWED_LLM_STRATEGIES else "single",

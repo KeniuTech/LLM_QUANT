@@ -36,6 +36,7 @@ from app.llm.metrics import (
     reset as reset_llm_metrics,
     snapshot as snapshot_llm_metrics,
 )
+from app.utils import alerts
 from app.utils.config import (
     ALLOWED_LLM_STRATEGIES,
     DEFAULT_LLM_BASE_URLS,
@@ -86,6 +87,9 @@ def render_global_dashboard() -> None:
     decisions_container = st.sidebar.container()
     _DASHBOARD_CONTAINERS = (metrics_container, decisions_container)
     _DASHBOARD_ELEMENTS = _ensure_dashboard_elements(metrics_container, decisions_container)
+    if st.sidebar.button("清除数据告警", key="clear_data_alerts"):
+        alerts.clear_warnings()
+        _update_dashboard_sidebar()
     if not _SIDEBAR_LISTENER_ATTACHED:
         register_llm_metrics_listener(_sidebar_metrics_listener)
         _SIDEBAR_LISTENER_ATTACHED = True
@@ -132,6 +136,23 @@ def _update_dashboard_sidebar(
     else:
         model_placeholder.info("暂无模型分布数据。")
 
+    warnings_placeholder = elements.get("warnings")
+    if warnings_placeholder is not None:
+        warnings_placeholder.empty()
+        warnings = alerts.get_warnings()
+        if warnings:
+            lines = []
+            for warning in warnings[-10:]:
+                detail = warning.get("detail")
+                appendix = f" {detail}" if detail else ""
+                lines.append(
+                    f"- **{warning['source']}** {warning['message']}{appendix}"
+                    f"\n<small>{warning['timestamp']}</small>"
+                )
+            warnings_placeholder.markdown("\n".join(lines), unsafe_allow_html=True)
+        else:
+            warnings_placeholder.info("暂无数据告警。")
+
     decisions = metrics.get("recent_decisions") or llm_recent_decisions(10)
     if decisions:
         lines = []
@@ -163,6 +184,8 @@ def _ensure_dashboard_elements(metrics_container, decisions_container) -> Dict[s
     distribution_expander = metrics_container.expander("调用分布", expanded=False)
     provider_distribution = distribution_expander.empty()
     model_distribution = distribution_expander.empty()
+    warnings_expander = metrics_container.expander("数据告警", expanded=False)
+    warnings_placeholder = warnings_expander.empty()
 
     decisions_container.subheader("最新决策")
     decisions_list = decisions_container.empty()
@@ -173,6 +196,7 @@ def _ensure_dashboard_elements(metrics_container, decisions_container) -> Dict[s
         "metrics_completion": metrics_completion,
         "provider_distribution": provider_distribution,
         "model_distribution": model_distribution,
+        "warnings": warnings_placeholder,
         "decisions_list": decisions_list,
     }
     return elements
@@ -1649,11 +1673,80 @@ def render_tests() -> None:
             except Exception as exc:  # noqa: BLE001
                 LOGGER.exception("示例 TuShare 拉取失败", extra=LOG_EXTRA)
                 st.error(f"拉取失败：{exc}")
+                alerts.add_warning("TuShare", "示例拉取失败", str(exc))
+                _update_dashboard_sidebar()
 
     st.info("注意：TuShare 拉取依赖网络与 Token，若环境未配置将出现错误提示。")
 
     st.divider()
-    days = int(st.number_input("检查窗口（天数）", min_value=30, max_value=1095, value=365, step=30))
+
+    st.subheader("RSS 数据测试")
+    st.write("用于验证 RSS 配置是否能够正常抓取新闻并写入数据库。")
+    rss_url = st.text_input(
+        "测试 RSS 地址",
+        value="https://rsshub.app/cls/depth/1000",
+        help="留空则使用默认配置的全部 RSS 来源。",
+    ).strip()
+    rss_hours = int(
+        st.number_input(
+            "回溯窗口（小时）",
+            min_value=1,
+            max_value=168,
+            value=24,
+            step=6,
+            help="仅抓取最近指定小时内的新闻。",
+        )
+    )
+    rss_limit = int(
+        st.number_input(
+            "单源抓取条数",
+            min_value=1,
+            max_value=200,
+            value=50,
+            step=10,
+        )
+    )
+    if st.button("运行 RSS 测试"):
+        from app.ingest import rss as rss_ingest
+
+        LOGGER.info(
+            "点击 RSS 测试按钮 rss_url=%s hours=%s limit=%s",
+            rss_url,
+            rss_hours,
+            rss_limit,
+            extra=LOG_EXTRA,
+        )
+        with st.spinner("正在抓取 RSS 新闻..."):
+            try:
+                if rss_url:
+                    items = rss_ingest.fetch_rss_feed(
+                        rss_url,
+                        hours_back=rss_hours,
+                        max_items=rss_limit,
+                    )
+                    count = rss_ingest.save_news_items(items)
+                else:
+                    count = rss_ingest.ingest_configured_rss(
+                        hours_back=rss_hours,
+                        max_items_per_feed=rss_limit,
+                    )
+                st.success(f"RSS 测试完成，新增 {count} 条新闻记录。")
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.exception("RSS 测试失败", extra=LOG_EXTRA)
+                st.error(f"RSS 测试失败：{exc}")
+                alerts.add_warning("RSS", "RSS 测试执行失败", str(exc))
+                _update_dashboard_sidebar()
+
+    st.divider()
+    days = int(
+        st.number_input(
+            "检查窗口（天数）",
+            min_value=30,
+            max_value=10950,
+            value=365,
+            step=30,
+        )
+    )
     LOGGER.debug("检查窗口天数=%s", days, extra=LOG_EXTRA)
     cfg = get_config()
     force_refresh = st.checkbox(
@@ -1666,8 +1759,8 @@ def render_tests() -> None:
         LOGGER.info("更新 force_refresh=%s", force_refresh, extra=LOG_EXTRA)
         save_config()
 
-    if st.button("执行开机检查"):
-        LOGGER.info("点击执行开机检查按钮", extra=LOG_EXTRA)
+    if st.button("执行手动数据同步"):
+        LOGGER.info("点击执行手动数据同步按钮", extra=LOG_EXTRA)
         progress_bar = st.progress(0.0)
         status_placeholder = st.empty()
         log_placeholder = st.empty()
@@ -1677,23 +1770,25 @@ def render_tests() -> None:
             progress_bar.progress(min(max(value, 0.0), 1.0))
             status_placeholder.write(message)
             messages.append(message)
-            LOGGER.debug("开机检查进度：%s -> %.2f", message, value, extra=LOG_EXTRA)
+            LOGGER.debug("手动数据同步进度：%s -> %.2f", message, value, extra=LOG_EXTRA)
 
-        with st.spinner("正在执行开机检查..."):
+        with st.spinner("正在执行手动数据同步..."):
             try:
                 report = run_boot_check(
                     days=days,
                     progress_hook=hook,
                     force_refresh=force_refresh,
                 )
-                LOGGER.info("开机检查成功", extra=LOG_EXTRA)
-                st.success("开机检查完成，以下为数据覆盖摘要。")
+                LOGGER.info("手动数据同步成功", extra=LOG_EXTRA)
+                st.success("手动数据同步完成，以下为数据覆盖摘要。")
                 st.json(report.to_dict())
                 if messages:
                     log_placeholder.markdown("\n".join(f"- {msg}" for msg in messages))
             except Exception as exc:  # noqa: BLE001
-                LOGGER.exception("开机检查失败", extra=LOG_EXTRA)
-                st.error(f"开机检查失败：{exc}")
+                LOGGER.exception("手动数据同步失败", extra=LOG_EXTRA)
+                st.error(f"手动数据同步失败：{exc}")
+                alerts.add_warning("数据同步", "手动数据同步失败", str(exc))
+                _update_dashboard_sidebar()
                 if messages:
                     log_placeholder.markdown("\n".join(f"- {msg}" for msg in messages))
             finally:
@@ -1844,7 +1939,7 @@ def render_tests() -> None:
 
 def main() -> None:
     LOGGER.info("初始化 Streamlit UI", extra=LOG_EXTRA)
-    st.set_page_config(page_title="多智能体投资助理", layout="wide")
+    st.set_page_config(page_title="多智能体个人投资助理", layout="wide")
     render_global_dashboard()
     tabs = st.tabs(["今日计划", "回测与复盘", "数据与设置", "自检测试"])
     LOGGER.debug("Tabs 初始化完成：%s", ["今日计划", "回测与复盘", "数据与设置", "自检测试"], extra=LOG_EXTRA)

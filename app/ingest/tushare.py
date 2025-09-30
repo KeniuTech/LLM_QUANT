@@ -16,6 +16,7 @@ try:
 except ImportError:  # pragma: no cover - 运行时提示
     ts = None  # type: ignore[assignment]
 
+from app.utils import alerts
 from app.utils.config import get_config
 from app.utils.db import db_session
 from app.data.schema import initialize_database
@@ -1601,12 +1602,18 @@ def collect_data_coverage(start: date, end: date) -> Dict[str, Dict[str, object]
 
 def run_ingestion(job: FetchJob, include_limits: bool = True) -> None:
     LOGGER.info("启动 TuShare 拉取任务：%s", job.name, extra=LOG_EXTRA)
-    ensure_data_coverage(
-        job.start,
-        job.end,
-        ts_codes=job.ts_codes,
-        include_limits=include_limits,
-        include_extended=True,
-        force=True,
-    )
-    LOGGER.info("任务 %s 完成", job.name, extra=LOG_EXTRA)
+    try:
+        ensure_data_coverage(
+            job.start,
+            job.end,
+            ts_codes=job.ts_codes,
+            include_limits=include_limits,
+            include_extended=True,
+            force=True,
+        )
+    except Exception as exc:
+        alerts.add_warning("TuShare", f"拉取任务失败：{job.name}", str(exc))
+        raise
+    else:
+        alerts.clear_warnings("TuShare")
+        LOGGER.info("任务 %s 完成", job.name, extra=LOG_EXTRA)
