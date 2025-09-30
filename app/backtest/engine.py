@@ -98,6 +98,12 @@ class BacktestEngine:
             "daily_basic.volume_ratio",
             "stk_limit.up_limit",
             "stk_limit.down_limit",
+            "factors.mom_20",
+            "factors.mom_60",
+            "factors.volat_20",
+            "factors.turn_20",
+            "news.sentiment_index",
+            "news.heat_score",
         }
         self.required_fields = sorted(base_scope | department_scope)
 
@@ -121,10 +127,19 @@ class BacktestEngine:
                 trade_date_str,
                 window=60,
             )
-            close_values = [value for _date, value in closes]
-            mom20 = momentum(close_values, 20)
-            mom60 = momentum(close_values, 60)
-            volat20 = volatility(close_values, 20)
+            close_values = [value for _date, value in closes if value is not None]
+
+            mom20 = scope_values.get("factors.mom_20")
+            if mom20 is None and len(close_values) >= 20:
+                mom20 = momentum(close_values, 20)
+
+            mom60 = scope_values.get("factors.mom_60")
+            if mom60 is None and len(close_values) >= 60:
+                mom60 = momentum(close_values, 60)
+
+            volat20 = scope_values.get("factors.volat_20")
+            if volat20 is None and len(close_values) >= 2:
+                volat20 = volatility(close_values, 20)
 
             turnover_series = self.data_broker.fetch_series(
                 "daily_basic",
@@ -133,8 +148,20 @@ class BacktestEngine:
                 trade_date_str,
                 window=20,
             )
-            turnover_values = [value for _date, value in turnover_series]
-            turn20 = rolling_mean(turnover_values, 20)
+            turnover_values = [value for _date, value in turnover_series if value is not None]
+
+            turn20 = scope_values.get("factors.turn_20")
+            if turn20 is None and turnover_values:
+                turn20 = rolling_mean(turnover_values, 20)
+
+            if mom20 is None:
+                mom20 = 0.0
+            if mom60 is None:
+                mom60 = 0.0
+            if volat20 is None:
+                volat20 = 0.0
+            if turn20 is None:
+                turn20 = 0.0
 
             liquidity_score = normalize(turn20, factor=20.0)
             cost_penalty = normalize(
@@ -142,12 +169,15 @@ class BacktestEngine:
                 factor=50.0,
             )
 
+            sentiment_index = scope_values.get("news.sentiment_index", 0.0)
+            heat_score = scope_values.get("news.heat_score", 0.0)
+            scope_values.setdefault("news.sentiment_index", sentiment_index)
+            scope_values.setdefault("news.heat_score", heat_score)
+
             scope_values.setdefault("factors.mom_20", mom20)
             scope_values.setdefault("factors.mom_60", mom60)
             scope_values.setdefault("factors.volat_20", volat20)
             scope_values.setdefault("factors.turn_20", turn20)
-            scope_values.setdefault("news.sentiment_index", 0.0)
-            scope_values.setdefault("news.heat_score", 0.0)
             if scope_values.get("macro.industry_heat") is None:
                 scope_values["macro.industry_heat"] = 0.5
             if scope_values.get("macro.relative_strength") is None:
@@ -189,8 +219,8 @@ class BacktestEngine:
                 "turn_20": turn20,
                 "liquidity_score": liquidity_score,
                 "cost_penalty": cost_penalty,
-                "news_heat": scope_values.get("news.heat_score", 0.0),
-                "news_sentiment": scope_values.get("news.sentiment_index", 0.0),
+                "news_heat": heat_score,
+                "news_sentiment": sentiment_index,
                 "industry_heat": scope_values.get("macro.industry_heat", 0.0),
                 "industry_relative_mom": scope_values.get(
                     "macro.relative_strength",
@@ -818,6 +848,7 @@ def _persist_backtest_results(cfg: BtConfig, result: BacktestResult) -> None:
 
     nav_rows: List[tuple] = []
     trade_rows: List[tuple] = []
+    risk_rows: List[tuple] = []
     summary_payload: Dict[str, object] = {}
     turnover_sum = 0.0
 
@@ -893,6 +924,10 @@ def _persist_backtest_results(cfg: BtConfig, result: BacktestResult) -> None:
                 "confidence": trade.get("confidence"),
                 "target_weight": trade.get("target_weight"),
                 "value": trade.get("value"),
+                "fee": trade.get("fee"),
+                "slippage": trade.get("slippage"),
+                "risk_penalty": trade.get("risk_penalty"),
+                "liquidity_score": trade.get("liquidity_score"),
             }
             trade_rows.append(
                 (
@@ -913,6 +948,18 @@ def _persist_backtest_results(cfg: BtConfig, result: BacktestResult) -> None:
         for event in result.risk_events:
             reason = str(event.get("reason") or "unknown")
             breakdown[reason] = breakdown.get(reason, 0) + 1
+            risk_rows.append(
+                (
+                    cfg.id,
+                    str(event.get("trade_date", "")),
+                    str(event.get("ts_code", "")),
+                    reason,
+                    str(event.get("action", "")),
+                    float(event.get("target_weight", 0.0) or 0.0),
+                    float(event.get("confidence", 0.0) or 0.0),
+                    json.dumps(event, ensure_ascii=False),
+                )
+            )
         summary_payload["risk_breakdown"] = breakdown
 
     cfg_payload = {
@@ -943,6 +990,7 @@ def _persist_backtest_results(cfg: BtConfig, result: BacktestResult) -> None:
 
         conn.execute("DELETE FROM bt_nav WHERE cfg_id = ?", (cfg.id,))
         conn.execute("DELETE FROM bt_trades WHERE cfg_id = ?", (cfg.id,))
+        conn.execute("DELETE FROM bt_risk_events WHERE cfg_id = ?", (cfg.id,))
         conn.execute("DELETE FROM bt_report WHERE cfg_id = ?", (cfg.id,))
 
         if nav_rows:
@@ -961,6 +1009,15 @@ def _persist_backtest_results(cfg: BtConfig, result: BacktestResult) -> None:
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 trade_rows,
+            )
+
+        if risk_rows:
+            conn.executemany(
+                """
+                INSERT INTO bt_risk_events (cfg_id, trade_date, ts_code, reason, action, target_weight, confidence, metadata)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                risk_rows,
             )
 
         summary_payload.setdefault("universe", cfg.universe)

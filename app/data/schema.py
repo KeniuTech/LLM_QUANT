@@ -327,6 +327,18 @@ SCHEMA_STATEMENTS: Iterable[str] = (
     );
     """,
     """
+    CREATE TABLE IF NOT EXISTS bt_risk_events (
+      cfg_id TEXT,
+      trade_date TEXT,
+      ts_code TEXT,
+      reason TEXT,
+      action TEXT,
+      target_weight REAL,
+      confidence REAL,
+      metadata TEXT
+    );
+    """,
+    """
     CREATE TABLE IF NOT EXISTS bt_nav (
       cfg_id TEXT,
       trade_date TEXT,
@@ -472,6 +484,7 @@ REQUIRED_TABLES = (
     "heat_daily",
     "bt_config",
     "bt_trades",
+    "bt_risk_events",
     "bt_nav",
     "bt_report",
     "run_log",

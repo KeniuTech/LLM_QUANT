@@ -36,6 +36,10 @@ class EpisodeMetrics:
     volatility: float
     nav_series: List[Dict[str, float]]
     trades: List[Dict[str, object]]
+    turnover: float
+    trade_count: int
+    risk_count: int
+    risk_breakdown: Dict[str, int]
 
     @property
     def sharpe_like(self) -> float:
@@ -109,11 +113,16 @@ class DecisionEnv:
             "max_drawdown": metrics.max_drawdown,
             "volatility": metrics.volatility,
             "sharpe_like": metrics.sharpe_like,
+            "turnover": metrics.turnover,
+            "trade_count": float(metrics.trade_count),
+            "risk_count": float(metrics.risk_count),
         }
         info = {
             "nav_series": metrics.nav_series,
             "trades": metrics.trades,
             "weights": weights,
+            "risk_breakdown": metrics.risk_breakdown,
+            "risk_events": getattr(result, "risk_events", []),
         }
         return observation, reward, True, info
 
@@ -131,7 +140,21 @@ class DecisionEnv:
     def _compute_metrics(self, result: BacktestResult) -> EpisodeMetrics:
         nav_series = result.nav_series or []
         if not nav_series:
-            return EpisodeMetrics(0.0, 0.0, 0.0, [], result.trades)
+            risk_breakdown: Dict[str, int] = {}
+            for event in getattr(result, "risk_events", []) or []:
+                reason = str(event.get("reason") or "unknown")
+                risk_breakdown[reason] = risk_breakdown.get(reason, 0) + 1
+            return EpisodeMetrics(
+                total_return=0.0,
+                max_drawdown=0.0,
+                volatility=0.0,
+                nav_series=[],
+                trades=result.trades,
+                turnover=0.0,
+                trade_count=len(result.trades or []),
+                risk_count=len(getattr(result, "risk_events", []) or []),
+                risk_breakdown=risk_breakdown,
+            )
 
         nav_values = [row.get("nav", 0.0) for row in nav_series]
         if not nav_values or nav_values[0] == 0:
@@ -158,17 +181,30 @@ class DecisionEnv:
         else:
             volatility = 0.0
 
+        turnover = sum(float(row.get("turnover", 0.0) or 0.0) for row in nav_series)
+        risk_events = getattr(result, "risk_events", []) or []
+        risk_breakdown: Dict[str, int] = {}
+        for event in risk_events:
+            reason = str(event.get("reason") or "unknown")
+            risk_breakdown[reason] = risk_breakdown.get(reason, 0) + 1
+
         return EpisodeMetrics(
             total_return=float(total_return),
             max_drawdown=float(max_drawdown),
             volatility=volatility,
             nav_series=nav_series,
             trades=result.trades,
+            turnover=float(turnover),
+            trade_count=len(result.trades or []),
+            risk_count=len(risk_events),
+            risk_breakdown=risk_breakdown,
         )
 
     @staticmethod
     def _default_reward(metrics: EpisodeMetrics) -> float:
-        penalty = 0.5 * metrics.max_drawdown
+        risk_penalty = 0.05 * metrics.risk_count
+        turnover_penalty = 0.00001 * metrics.turnover
+        penalty = 0.5 * metrics.max_drawdown + risk_penalty + turnover_penalty
         return metrics.total_return - penalty
 
     @property

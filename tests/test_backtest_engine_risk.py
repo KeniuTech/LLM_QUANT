@@ -5,9 +5,20 @@ from datetime import date
 
 import pytest
 
+import json
+
 from app.agents.base import AgentAction, AgentContext
 from app.agents.game import Decision
-from app.backtest.engine import BacktestEngine, BacktestResult, BtConfig, PortfolioState
+from app.backtest.engine import (
+    BacktestEngine,
+    BacktestResult,
+    BtConfig,
+    PortfolioState,
+    _persist_backtest_results,
+)
+from app.data.schema import initialize_database
+from app.utils.config import DataPaths, get_config
+from app.utils.db import db_session
 
 
 def _make_context(price: float, features: dict | None = None) -> AgentContext:
@@ -41,6 +52,20 @@ def _engine_with_params(params: dict[str, float]) -> BacktestEngine:
         params=params,
     )
     return BacktestEngine(cfg)
+
+
+@pytest.fixture()
+def isolated_db(tmp_path):
+    cfg = get_config()
+    original_paths = cfg.data_paths
+    tmp_root = tmp_path / "data"
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    cfg.data_paths = DataPaths(root=tmp_root)
+    initialize_database()
+    try:
+        yield
+    finally:
+        cfg.data_paths = original_paths
 
 
 def test_buy_respects_risk_caps():
@@ -130,3 +155,56 @@ def test_sell_applies_slippage_and_fee():
     assert not state.holdings
     assert result.nav_series[0]["turnover"] == pytest.approx(trade["value"])
     assert not result.risk_events
+
+
+def test_persist_backtest_results_saves_risk_events(isolated_db):
+    cfg = BtConfig(
+        id="risk_cfg",
+        name="risk",
+        start_date=date(2025, 1, 10),
+        end_date=date(2025, 1, 10),
+        universe=["000001.SZ"],
+        params={},
+    )
+    result = BacktestResult()
+    result.nav_series = [
+        {
+            "trade_date": "2025-01-10",
+            "nav": 100.0,
+            "cash": 100.0,
+            "market_value": 0.0,
+            "realized_pnl": 0.0,
+            "unrealized_pnl": 0.0,
+            "turnover": 0.0,
+        }
+    ]
+    result.risk_events = [
+        {
+            "trade_date": "2025-01-10",
+            "ts_code": "000001.SZ",
+            "reason": "limit_up",
+            "action": "buy_l",
+            "target_weight": 0.3,
+            "confidence": 0.8,
+        }
+    ]
+
+    _persist_backtest_results(cfg, result)
+
+    with db_session(read_only=True) as conn:
+        risk_row = conn.execute(
+            "SELECT reason, metadata FROM bt_risk_events WHERE cfg_id = ?",
+            (cfg.id,),
+        ).fetchone()
+        assert risk_row is not None
+        assert risk_row["reason"] == "limit_up"
+        metadata = json.loads(risk_row["metadata"])
+        assert metadata["action"] == "buy_l"
+
+        summary_row = conn.execute(
+            "SELECT summary FROM bt_report WHERE cfg_id = ?",
+            (cfg.id,),
+        ).fetchone()
+        summary = json.loads(summary_row["summary"])
+        assert summary["risk_events"] == 1
+        assert summary["risk_breakdown"]["limit_up"] == 1
