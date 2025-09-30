@@ -28,16 +28,17 @@ def isolated_db(tmp_path):
 
 
 def test_fetch_rss_feed_parses_entries(monkeypatch):
+    published = datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")
     sample_feed = (
-        """
-        <rss version="2.0">
+        f"""
+        <rss version=\"2.0\">
           <channel>
             <title>Example</title>
             <item>
               <title>新闻：公司利好公告</title>
               <link>https://example.com/a</link>
               <description><![CDATA[内容包含 000001.SZ ]]></description>
-              <pubDate>Wed, 01 Jan 2025 08:30:00 GMT</pubDate>
+              <pubDate>{published}</pubDate>
               <guid>a</guid>
             </item>
           </channel>

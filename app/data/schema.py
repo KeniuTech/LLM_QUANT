@@ -63,6 +63,18 @@ SCHEMA_STATEMENTS: Iterable[str] = (
     );
     """,
     """
+    CREATE TABLE IF NOT EXISTS factors (
+      ts_code TEXT,
+      trade_date TEXT,
+      mom_20 REAL,
+      mom_60 REAL,
+      volat_20 REAL,
+      turn_20 REAL,
+      updated_at TEXT,
+      PRIMARY KEY (ts_code, trade_date)
+    );
+    """,
+    """
     CREATE TABLE IF NOT EXISTS adj_factor (
       ts_code TEXT,
       trade_date TEXT,
@@ -442,6 +454,7 @@ REQUIRED_TABLES = (
     "stock_basic",
     "daily",
     "daily_basic",
+    "factors",
     "adj_factor",
     "suspend",
     "trade_calendar",
