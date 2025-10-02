@@ -23,6 +23,27 @@ LOGGER = get_logger(__name__)
 LOG_EXTRA = {"stage": "backtest"}
 
 
+def _valuation_score(value: object, scale: float) -> float:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if numeric <= 0:
+        return 0.0
+    score = scale / (scale + numeric)
+    return max(0.0, min(1.0, score))
+
+
+def _volume_ratio_score(value: object) -> float:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if numeric < 0:
+        numeric = 0.0
+    return max(0.0, min(1.0, numeric / 10.0))
+
+
 
 @dataclass
 class BtConfig:
@@ -129,6 +150,9 @@ class BacktestEngine:
             )
             close_values = [value for _date, value in closes if value is not None]
 
+            mom5 = scope_values.get("factors.mom_5")
+            if mom5 is None and len(close_values) >= 5:
+                mom5 = momentum(close_values, 5)
             mom20 = scope_values.get("factors.mom_20")
             if mom20 is None and len(close_values) >= 20:
                 mom20 = momentum(close_values, 20)
@@ -153,6 +177,9 @@ class BacktestEngine:
             turn20 = scope_values.get("factors.turn_20")
             if turn20 is None and turnover_values:
                 turn20 = rolling_mean(turnover_values, 20)
+            turn5 = scope_values.get("factors.turn_5")
+            if turn5 is None and len(turnover_values) >= 5:
+                turn5 = rolling_mean(turnover_values, 5)
 
             if mom20 is None:
                 mom20 = 0.0
@@ -162,6 +189,10 @@ class BacktestEngine:
                 volat20 = 0.0
             if turn20 is None:
                 turn20 = 0.0
+            if mom5 is None:
+                mom5 = 0.0
+            if turn5 is None:
+                turn5 = 0.0
 
             liquidity_score = normalize(turn20, factor=20.0)
             cost_penalty = normalize(
@@ -169,15 +200,32 @@ class BacktestEngine:
                 factor=50.0,
             )
 
+            val_pe = scope_values.get("factors.val_pe_score")
+            if val_pe is None:
+                val_pe = _valuation_score(scope_values.get("daily_basic.pe"), scale=12.0)
+
+            val_pb = scope_values.get("factors.val_pb_score")
+            if val_pb is None:
+                val_pb = _valuation_score(scope_values.get("daily_basic.pb"), scale=2.5)
+
+            volume_ratio_score = scope_values.get("factors.volume_ratio_score")
+            if volume_ratio_score is None:
+                volume_ratio_score = _volume_ratio_score(scope_values.get("daily_basic.volume_ratio"))
+
             sentiment_index = scope_values.get("news.sentiment_index", 0.0)
             heat_score = scope_values.get("news.heat_score", 0.0)
             scope_values.setdefault("news.sentiment_index", sentiment_index)
             scope_values.setdefault("news.heat_score", heat_score)
 
+            scope_values.setdefault("factors.mom_5", mom5)
             scope_values.setdefault("factors.mom_20", mom20)
             scope_values.setdefault("factors.mom_60", mom60)
             scope_values.setdefault("factors.volat_20", volat20)
             scope_values.setdefault("factors.turn_20", turn20)
+            scope_values.setdefault("factors.turn_5", turn5)
+            scope_values.setdefault("factors.val_pe_score", val_pe)
+            scope_values.setdefault("factors.val_pb_score", val_pb)
+            scope_values.setdefault("factors.volume_ratio_score", volume_ratio_score)
             if scope_values.get("macro.industry_heat") is None:
                 scope_values["macro.industry_heat"] = 0.5
             if scope_values.get("macro.relative_strength") is None:
@@ -213,10 +261,12 @@ class BacktestEngine:
             )
 
             features = {
+                "mom_5": mom5,
                 "mom_20": mom20,
                 "mom_60": mom60,
                 "volat_20": volat20,
                 "turn_20": turn20,
+                "turn_5": turn5,
                 "liquidity_score": liquidity_score,
                 "cost_penalty": cost_penalty,
                 "news_heat": heat_score,
@@ -227,6 +277,9 @@ class BacktestEngine:
                     scope_values.get("index.performance_peers", 0.0),
                 ),
                 "risk_penalty": min(1.0, volat20 * 5.0),
+                "valuation_pe_score": val_pe,
+                "valuation_pb_score": val_pb,
+                "volume_ratio_score": volume_ratio_score,
                 "is_suspended": is_suspended,
                 "limit_up": limit_up,
                 "limit_down": limit_down,

@@ -58,7 +58,7 @@ def compute_factors(
     entry for ``trade_date`` will be ignored.
     """
 
-    specs = [spec for spec in factors if spec.window > 0]
+    specs = [spec for spec in factors if spec.window >= 0]
     if not specs:
         return []
 

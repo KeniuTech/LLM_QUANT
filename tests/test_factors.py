@@ -13,6 +13,8 @@ from app.features.factors import (
     FactorSpec,
     compute_factor_range,
     compute_factors,
+    _valuation_score,
+    _volume_ratio_score,
 )
 from app.utils.config import DataPaths, get_config
 from app.utils.data_access import DataBroker
@@ -58,18 +60,25 @@ def _populate_sample_data(ts_code: str, as_of: date) -> None:
                     1_000_000.0,
                 ),
             )
+            pe = 10.0 + (offset % 5)
+            pb = 1.5 + (offset % 3) * 0.1
+            ps = 2.0 + (offset % 4) * 0.1
+            volume_ratio = 0.5 + (offset % 4) * 0.5
             conn.execute(
                 """
                 INSERT OR REPLACE INTO daily_basic
-                (ts_code, trade_date, turnover_rate, turnover_rate_f, volume_ratio)
-                VALUES (?, ?, ?, ?, ?)
+                (ts_code, trade_date, turnover_rate, turnover_rate_f, volume_ratio, pe, pb, ps)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     ts_code,
                     trade_date,
                     turnover,
                     turnover,
-                    1.0,
+                    volume_ratio,
+                    pe,
+                    pb,
+                    ps,
                 ),
             )
 
@@ -79,7 +88,14 @@ def test_compute_factors_persists_and_updates(isolated_db):
     trade_day = date(2025, 1, 30)
     _populate_sample_data(ts_code, trade_day)
 
-    specs = [*DEFAULT_FACTORS, FactorSpec("mom_5", 5)]
+    specs = [
+        *DEFAULT_FACTORS,
+        FactorSpec("mom_5", 5),
+        FactorSpec("turn_5", 5),
+        FactorSpec("val_pe_score", 0),
+        FactorSpec("val_pb_score", 0),
+        FactorSpec("volume_ratio_score", 0),
+    ]
     results = compute_factors(trade_day, specs)
 
     assert results
@@ -95,18 +111,29 @@ def test_compute_factors_persists_and_updates(isolated_db):
     expected_mom5 = momentum(close_series, 5)
     expected_volat20 = volatility(close_series, 20)
     expected_turn20 = rolling_mean(turnover_series, 20)
+    expected_turn5 = rolling_mean(turnover_series, 5)
+    latest_pe = 10.0 + (0 % 5)
+    latest_pb = 1.5 + (0 % 3) * 0.1
+    latest_volume_ratio = 0.5 + (0 % 4) * 0.5
+    expected_val_pe = _valuation_score(latest_pe, scale=12.0)
+    expected_val_pb = _valuation_score(latest_pb, scale=2.5)
+    expected_vol_ratio_score = _volume_ratio_score(latest_volume_ratio)
 
     assert result.values["mom_20"] == pytest.approx(expected_mom20)
     assert result.values["mom_60"] == pytest.approx(expected_mom60)
     assert result.values["mom_5"] == pytest.approx(expected_mom5)
     assert result.values["volat_20"] == pytest.approx(expected_volat20)
     assert result.values["turn_20"] == pytest.approx(expected_turn20)
+    assert result.values["turn_5"] == pytest.approx(expected_turn5)
+    assert result.values["val_pe_score"] == pytest.approx(expected_val_pe)
+    assert result.values["val_pb_score"] == pytest.approx(expected_val_pb)
+    assert result.values["volume_ratio_score"] == pytest.approx(expected_vol_ratio_score)
 
     trade_date_str = trade_day.strftime("%Y%m%d")
     with db_session(read_only=True) as conn:
         row = conn.execute(
             """
-            SELECT mom_20, mom_60, mom_5, volat_20, turn_20
+            SELECT mom_20, mom_60, mom_5, volat_20, turn_20, turn_5, val_pe_score, val_pb_score, volume_ratio_score
             FROM factors WHERE ts_code = ? AND trade_date = ?
             """,
             (ts_code, trade_date_str),
@@ -117,9 +144,24 @@ def test_compute_factors_persists_and_updates(isolated_db):
     assert row["mom_5"] == pytest.approx(expected_mom5)
     assert row["volat_20"] == pytest.approx(expected_volat20)
     assert row["turn_20"] == pytest.approx(expected_turn20)
+    assert row["turn_5"] == pytest.approx(expected_turn5)
+    assert row["val_pe_score"] == pytest.approx(expected_val_pe)
+    assert row["val_pb_score"] == pytest.approx(expected_val_pb)
+    assert row["volume_ratio_score"] == pytest.approx(expected_vol_ratio_score)
 
     broker = DataBroker()
-    latest = broker.fetch_latest(ts_code, trade_date_str, ["factors.mom_5", "factors.turn_20"])
+    latest = broker.fetch_latest(
+        ts_code,
+        trade_date_str,
+        [
+            "factors.mom_5",
+            "factors.turn_20",
+            "factors.turn_5",
+            "factors.val_pe_score",
+            "factors.val_pb_score",
+            "factors.volume_ratio_score",
+        ],
+    )
     assert latest["factors.mom_5"] == pytest.approx(expected_mom5)
     assert latest["factors.turn_20"] == pytest.approx(expected_turn20)
 
