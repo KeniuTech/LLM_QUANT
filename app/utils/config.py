@@ -339,6 +339,7 @@ class AppConfig:
     data_paths: DataPaths = field(default_factory=DataPaths)
     agent_weights: AgentWeights = field(default_factory=AgentWeights)
     force_refresh: bool = False
+    auto_update_data: bool = False
     llm_providers: Dict[str, LLMProvider] = field(default_factory=_default_llm_providers)
     llm: LLMConfig = field(default_factory=LLMConfig)
     departments: Dict[str, DepartmentSettings] = field(default_factory=_default_departments)
@@ -399,6 +400,8 @@ def _load_from_file(cfg: AppConfig) -> None:
         cfg.tushare_token = payload.get("tushare_token") or None
     if "force_refresh" in payload:
         cfg.force_refresh = bool(payload.get("force_refresh"))
+    if "auto_update_data" in payload:
+        cfg.auto_update_data = bool(payload.get("auto_update_data"))
     if "decision_method" in payload:
         cfg.decision_method = str(payload.get("decision_method") or cfg.decision_method)
 
@@ -579,6 +582,7 @@ def save_config(cfg: AppConfig | None = None) -> None:
     payload = {
         "tushare_token": cfg.tushare_token,
         "force_refresh": cfg.force_refresh,
+        "auto_update_data": cfg.auto_update_data,
         "decision_method": cfg.decision_method,
         "rss_sources": cfg.rss_sources,
         "agent_weights": cfg.agent_weights.as_dict(),
