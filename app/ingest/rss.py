@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -37,32 +37,50 @@ DEFAULT_TIMEOUT = 10.0
 MAX_SUMMARY_LENGTH = 1500
 
 POSITIVE_KEYWORDS: Tuple[str, ...] = (
-    "利好",
-    "增长",
-    "超预期",
-    "创新高",
-    "增持",
-    "回购",
-    "盈利",
-    "strong",
-    "beat",
-    "upgrade",
+    # 中文积极关键词
+    "利好", "增长", "超预期", "创新高", "增持", "回购", "盈利", 
+    "高增长", "业绩好", "优秀", "强劲", "突破", "新高", "上升",
+    "上涨", "反弹", "复苏", "景气", "扩张", "加速", "改善",
+    "提升", "增加", "优化", "利好消息", "超预期", "超出预期",
+    "盈利超预期", "利润增长", "收入增长", "订单增长", "销量增长",
+    "高景气", "量价齐升", "拐点", "反转", "政策利好", "政策支持",
+    # 英文积极关键词
+    "strong", "beat", "upgrade", "growth", "positive", "better",
+    "exceed", "surpass", "outperform", "rally", "bullish", "upbeat",
+    "improve", "increase", "rise", "gain", "profit", "earnings",
+    "recovery", "expansion", "boom", "upside", "promising",
 )
 NEGATIVE_KEYWORDS: Tuple[str, ...] = (
-    "利空",
-    "下跌",
-    "亏损",
-    "裁员",
-    "违约",
-    "处罚",
-    "暴跌",
-    "减持",
-    "downgrade",
-    "miss",
+    # 中文消极关键词
+    "利空", "下跌", "亏损", "裁员", "违约", "处罚", "暴跌", "减持",
+    "业绩差", "下滑", "下降", "恶化", "亏损", "不及预期", "低于预期",
+    "业绩下滑", "利润下降", "收入下降", "订单减少", "销量减少",
+    "利空消息", "不及预期", "低于预期", "亏损超预期", "利润下滑",
+    "需求萎缩", "量价齐跌", "拐点向下", "政策利空", "政策收紧",
+    "监管收紧", "处罚", "调查", "违规", "风险", "警示", "预警",
+    "降级", "抛售", "减持", "暴跌", "大跌", "下挫", "阴跌",
+    # 英文消极关键词
+    "downgrade", "miss", "weak", "decline", "negative", "worse",
+    "drop", "fall", "loss", "losses", "slowdown", "contract",
+    "bearish", "pessimistic", "worsen", "decrease", "reduce",
+    "slide", "plunge", "crash", "deteriorate", "risk", "warning",
+    "regulatory", "penalty", "investigation",
 )
 
 A_SH_CODE_PATTERN = re.compile(r"\b(\d{6})(?:\.(SH|SZ))?\b", re.IGNORECASE)
 HK_CODE_PATTERN = re.compile(r"\b(\d{4})\.HK\b", re.IGNORECASE)
+
+# 行业关键词映射表
+INDUSTRY_KEYWORDS: Dict[str, List[str]] = {
+    "半导体": ["半导体", "芯片", "集成电路", "IC", "晶圆", "封装", "设计", "制造", "光刻"],
+    "新能源": ["新能源", "光伏", "太阳能", "风电", "风电设备", "锂电池", "储能", "氢能"],
+    "医药": ["医药", "生物制药", "创新药", "医疗器械", "疫苗", "CXO", "CDMO", "CRO"],
+    "消费": ["消费", "食品", "饮料", "白酒", "啤酒", "乳制品", "零食", "零售", "家电"],
+    "科技": ["科技", "人工智能", "AI", "云计算", "大数据", "互联网", "软件", "SaaS"],
+    "金融": ["银行", "保险", "券商", "证券", "金融", "资管", "基金", "投资"],
+    "地产": ["房地产", "地产", "物业", "建筑", "建材", "家居"],
+    "汽车": ["汽车", "新能源汽车", "智能汽车", "自动驾驶", "零部件", "锂电"],
+}
 
 
 @dataclass
@@ -87,7 +105,9 @@ class RssItem:
     published: datetime
     summary: str
     source: str
-    ts_codes: Tuple[str, ...] = ()
+    ts_codes: List[str] = field(default_factory=list)
+    industries: List[str] = field(default_factory=list)  # 新增：相关行业列表
+    important_keywords: List[str] = field(default_factory=list)  # 新增：重要关键词列表
 
 
 DEFAULT_RSS_SOURCES: Tuple[RssFeedConfig, ...] = ()
@@ -260,11 +280,23 @@ def save_news_items(items: Iterable[RssItem]) -> int:
         text_payload = f"{item.title}\n{item.summary}"
         sentiment = _estimate_sentiment(text_payload)
         base_codes = tuple(code for code in item.ts_codes if code)
-        heat = _estimate_heat(item.published, now, len(base_codes), sentiment)
+        # 更新调用，添加新增的参数
+        heat = _estimate_heat(
+            item.published, 
+            now, 
+            len(base_codes), 
+            sentiment, 
+            text_length=len(text_payload),
+            industry_count=len(item.industries)
+        )
+        # 构建包含更多信息的entities对象
         entities = json.dumps(
             {
                 "ts_codes": list(base_codes),
                 "source_url": item.link,
+                "industries": item.industries,  # 添加行业信息
+                "important_keywords": item.important_keywords,  # 添加重要关键词
+                "text_length": len(text_payload),  # 添加文本长度信息
             },
             ensure_ascii=False,
         )
@@ -723,6 +755,7 @@ def _assign_ts_codes(
     base_codes: Sequence[str],
     keywords: Sequence[str],
 ) -> List[str]:
+    """为新闻条目分配股票代码，并同时提取行业信息和重要关键词"""
     matches: set[str] = set()
     text = f"{item.title} {item.summary}".lower()
     if keywords:
@@ -736,36 +769,205 @@ def _assign_ts_codes(
 
     detected = _detect_ts_codes(text)
     matches.update(detected)
+    
+    # 检测相关行业
+    item.industries = _detect_industries(text)
+    
+    # 提取重要关键词
+    item.important_keywords = _extract_important_keywords(text)
+    
     return [code for code in matches if code]
+
+def _detect_industries(text: str) -> List[str]:
+    """根据文本内容检测相关行业"""
+    detected_industries = []
+    text_lower = text.lower()
+    
+    for industry, keywords in INDUSTRY_KEYWORDS.items():
+        for keyword in keywords:
+            if keyword.lower() in text_lower:
+                if industry not in detected_industries:
+                    detected_industries.append(industry)
+                # 一个行业匹配一个关键词即可
+                break
+    
+    return detected_industries
+
+def _extract_important_keywords(text: str) -> List[str]:
+    """从文本中提取重要关键词，包括情感词和行业词"""
+    important_keywords = []
+    text_lower = text.lower()
+    
+    # 提取情感关键词
+    for keyword in POSITIVE_KEYWORDS + NEGATIVE_KEYWORDS:
+        if keyword.lower() in text_lower and keyword not in important_keywords:
+            important_keywords.append(keyword)
+    
+    # 提取行业关键词
+    for keywords in INDUSTRY_KEYWORDS.values():
+        for keyword in keywords:
+            if keyword.lower() in text_lower and keyword not in important_keywords:
+                important_keywords.append(keyword)
+    
+    # 限制关键词数量
+    return important_keywords[:10]  # 最多返回10个关键词
 
 
 def _detect_ts_codes(text: str) -> List[str]:
+    """增强的股票代码检测函数，改进代码识别的准确性"""
     codes: set[str] = set()
+    
+    # 检测A股和港股代码
     for match in A_SH_CODE_PATTERN.finditer(text):
         digits, suffix = match.groups()
-        if suffix:
-            codes.add(f"{digits}.{suffix.upper()}")
-        else:
-            exchange = "SH" if digits.startswith(tuple("569")) else "SZ"
-            codes.add(f"{digits}.{exchange}")
+        # 确保是有效的股票代码（避免误识别其他6位数字）
+        if _is_valid_stock_code(digits, suffix):
+            if suffix:
+                codes.add(f"{digits}.{suffix.upper()}")
+            else:
+                # 根据数字范围推断交易所
+                exchange = "SH" if digits.startswith(tuple("569")) else "SZ"
+                codes.add(f"{digits}.{exchange}")
+    
+    # 检测港股代码
     for match in HK_CODE_PATTERN.finditer(text):
         digits = match.group(1)
+        # 补全为4位数字
         codes.add(f"{digits.zfill(4)}.HK")
+    
+    # 检测可能的股票简称和代码关联
+    codes.update(_detect_codes_by_company_name(text))
+    
     return sorted(codes)
 
 
+def _is_valid_stock_code(digits: str, suffix: Optional[str]) -> bool:
+    """验证是否为有效的股票代码"""
+    # 排除明显不是股票代码的数字组合
+    if len(digits) != 6:
+        return False
+    
+    # 上海证券交易所股票代码范围：600000-609999 (A股), 688000-688999 (科创板), 500000-599999 (基金)
+    # 深圳证券交易所股票代码范围：000001-009999 (主板), 300000-309999 (创业板), 002000-002999 (中小板)
+    # 这里做简单的范围验证，避免误识别
+    if suffix and suffix.upper() in ("SH", "SZ"):
+        return True
+    
+    # 没有后缀时，通过数字范围判断
+    code_int = int(digits)
+    return (
+            (600000 <= code_int <= 609999) or  # 上交所A股
+            (688000 <= code_int <= 688999) or  # 科创板
+            (1 <= code_int <= 9999) or         # 深交所主板 (去掉前导零)
+            (300000 <= code_int <= 309999) or  # 创业板
+            (2000 <= code_int <= 2999)         # 中小板 (去掉前导零)
+        )
+
+
+def _detect_codes_by_company_name(text: str) -> List[str]:
+    """通过公司名称识别可能的股票代码
+    注意：这是一个简化版本，实际应用中可能需要更复杂的映射表
+    """
+    # 这里仅作为示例，实际应用中应该使用更完善的公司名称-代码映射
+    # 这里我们返回空列表，但保留函数结构以便未来扩展
+    return []
+
+
 def _estimate_sentiment(text: str) -> float:
+    """增强的情感分析函数，提高情绪识别准确率"""
     normalized = text.lower()
-    score = 0
+    score = 0.0
+    positive_matches = 0
+    negative_matches = 0
+    
+    # 计算关键词匹配次数
     for keyword in POSITIVE_KEYWORDS:
         if keyword.lower() in normalized:
-            score += 1
+            # 情感词权重：根据重要性调整权重
+            weight = _get_sentiment_keyword_weight(keyword, positive=True)
+            score += weight
+            positive_matches += 1
+    
     for keyword in NEGATIVE_KEYWORDS:
         if keyword.lower() in normalized:
-            score -= 1
-    if score == 0:
-        return 0.0
-    return max(-1.0, min(1.0, score / 3.0))
+            # 情感词权重：根据重要性调整权重
+            weight = _get_sentiment_keyword_weight(keyword, positive=False)
+            score -= weight
+            negative_matches += 1
+    
+    # 处理无匹配的情况
+    if positive_matches == 0 and negative_matches == 0:
+        # 尝试通过否定词和转折词分析
+        return _analyze_neutral_text(normalized)
+    
+    # 归一化情感得分
+    max_score = max(3.0, positive_matches + negative_matches)  # 确保分母不为零且有合理缩放
+    normalized_score = score / max_score
+    
+    # 限制在[-1.0, 1.0]范围内
+    return max(-1.0, min(1.0, normalized_score))
+
+
+def _get_sentiment_keyword_weight(keyword: str, positive: bool) -> float:
+    """根据关键词的重要性返回不同的权重"""
+    # 基础权重
+    base_weight = 1.0
+    
+    # 强情感词增加权重
+    strong_positive = ["超预期", "超出预期", "盈利超预期", "利好", "upgrade", "beat"]
+    strong_negative = ["不及预期", "低于预期", "亏损超预期", "利空", "downgrade", "miss"]
+    
+    if positive:
+        if keyword in strong_positive:
+            return base_weight * 1.5
+    else:
+        if keyword in strong_negative:
+            return base_weight * 1.5
+    
+    # 弱情感词降低权重
+    weak_positive = ["增长", "改善", "增加", "rise", "increase", "improve"]
+    weak_negative = ["下降", "减少", "恶化", "drop", "decrease", "decline"]
+    
+    if positive:
+        if keyword in weak_positive:
+            return base_weight * 0.8
+    else:
+        if keyword in weak_negative:
+            return base_weight * 0.8
+    
+    return base_weight
+
+
+def _analyze_neutral_text(text: str) -> float:
+    """分析无明显情感词的文本"""
+    # 检查是否包含否定词和情感词的组合
+    negation_words = ["不", "非", "无", "未", "没有", "不是", "不会"]
+    
+    # 简单的否定模式识别（实际应用中可能需要更复杂的NLP处理）
+    for neg_word in negation_words:
+        neg_pos = text.find(neg_word)
+        if neg_pos != -1:
+            # 检查否定词后面是否有积极或消极关键词
+            window = text[neg_pos:neg_pos + 30]  # 检查否定词后30个字符
+            for pos_word in POSITIVE_KEYWORDS:
+                if pos_word.lower() in window:
+                    return -0.3  # 否定积极词，轻微消极
+            for neg_word2 in NEGATIVE_KEYWORDS:
+                if neg_word2.lower() in window:
+                    return 0.3  # 否定消极词，轻微积极
+    
+    # 检查是否包含中性偏积极或偏消极的表达
+    neutral_positive = ["稳定", "平稳", "正常", "符合预期", "stable", "steady", "normal"]
+    neutral_negative = ["波动", "不确定", "风险", "挑战", "fluctuate", "uncertain", "risk"]
+    
+    for word in neutral_positive:
+        if word.lower() in text:
+            return 0.1
+    for word in neutral_negative:
+        if word.lower() in text:
+            return -0.1
+    
+    return 0.0
 
 
 def _estimate_heat(
@@ -773,12 +975,44 @@ def _estimate_heat(
     now: datetime,
     code_count: int,
     sentiment: float,
+    text_length: int = 0,
+    source_quality: float = 1.0,
+    industry_count: int = 0,
 ) -> float:
+    """增强的热度评分函数，考虑更多影响热度的因素"""
+    # 时效性得分（基础权重0.5）
     delta_hours = max(0.0, (now - published).total_seconds() / 3600.0)
-    recency = max(0.0, 1.0 - min(delta_hours, 72.0) / 72.0)
-    coverage_bonus = min(code_count, 3) * 0.05
-    sentiment_bonus = min(abs(sentiment) * 0.1, 0.2)
-    heat = recency + coverage_bonus + sentiment_bonus
+    # 根据时间衰减曲线调整时效性得分
+    if delta_hours < 1:
+        recency = 1.0  # 1小时内的新闻时效性最高
+    elif delta_hours < 6:
+        recency = 0.8  # 1-6小时
+    elif delta_hours < 24:
+        recency = 0.6  # 6-24小时
+    elif delta_hours < 48:
+        recency = 0.3  # 24-48小时
+    else:
+        recency = 0.1  # 超过48小时
+    
+    # 覆盖度得分（基础权重0.2）- 涉及的股票数量
+    coverage_score = min(code_count / 5, 1.0) * 0.2
+    
+    # 情感强度得分（基础权重0.15）
+    sentiment_score = min(abs(sentiment), 1.0) * 0.15
+    
+    # 内容丰富度得分（基础权重0.1）
+    content_score = min(text_length / 1000, 1.0) * 0.1  # 基于文本长度评估
+    
+    # 行业覆盖度得分（基础权重0.05）
+    industry_score = min(industry_count / 3, 1.0) * 0.05  # 涉及多个行业可能更具影响力
+    
+    # 来源质量调整因子（0.5-1.5）
+    source_adjustment = source_quality
+    
+    # 计算综合热度得分
+    heat = (recency + coverage_score + sentiment_score + content_score + industry_score) * source_adjustment
+    
+    # 限制在[0.0, 1.0]范围内并保留4位小数
     return max(0.0, min(1.0, round(heat, 4)))
 
 

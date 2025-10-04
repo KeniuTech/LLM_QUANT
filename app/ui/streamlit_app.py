@@ -450,6 +450,88 @@ def render_today_plan() -> None:
     ts_code = st.selectbox("标的", symbols, index=default_ts_idx)
     # ADD: batch selection for re-evaluation
     batch_symbols = st.multiselect("批量重评估（可多选）", symbols, default=[])
+    
+    # 一键重评估所有标的按钮
+    if st.button("一键重评估所有标的", type="primary", use_container_width=True):
+        with st.spinner("正在对所有标的进行重评估，请稍候..."):
+            try:
+                # 解析交易日
+                trade_date_obj = None
+                try:
+                    trade_date_obj = date.fromisoformat(str(trade_date))
+                except Exception:
+                    try:
+                        trade_date_obj = datetime.strptime(str(trade_date), "%Y%m%d").date()
+                    except Exception:
+                        pass
+                if trade_date_obj is None:
+                    raise ValueError(f"无法解析交易日：{trade_date}")
+                
+                progress = st.progress(0.0)
+                changes_all = []
+                success_count = 0
+                error_count = 0
+                
+                # 遍历所有标的
+                for idx, code in enumerate(symbols, start=1):
+                    try:
+                        # 保存重评估前的状态
+                        with db_session(read_only=True) as conn:
+                            before_rows = conn.execute(
+                                "SELECT agent, action FROM agent_utils WHERE trade_date = ? AND ts_code = ?",
+                                (trade_date, code),
+                            ).fetchall()
+                        before_map = {row["agent"]: row["action"] for row in before_rows}
+                        
+                        # 执行重评估
+                        cfg = BtConfig(
+                            id="reeval_ui_all",
+                            name="UI All Re-eval",
+                            start_date=trade_date_obj,
+                            end_date=trade_date_obj,
+                            universe=[code],
+                            params={},
+                        )
+                        engine = BacktestEngine(cfg)
+                        state = PortfolioState()
+                        _ = engine.simulate_day(trade_date_obj, state)
+                        
+                        # 检查变化
+                        with db_session(read_only=True) as conn:
+                            after_rows = conn.execute(
+                                "SELECT agent, action FROM agent_utils WHERE trade_date = ? AND ts_code = ?",
+                                (trade_date, code),
+                            ).fetchall()
+                        for row in after_rows:
+                            agent = row["agent"]
+                            new_action = row["action"]
+                            old_action = before_map.get(agent)
+                            if new_action != old_action:
+                                changes_all.append({"代码": code, "代理": agent, "原动作": old_action, "新动作": new_action})
+                        success_count += 1
+                    except Exception as e:
+                        LOGGER.exception(f"重评估 {code} 失败", extra=LOG_EXTRA)
+                        error_count += 1
+                    
+                    # 更新进度
+                    progress.progress(idx / len(symbols))
+                
+                # 显示结果
+                if error_count > 0:
+                    st.error(f"一键重评估完成：成功 {success_count} 个，失败 {error_count} 个")
+                else:
+                    st.success(f"一键重评估完成：所有 {success_count} 个标的重评估成功")
+                
+                # 显示变更记录
+                if changes_all:
+                    st.write("检测到以下动作变更：")
+                    st.dataframe(pd.DataFrame(changes_all), hide_index=True, width='stretch')
+                
+                # 刷新页面数据
+                st.rerun()
+            except Exception as exc:
+                LOGGER.exception("一键重评估失败", extra=LOG_EXTRA)
+                st.error(f"一键重评估执行过程中发生错误：{exc}")
 
     # sync URL params
     _set_query_params(date=str(trade_date), code=str(ts_code))
@@ -891,10 +973,175 @@ def render_today_plan() -> None:
                 st.error(f"批量重评估失败：{exc}")
 
 
-def render_backtest() -> None:
-    LOGGER.info("渲染回测页面", extra=LOG_EXTRA)
-    st.header("回测与复盘")
-    st.write("在此运行回测、展示净值曲线与代理贡献。")
+def render_log_viewer() -> None:
+    """渲染日志钻取与历史对比视图页面。"""
+    LOGGER.info("渲染日志视图页面", extra=LOG_EXTRA)
+    st.header("日志钻取与历史对比")
+    st.write("查看系统运行日志，支持时间范围筛选、关键词搜索和历史对比功能。")
+    
+    # 日志时间范围选择
+    col1, col2 = st.columns(2)
+    with col1:
+        start_date = st.date_input("开始日期", value=date.today() - timedelta(days=7))
+    with col2:
+        end_date = st.date_input("结束日期", value=date.today())
+    
+    # 日志级别筛选
+    log_levels = ["ALL", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+    selected_level = st.selectbox("日志级别", log_levels, index=1)
+    
+    # 关键词搜索
+    search_query = st.text_input("搜索关键词")
+    
+    # 阶段筛选
+    with db_session(read_only=True) as conn:
+        stages = [row["stage"] for row in conn.execute("SELECT DISTINCT stage FROM run_log").fetchall()]
+    stages = [s for s in stages if s]  # 过滤空值
+    stages.insert(0, "ALL")
+    selected_stage = st.selectbox("执行阶段", stages)
+    
+    # 查询日志
+    with st.spinner("加载日志数据中..."):
+        try:
+            with db_session(read_only=True) as conn:
+                query_parts = ["SELECT ts, stage, level, msg FROM run_log WHERE 1=1"]
+                params = []
+                
+                # 添加日期过滤
+                start_ts = f"{start_date.isoformat()}T00:00:00Z"
+                end_ts = f"{end_date.isoformat()}T23:59:59Z"
+                query_parts.append("AND ts BETWEEN ? AND ?")
+                params.extend([start_ts, end_ts])
+                
+                # 添加级别过滤
+                if selected_level != "ALL":
+                    query_parts.append("AND level = ?")
+                    params.append(selected_level)
+                
+                # 添加关键词过滤
+                if search_query:
+                    query_parts.append("AND msg LIKE ?")
+                    params.append(f"%{search_query}%")
+                
+                # 添加阶段过滤
+                if selected_stage != "ALL":
+                    query_parts.append("AND stage = ?")
+                    params.append(selected_stage)
+                
+                # 添加排序
+                query_parts.append("ORDER BY ts DESC")
+                
+                # 执行查询
+                query = " ".join(query_parts)
+                rows = conn.execute(query, params).fetchall()
+                
+                # 转换为DataFrame
+                if rows:
+                    # 将sqlite3.Row对象转换为字典列表
+                    rows_dict = [{key: row[key] for key in row.keys()} for row in rows]
+                    log_df = pd.DataFrame(rows_dict)
+                    # 格式化时间戳
+                    log_df["ts"] = pd.to_datetime(log_df["ts"]).dt.strftime("%Y-%m-%d %H:%M:%S")
+                else:
+                    log_df = pd.DataFrame(columns=["ts", "stage", "level", "msg"])
+                
+                # 显示日志表格
+                st.dataframe(
+                    log_df,
+                    hide_index=True,
+                    width="stretch",
+                    column_config={
+                        "ts": st.column_config.TextColumn("时间"),
+                        "stage": st.column_config.TextColumn("执行阶段"),
+                        "level": st.column_config.TextColumn("日志级别"),
+                        "msg": st.column_config.TextColumn("日志消息", width="large")
+                    },
+                    use_container_width=True
+                )
+                
+                # 下载功能
+                if not log_df.empty:
+                    csv_data = log_df.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="下载日志CSV",
+                        data=csv_data,
+                        file_name=f"logs_{start_date}_{end_date}.csv",
+                        mime="text/csv",
+                        key="download_logs"
+                    )
+                    
+                    # JSON下载
+                    json_data = log_df.to_json(orient='records', force_ascii=False, indent=2)
+                    st.download_button(
+                        label="下载日志JSON",
+                        data=json_data,
+                        file_name=f"logs_{start_date}_{end_date}.json",
+                        mime="application/json",
+                        key="download_logs_json"
+                    )
+        except Exception as e:
+            LOGGER.exception("加载日志失败", extra=LOG_EXTRA)
+            st.error(f"加载日志数据失败：{e}")
+    
+    # 历史对比功能
+    st.subheader("历史对比")
+    st.write("选择两个时间点的日志进行对比分析。")
+    
+    # 第一个时间点选择
+    col3, col4 = st.columns(2)
+    with col3:
+        compare_date1 = st.date_input("对比日期1", value=date.today() - timedelta(days=1))
+    with col4:
+        compare_date2 = st.date_input("对比日期2", value=date.today())
+    
+    if st.button("执行对比", type="secondary"):
+        with st.spinner("执行日志对比分析中..."):
+            try:
+                with db_session(read_only=True) as conn:
+                    # 获取两个日期的日志统计
+                    query_date1 = f"{compare_date1.isoformat()}T00:00:00Z"
+                    query_date2 = f"{compare_date1.isoformat()}T23:59:59Z"
+                    logs1 = conn.execute(
+                        "SELECT level, COUNT(*) as count FROM run_log WHERE ts BETWEEN ? AND ? GROUP BY level",
+                        (query_date1, query_date2)
+                    ).fetchall()
+                    
+                    query_date3 = f"{compare_date2.isoformat()}T00:00:00Z"
+                    query_date4 = f"{compare_date2.isoformat()}T23:59:59Z"
+                    logs2 = conn.execute(
+                        "SELECT level, COUNT(*) as count FROM run_log WHERE ts BETWEEN ? AND ? GROUP BY level",
+                        (query_date3, query_date4)
+                    ).fetchall()
+                    
+                    # 转换为DataFrame并可视化
+                    df1 = pd.DataFrame(logs1, columns=["level", "count"])
+                    df1["date"] = compare_date1.strftime("%Y-%m-%d")
+                    df2 = pd.DataFrame(logs2, columns=["level", "count"])
+                    df2["date"] = compare_date2.strftime("%Y-%m-%d")
+                    
+                    compare_df = pd.concat([df1, df2])
+                    
+                    # 绘制对比图表
+                    fig = px.bar(
+                        compare_df, 
+                        x="level", 
+                        y="count", 
+                        color="date",
+                        barmode="group",
+                        title=f"日志级别分布对比 ({compare_date1} vs {compare_date2})"
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # 显示详细对比表格
+                    st.write("日志统计对比：")
+                    # 使用不含连字符的日期格式作为列名后缀，避免Arrow类型转换错误
+                    date1_str = compare_date1.strftime("%Y%m%d")
+                    date2_str = compare_date2.strftime("%Y%m%d")
+                    merged_df = df1.merge(df2, on="level", suffixes=(f"_{date1_str}", f"_{date2_str}"), how="outer").fillna(0)
+                    st.dataframe(merged_df, hide_index=True, width="stretch")
+            except Exception as e:
+                LOGGER.exception("日志对比失败", extra=LOG_EXTRA)
+                st.error(f"日志对比分析失败：{e}")
 
     cfg = get_config()
     default_start, default_end = _default_backtest_range(window_days=60)
@@ -1695,7 +1942,14 @@ def render_settings() -> None:
             key=f"provider_default_model_{selected_provider}"
         )
         temp_val = st.number_input("默认温度", value=provider_cfg.default_temperature, min_value=0.0, max_value=2.0, step=0.1, key=temp_key)
-        timeout_val = st.number_input("默认超时(秒)", value=provider_cfg.default_timeout, min_value=1, max_value=300, step=1, key=timeout_key)
+        timeout_val = st.number_input(
+            "默认超时(秒)",
+            value=float(provider_cfg.default_timeout) if provider_cfg.default_timeout is not None else 30.0,
+            min_value=1.0,
+            max_value=300.0,
+            step=1.0,
+            key=timeout_key,
+        )
         prompt_template_val = st.text_area("Prompt 模板", value=provider_cfg.prompt_template or "", key=prompt_key)
         enabled_val = st.checkbox("启用", value=provider_cfg.enabled, key=enabled_key)
         mode_val = st.selectbox("模式", options=["openai", "ollama"], index=0 if provider_cfg.mode == "openai" else 1, key=mode_key)
@@ -2365,7 +2619,7 @@ def main() -> None:
     with tabs[0]:
         render_today_plan()
     with tabs[1]:
-        render_backtest()
+        render_log_viewer()
     with tabs[2]:
         render_settings()
     with tabs[3]:

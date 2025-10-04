@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime, date, timezone
-from typing import Dict, Iterable, List, Optional, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
 
 from app.core.indicators import momentum, rolling_mean, volatility
 from app.data.schema import initialize_database
@@ -47,15 +47,26 @@ DEFAULT_FACTORS: List[FactorSpec] = [
 def compute_factors(
     trade_date: date,
     factors: Iterable[FactorSpec] = DEFAULT_FACTORS,
-    *,
+    *, 
     ts_codes: Optional[Sequence[str]] = None,
     skip_existing: bool = False,
+    batch_size: int = 100,
 ) -> List[FactorResult]:
     """Calculate and persist factor values for the requested date.
 
     ``ts_codes`` can be supplied to restrict computation to a subset of the
     universe. When ``skip_existing`` is True, securities that already have an
     entry for ``trade_date`` will be ignored.
+    
+    Args:
+        trade_date: 交易日日期
+        factors: 要计算的因子列表
+        ts_codes: 可选，限制计算的证券代码列表
+        skip_existing: 是否跳过已存在的因子值
+        batch_size: 批处理大小，用于优化性能
+    
+    Returns:
+        因子计算结果列表
     """
 
     specs = [spec for spec in factors if spec.window >= 0]
@@ -85,18 +96,62 @@ def compute_factors(
             )
             return []
 
+    LOGGER.info(
+        "开始计算因子 universe_size=%s factors=%s trade_date=%s",
+        len(universe),
+        [spec.name for spec in specs],
+        trade_date_str,
+        extra=LOG_EXTRA,
+    )
+    
+    # 数据有效性校验初始化
+    validation_stats = {
+        "total": len(universe),
+        "skipped": 0,
+        "success": 0,
+        "data_missing": 0,
+        "outliers": 0
+    }
+
     broker = DataBroker()
     results: List[FactorResult] = []
     rows_to_persist: List[tuple[str, Dict[str, float | None]]] = []
-    for ts_code in universe:
-        values = _compute_security_factors(broker, ts_code, trade_date_str, specs)
-        if not values:
-            continue
-        results.append(FactorResult(ts_code=ts_code, trade_date=trade_date, values=values))
-        rows_to_persist.append((ts_code, values))
+    
+    # 分批处理以优化性能
+    for i in range(0, len(universe), batch_size):
+        batch = universe[i:i+batch_size]
+        batch_results = _compute_batch_factors(broker, batch, trade_date_str, specs, validation_stats)
+        
+        for ts_code, values in batch_results:
+            if values:
+                results.append(FactorResult(ts_code=ts_code, trade_date=trade_date, values=values))
+                rows_to_persist.append((ts_code, values))
+        
+        # 显示进度
+        processed = min(i + batch_size, len(universe))
+        if processed % (batch_size * 5) == 0 or processed == len(universe):
+            LOGGER.info(
+                "因子计算进度: %s/%s (%.1f%%) 成功:%s 跳过:%s 数据缺失:%s 异常值:%s",
+                processed, len(universe), 
+                (processed / len(universe)) * 100,
+                validation_stats["success"],
+                validation_stats["skipped"],
+                validation_stats["data_missing"],
+                validation_stats["outliers"],
+                extra=LOG_EXTRA,
+            )
 
     if rows_to_persist:
         _persist_factor_rows(trade_date_str, rows_to_persist, specs)
+        
+    LOGGER.info(
+        "因子计算完成 总数量:%s 成功:%s 失败:%s",
+        len(universe), 
+        validation_stats["success"],
+        validation_stats["total"] - validation_stats["success"],
+        extra=LOG_EXTRA,
+    )
+    
     return results
 
 
@@ -184,17 +239,134 @@ def _list_trade_dates(
     return [row["trade_date"] for row in rows if row["trade_date"]]
 
 
+def _compute_batch_factors(
+    broker: DataBroker,
+    ts_codes: List[str],
+    trade_date: str,
+    specs: Sequence[FactorSpec],
+    validation_stats: Dict[str, int],
+) -> List[tuple[str, Dict[str, float | None]]]:
+    """批量计算多个证券的因子值，提高计算效率"""
+    batch_results = []
+    
+    for ts_code in ts_codes:
+        try:
+            # 先检查数据可用性
+            if not _check_data_availability(broker, ts_code, trade_date, specs):
+                validation_stats["data_missing"] += 1
+                continue
+                
+            # 计算因子值
+            values = _compute_security_factors(broker, ts_code, trade_date, specs)
+            
+            if values:
+                # 检测并处理异常值
+                values = _detect_and_handle_outliers(values, ts_code)
+                batch_results.append((ts_code, values))
+                validation_stats["success"] += 1
+            else:
+                validation_stats["skipped"] += 1
+        except Exception as e:
+            LOGGER.error(
+                "计算因子失败 ts_code=%s err=%s",
+                ts_code,
+                str(e),
+                extra=LOG_EXTRA,
+            )
+            validation_stats["skipped"] += 1
+    
+    return batch_results
+
+
+def _check_data_availability(
+    broker: DataBroker,
+    ts_code: str,
+    trade_date: str,
+    specs: Sequence[FactorSpec],
+) -> bool:
+    """检查证券数据是否足够计算所有请求的因子"""
+    # 获取最小需要的数据天数
+    min_days = 1  # 至少需要当天的数据
+    for spec in specs:
+        if spec.window > min_days:
+            min_days = spec.window
+    
+    # 检查基本数据是否存在
+    basic_data = broker.fetch_latest(
+        ts_code,
+        trade_date,
+        ["daily.close", "daily_basic.turnover_rate"],
+    )
+    
+    # 检查时间序列数据是否足够
+    close_check = broker.fetch_series("daily", "close", ts_code, trade_date, min_days)
+    
+    return (
+        bool(basic_data.get("daily.close")) and 
+        len(close_check) >= min_days
+    )
+
+
+def _detect_and_handle_outliers(
+    values: Dict[str, float | None],
+    ts_code: str,
+) -> Dict[str, float | None]:
+    """检测并处理因子值中的异常值"""
+    result = values.copy()
+    outliers_found = False
+    
+    # 动量因子异常值检测
+    for key in [k for k in values if k.startswith("mom_") and values[k] is not None]:
+        value = values[key]
+        # 异常值检测规则：动量值绝对值大于3视为异常
+        if abs(value) > 3.0:
+            LOGGER.debug(
+                "检测到动量因子异常值 ts_code=%s factor=%s value=%.4f",
+                ts_code, key, value,
+                extra=LOG_EXTRA,
+            )
+            # 限制到合理范围
+            result[key] = min(3.0, max(-3.0, value))
+            outliers_found = True
+    
+    # 波动率因子异常值检测
+    for key in [k for k in values if k.startswith("volat_") and values[k] is not None]:
+        value = values[key]
+        # 异常值检测规则：波动率大于100%视为异常
+        if value > 1.0:
+            LOGGER.debug(
+                "检测到波动率因子异常值 ts_code=%s factor=%s value=%.4f",
+                ts_code, key, value,
+                extra=LOG_EXTRA,
+            )
+            # 限制到合理范围
+            result[key] = min(1.0, value)
+            outliers_found = True
+    
+    if outliers_found:
+        LOGGER.debug(
+            "处理后因子值 ts_code=%s values=%s",
+            ts_code, {k: f"{v:.4f}" for k, v in result.items() if v is not None},
+            extra=LOG_EXTRA,
+        )
+        
+    return result
+
+
 def _compute_security_factors(
     broker: DataBroker,
     ts_code: str,
     trade_date: str,
     specs: Sequence[FactorSpec],
 ) -> Dict[str, float | None]:
+    """计算单个证券的因子值"""
+    # 确定所需的最大窗口大小
     close_windows = [spec.window for spec in specs if _factor_prefix(spec.name) in {"mom", "volat"}]
     turnover_windows = [spec.window for spec in specs if _factor_prefix(spec.name) == "turn"]
     max_close_window = max(close_windows) if close_windows else 0
     max_turn_window = max(turnover_windows) if turnover_windows else 0
 
+    # 获取所需的时间序列数据
     close_series = _fetch_series_values(
         broker,
         "daily",
@@ -203,6 +375,12 @@ def _compute_security_factors(
         trade_date,
         max_close_window,
     )
+    
+    # 数据有效性检查
+    if not close_series:
+        LOGGER.debug("缺少收盘价数据 ts_code=%s", ts_code, extra=LOG_EXTRA)
+        return {}
+        
     turnover_series = _fetch_series_values(
         broker,
         "daily_basic",
@@ -212,6 +390,7 @@ def _compute_security_factors(
         max_turn_window,
     )
 
+    # 获取最新字段值
     latest_fields = broker.fetch_latest(
         ts_code,
         trade_date,
@@ -224,6 +403,7 @@ def _compute_security_factors(
         ],
     )
 
+    # 计算各个因子值
     results: Dict[str, float | None] = {}
     for spec in specs:
         prefix = _factor_prefix(spec.name)
@@ -258,6 +438,11 @@ def _compute_security_factors(
                 ts_code,
                 extra=LOG_EXTRA,
             )
+    
+    # 确保返回结果不为空
+    if not any(v is not None for v in results.values()):
+        return {}
+    
     return results
 
 
@@ -266,8 +451,14 @@ def _persist_factor_rows(
     rows: Sequence[tuple[str, Dict[str, float | None]]],
     specs: Sequence[FactorSpec],
 ) -> None:
+    """优化的因子结果持久化函数，支持批量写入"""
+    if not rows:
+        return
+    
     columns = sorted({spec.name for spec in specs})
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    
+    # SQL语句准备
     insert_columns = ["ts_code", "trade_date", "updated_at", *columns]
     placeholders = ", ".join(["?"] * len(insert_columns))
     update_clause = ", ".join(
@@ -279,11 +470,55 @@ def _persist_factor_rows(
         f"ON CONFLICT(ts_code, trade_date) DO UPDATE SET {update_clause}"
     )
 
+    # 准备批量写入数据
+    batch_size = 500  # 批处理大小
+    batch_payloads = []
+    
+    for ts_code, values in rows:
+        # 过滤掉全部为None的行
+        if not any(values.get(col) is not None for col in columns):
+            continue
+            
+        payload = [ts_code, trade_date, timestamp]
+        payload.extend(values.get(column) for column in columns)
+        batch_payloads.append(payload)
+    
+    if not batch_payloads:
+        LOGGER.debug("无可持久化的有效因子数据", extra=LOG_EXTRA)
+        return
+    
+    # 执行批量写入
+    total_inserted = 0
     with db_session() as conn:
-        for ts_code, values in rows:
-            payload = [ts_code, trade_date, timestamp]
-            payload.extend(values.get(column) for column in columns)
-            conn.execute(sql, payload)
+        # 分批执行以避免SQLite参数限制
+        for i in range(0, len(batch_payloads), batch_size):
+            batch = batch_payloads[i:i+batch_size]
+            try:
+                conn.executemany(sql, batch)
+                batch_count = len(batch)
+                total_inserted += batch_count
+                
+                if batch_count % (batch_size * 5) == 0:
+                    LOGGER.debug(
+                        "因子数据持久化进度: %s/%s",
+                        min(i + batch_size, len(batch_payloads)),
+                        len(batch_payloads),
+                        extra=LOG_EXTRA,
+                    )
+            except sqlite3.Error as e:
+                LOGGER.error(
+                    "因子数据持久化失败 批次=%s-%s err=%s",
+                    i, min(i + batch_size, len(batch_payloads)),
+                    str(e),
+                    extra=LOG_EXTRA,
+                )
+    
+    LOGGER.info(
+        "因子数据持久化完成 写入记录数=%s 总记录数=%s",
+        total_inserted,
+        len(batch_payloads),
+        extra=LOG_EXTRA,
+    )
 
 
 def _ensure_factor_columns(specs: Sequence[FactorSpec]) -> None:
@@ -322,21 +557,39 @@ def _factor_prefix(name: str) -> str:
 
 
 def _valuation_score(value: object, *, scale: float) -> float:
+    """计算估值指标的标准化分数"""
     try:
         numeric = float(value)
     except (TypeError, ValueError):
         return 0.0
+    
+    # 有效性检查
     if numeric <= 0:
         return 0.0
+        
+    # 异常值处理：限制估值指标的上限
+    max_limit = scale * 10  # 设置十倍scale为上限
+    if numeric > max_limit:
+        numeric = max_limit
+    
+    # 计算分数
     score = scale / (scale + numeric)
     return max(0.0, min(1.0, score))
 
 
 def _volume_ratio_score(value: object) -> float:
+    """计算量比指标的标准化分数"""
     try:
         numeric = float(value)
     except (TypeError, ValueError):
         return 0.0
+    
+    # 有效性检查
     if numeric < 0:
         numeric = 0.0
+        
+    # 异常值处理：设置量比上限为20
+    if numeric > 20:
+        numeric = 20
+    
     return max(0.0, min(1.0, numeric / 10.0))
