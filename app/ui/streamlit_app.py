@@ -774,6 +774,105 @@ def render_today_plan() -> None:
     else:
         st.info("暂无基础代理评分。")
 
+    # 添加相关新闻展示部分
+    st.divider()
+    st.subheader("相关新闻")
+    # 获取与当前标的相关的最新新闻
+    try:
+        with db_session(read_only=True) as conn:
+            # 解析当前trade_date为datetime对象
+            try:
+                trade_date_obj = date.fromisoformat(str(trade_date))
+            except:
+                try:
+                    trade_date_obj = datetime.strptime(str(trade_date), "%Y%m%d").date()
+                except:
+                    # 如果解析失败，使用当前日期向前推7天
+                    trade_date_obj = date.today() - timedelta(days=7)
+            
+            # 查询近7天内与当前标的相关的新闻，按发布时间降序排列
+            news_query = """
+                SELECT id, title, source, pub_time, sentiment, heat, entities
+                FROM news
+                WHERE ts_code = ? AND pub_time >= ?
+                ORDER BY pub_time DESC
+                LIMIT 10
+            """
+            # 计算7天前的日期字符串
+            seven_days_ago = (trade_date_obj - timedelta(days=7)).strftime("%Y-%m-%d")
+            news_rows = conn.execute(news_query, (ts_code, seven_days_ago)).fetchall()
+        
+        if news_rows:
+            news_data = []
+            for row in news_rows:
+                # 解析entities字段获取更多信息
+                entities_info = {}
+                try:
+                    if row["entities"]:
+                        entities_info = json.loads(row["entities"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+                
+                # 准备新闻数据
+                news_item = {
+                    "标题": row["title"],
+                    "来源": row["source"],
+                    "发布时间": row["pub_time"],
+                    "情感指数": f"{row['sentiment']:.2f}" if row["sentiment"] is not None else "-",
+                    "热度评分": f"{row['heat']:.2f}" if row["heat"] is not None else "-"
+                }
+                
+                # 如果有行业信息，添加到展示数据中
+                industries = entities_info.get("industries", [])
+                if industries:
+                    news_item["相关行业"] = "、".join(industries[:3])  # 只显示前3个行业
+                
+                news_data.append(news_item)
+            
+            # 显示新闻表格
+            news_df = pd.DataFrame(news_data)
+            st.dataframe(news_df, width='stretch', hide_index=True)
+            
+            # 添加新闻详情展开视图
+            st.write("详细新闻内容：")
+            for idx, row in enumerate(news_rows):
+                with st.expander(f"{idx+1}. {row['title']}", expanded=False):
+                    st.write(f"**来源：** {row['source']}")
+                    st.write(f"**发布时间：** {row['pub_time']}")
+                    
+                    # 解析entities获取更多详细信息
+                    entities_info = {}
+                    try:
+                        if row["entities"]:
+                            entities_info = json.loads(row["entities"])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                    
+                    # 显示情感和热度信息
+                    sentiment_display = f"{row['sentiment']:.2f}" if row["sentiment"] is not None else "-"
+                    heat_display = f"{row['heat']:.2f}" if row["heat"] is not None else "-"
+                    st.write(f"**情感指数：** {sentiment_display} | **热度评分：** {heat_display}")
+                    
+                    # 显示行业信息
+                    industries = entities_info.get("industries", [])
+                    if industries:
+                        st.write(f"**相关行业：** {'、'.join(industries)}")
+                    
+                    # 显示重要关键词
+                    important_keywords = entities_info.get("important_keywords", [])
+                    if important_keywords:
+                        st.write(f"**重要关键词：** {'、'.join(important_keywords)}")
+                    
+                    # 显示URL链接（如果有）
+                    url = entities_info.get("source_url", "")
+                    if url:
+                        st.markdown(f"[查看原文]({url})", unsafe_allow_html=True)
+        else:
+            st.info(f"近7天内暂无关于 {ts_code} 的新闻。")
+    except Exception as e:
+        LOGGER.exception("获取新闻数据失败", extra=LOG_EXTRA)
+        st.error(f"获取新闻数据时发生错误：{e}")
+
     st.divider()
     st.subheader("投资池与仓位概览")
 
