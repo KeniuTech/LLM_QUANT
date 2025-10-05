@@ -11,6 +11,8 @@ from app.data.schema import initialize_database
 from app.utils.data_access import DataBroker
 from app.utils.db import db_session
 from app.utils.logging import get_logger
+# 导入扩展因子模块
+from app.features.extended_factors import compute_extended_factor_values
 
 
 LOGGER = get_logger(__name__)
@@ -31,16 +33,47 @@ class FactorResult:
     values: Dict[str, float | None]
 
 
+# 基础因子和扩展因子的完整列表
 DEFAULT_FACTORS: List[FactorSpec] = [
+    # 基础动量因子
     FactorSpec("mom_5", 5),
     FactorSpec("mom_20", 20),
     FactorSpec("mom_60", 60),
+    # 波动率因子
     FactorSpec("volat_20", 20),
+    # 换手率因子
     FactorSpec("turn_20", 20),
     FactorSpec("turn_5", 5),
+    # 估值因子
     FactorSpec("val_pe_score", 0),
     FactorSpec("val_pb_score", 0),
+    # 量比因子
     FactorSpec("volume_ratio_score", 0),
+    # 扩展因子
+    # 增强动量因子
+    FactorSpec("mom_10_30", 0),  # 10日与30日动量差
+    FactorSpec("mom_5_20_rank", 0),  # 相对排名动量因子
+    FactorSpec("mom_dynamic", 0),  # 动态窗口动量因子
+    # 波动率相关因子
+    FactorSpec("volat_5", 5),  # 短期波动率
+    FactorSpec("volat_ratio", 0),  # 长短期波动率比率
+    # 换手率扩展因子
+    FactorSpec("turn_60", 60),  # 长期换手率
+    FactorSpec("turn_rank", 0),  # 换手率相对排名
+    # 价格均线比率因子
+    FactorSpec("price_ma_10_ratio", 0),  # 当前价格与10日均线比率
+    FactorSpec("price_ma_20_ratio", 0),  # 当前价格与20日均线比率
+    FactorSpec("price_ma_60_ratio", 0),  # 当前价格与60日均线比率
+    # 成交量均线比率因子
+    FactorSpec("volume_ma_5_ratio", 0),  # 当前成交量与5日均线比率
+    FactorSpec("volume_ma_20_ratio", 0),  # 当前成交量与20日均线比率
+    # 高级估值因子
+    FactorSpec("val_ps_score", 0),  # PS估值评分
+    FactorSpec("val_multiscore", 0),  # 综合估值评分
+    FactorSpec("val_dividend_score", 0),  # 股息率估值评分
+    # 市场状态因子
+    FactorSpec("market_regime", 0),  # 市场状态因子
+    FactorSpec("trend_strength", 0),  # 趋势强度因子
 ]
 
 
@@ -389,6 +422,16 @@ def _compute_security_factors(
         trade_date,
         max_turn_window,
     )
+    
+    # 获取成交量数据用于扩展因子计算
+    volume_series = _fetch_series_values(
+        broker,
+        "daily",
+        "vol",
+        ts_code,
+        trade_date,
+        max_close_window,  # 使用与价格相同的窗口
+    )
 
     # 获取最新字段值
     latest_fields = broker.fetch_latest(
@@ -400,6 +443,8 @@ def _compute_security_factors(
             "daily_basic.ps",
             "daily_basic.volume_ratio",
             "daily.amount",
+            "daily.vol",
+            "daily_basic.dv_ratio",  # 股息率用于扩展因子
         ],
     )
 
@@ -438,6 +483,12 @@ def _compute_security_factors(
                 ts_code,
                 extra=LOG_EXTRA,
             )
+    
+    # 计算扩展因子值
+    extended_factors = compute_extended_factor_values(
+        close_series, volume_series, turnover_series, latest_fields
+    )
+    results.update(extended_factors)
     
     # 确保返回结果不为空
     if not any(v is not None for v in results.values()):

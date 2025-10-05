@@ -202,3 +202,69 @@ def test_compute_factor_range_filters_universe(isolated_db):
 
     repeated = compute_factor_range(start_day, end_day, ts_codes=[code_a])
     assert repeated == []
+
+
+def test_compute_extended_factors(isolated_db):
+    """Test computation of extended factors."""
+    # Use the existing _populate_sample_data function
+    from app.utils.data_access import DataBroker
+    broker = DataBroker()
+    
+    # Sample data for 5 trading days
+    dates = ["20240101", "20240102", "20240103", "20240104", "20240105"]
+    ts_codes = ["000001.SZ", "000002.SZ", "600000.SH"]
+
+    # Populate daily data
+    for ts_code in ts_codes:
+        for i, trade_date in enumerate(dates):
+            broker.insert_or_update_daily(
+                ts_code,
+                trade_date,
+                open_price=10.0 + i * 0.1,
+                high=10.5 + i * 0.1,
+                low=9.5 + i * 0.1,
+                close=10.0 + i * 0.2,  # 上涨趋势
+                pre_close=10.0 + (i - 1) * 0.2 if i > 0 else 10.0,
+                vol=100000 + i * 10000,
+                amount=1000000 + i * 100000,
+            )
+
+            broker.insert_or_update_daily_basic(
+                ts_code,
+                trade_date,
+                close=10.0 + i * 0.2,
+                turnover_rate=1.0 + i * 0.1,
+                turnover_rate_f=1.0 + i * 0.1,
+                volume_ratio=1.0 + (i % 3) * 0.2,  # 在0.8-1.2之间变化
+                pe=15.0 + (i % 3) * 2,  # 在15-19之间变化
+                pe_ttm=15.0 + (i % 3) * 2,
+                pb=1.5 + (i % 3) * 0.1,  # 在1.5-1.7之间变化
+                ps=3.0 + (i % 3) * 0.2,  # 在3.0-3.4之间变化
+                ps_ttm=3.0 + (i % 3) * 0.2,
+                dv_ratio=2.0 + (i % 3) * 0.1,  # 股息率
+                total_mv=1000000 + i * 100000,
+                circ_mv=800000 + i * 80000,
+            )
+    
+    # Compute factors with extended factors
+    from app.features.extended_factors import EXTENDED_FACTORS
+    all_factors = list(DEFAULT_FACTORS) + EXTENDED_FACTORS
+    
+    trade_day = date(2024, 1, 5)
+    results = compute_factors(trade_day, all_factors)
+    
+    # Verify that we got results
+    assert results
+    
+    # Verify that extended factors are computed
+    result_map = {result.ts_code: result for result in results}
+    ts_code = "000001.SZ"
+    assert ts_code in result_map
+    result = result_map[ts_code]
+    
+    # Check that extended factors are present in the results
+    extended_factor_names = [spec.name for spec in EXTENDED_FACTORS]
+    for factor_name in extended_factor_names:
+        assert factor_name in result.values
+        # Values should not be None
+        assert result.values[factor_name] is not None
