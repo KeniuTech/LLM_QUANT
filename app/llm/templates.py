@@ -4,7 +4,10 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover
+    from .version import TemplateVersionManager
 
 
 @dataclass
@@ -69,31 +72,139 @@ class PromptTemplate:
 
 
 class TemplateRegistry:
-    """Global registry for prompt templates."""
+    """Global registry for prompt templates with version awareness."""
 
     _templates: Dict[str, PromptTemplate] = {}
+    _version_manager: Optional["TemplateVersionManager"] = None
+    _default_version_label: str = "1.0.0"
 
     @classmethod
-    def register(cls, template: PromptTemplate) -> None:
-        """Register a new template."""
+    def _manager(cls) -> "TemplateVersionManager":
+        if cls._version_manager is None:
+            from .version import TemplateVersionManager  # Local import to avoid circular dependency
+
+            cls._version_manager = TemplateVersionManager()
+        return cls._version_manager
+
+    @classmethod
+    def register(
+        cls,
+        template: PromptTemplate,
+        *,
+        version: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        activate: bool = False,
+    ) -> None:
+        """Register a new template and optionally version it."""
+
         errors = template.validate()
         if errors:
             raise ValueError(f"Invalid template {template.id}: {'; '.join(errors)}")
+
         cls._templates[template.id] = template
 
+        manager = cls._manager()
+        existing_versions = manager.list_versions(template.id)
+        resolved_metadata: Dict[str, Any] = dict(metadata or {})
+        if version:
+            manager.add_version(
+                template,
+                version,
+                metadata=resolved_metadata or None,
+                activate=activate,
+            )
+        elif not existing_versions:
+            if "source" not in resolved_metadata:
+                resolved_metadata["source"] = "default"
+            manager.add_version(
+                template,
+                cls._default_version_label,
+                metadata=resolved_metadata,
+                activate=True,
+            )
+
     @classmethod
-    def get(cls, template_id: str) -> Optional[PromptTemplate]:
-        """Get template by ID."""
+    def register_version(
+        cls,
+        template_id: str,
+        *,
+        version: str,
+        template: Optional[PromptTemplate] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        activate: bool = False,
+    ) -> None:
+        """Register an additional version for an existing template."""
+
+        base_template = template or cls._templates.get(template_id)
+        if not base_template:
+            raise ValueError(f"Template {template_id} not found for version registration")
+
+        manager = cls._manager()
+        manager.add_version(
+            base_template,
+            version,
+            metadata=metadata,
+            activate=activate,
+        )
+
+    @classmethod
+    def activate_version(cls, template_id: str, version: str) -> None:
+        """Activate a specific template version."""
+
+        manager = cls._manager()
+        manager.activate_version(template_id, version)
+
+    @classmethod
+    def get(
+        cls,
+        template_id: str,
+        *,
+        version: Optional[str] = None,
+    ) -> Optional[PromptTemplate]:
+        """Get template by ID and optional version."""
+
+        manager = cls._manager()
+        if version:
+            stored = manager.get_version(template_id, version)
+            if stored:
+                return stored.template
+
+        active = manager.get_active_version(template_id)
+        if active:
+            return active.template
+
         return cls._templates.get(template_id)
 
     @classmethod
+    def get_active_version(cls, template_id: str) -> Optional[str]:
+        """Return the currently active version label for a template."""
+
+        manager = cls._manager()
+        active = manager.get_active_version(template_id)
+        return active.version if active else None
+
+    @classmethod
     def list(cls) -> List[PromptTemplate]:
-        """List all registered templates."""
-        return list(cls._templates.values())
+        """List all registered templates (active versions preferred)."""
+
+        collected: Dict[str, PromptTemplate] = {}
+        manager = cls._manager()
+        for template_id, template in cls._templates.items():
+            active = manager.get_active_version(template_id)
+            collected[template_id] = active.template if active else template
+        return list(collected.values())
+
+    @classmethod
+    def list_versions(cls, template_id: str) -> List[str]:
+        """List available version labels for a template."""
+
+        manager = cls._manager()
+        return [ver.version for ver in manager.list_versions(template_id)]
 
     @classmethod
     def load_from_json(cls, json_str: str) -> None:
         """Load templates from JSON string."""
+
         try:
             data = json.loads(json_str)
         except json.JSONDecodeError as e:
@@ -103,6 +214,13 @@ class TemplateRegistry:
             raise ValueError("JSON root must be an object")
 
         for template_id, cfg in data.items():
+            if not isinstance(cfg, dict):
+                raise ValueError(f"Template {template_id} configuration must be an object")
+            version = cfg.get("version")
+            metadata = cfg.get("metadata")
+            if metadata is not None and not isinstance(metadata, dict):
+                raise ValueError(f"Template {template_id} metadata must be an object")
+            activate = bool(cfg.get("activate", False))
             template = PromptTemplate(
                 id=template_id,
                 name=cfg.get("name", template_id),
@@ -113,12 +231,21 @@ class TemplateRegistry:
                 required_context=cfg.get("required_context", []),
                 validation_rules=cfg.get("validation_rules", [])
             )
-            cls.register(template)
+            cls.register(
+                template,
+                version=version,
+                metadata=metadata,
+                activate=activate,
+            )
 
     @classmethod
-    def clear(cls) -> None:
-        """Clear all registered templates."""
+    def clear(cls, *, reload_defaults: bool = False) -> None:
+        """Clear all registered templates and optionally reload defaults."""
+
         cls._templates.clear()
+        cls._version_manager = None
+        if reload_defaults:
+            register_default_templates()
 
 
 # Default template definitions
@@ -234,7 +361,19 @@ def register_default_templates() -> None:
             "validation_rules": cfg.get("validation_rules", [])
         }
         try:
-            TemplateRegistry.register(PromptTemplate(**template_config))
+            template = PromptTemplate(**template_config)
+            version_label = str(
+                cfg.get("version") or TemplateRegistry._default_version_label
+            )
+            metadata_raw = cfg.get("metadata")
+            metadata = dict(metadata_raw) if isinstance(metadata_raw, dict) else {}
+            metadata.setdefault("source", "defaults")
+            TemplateRegistry.register(
+                template,
+                version=version_label,
+                metadata=metadata,
+                activate=cfg.get("activate", True),
+            )
         except ValueError as e:
             logging.warning(f"Failed to register template {template_id}: {e}")
 

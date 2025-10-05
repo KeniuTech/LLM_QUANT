@@ -90,10 +90,16 @@ class CostController:
 
         return True
 
-    def record_usage(self, model: str, prompt_tokens: int,
-                    completion_tokens: int) -> None:
-        """记录模型使用情况."""
+    def record_usage(
+        self,
+        model: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+    ) -> bool:
+        """记录模型使用情况，并返回是否仍在预算范围内."""
+
         cost = self._calculate_cost(model, prompt_tokens, completion_tokens)
+        within_limits = self._check_budget_limits(model, prompt_tokens, completion_tokens)
         timestamp = time.time()
 
         usage = {
@@ -108,9 +114,19 @@ class CostController:
             self._usage["hourly"].append(usage)
             self._usage["daily"].append(usage)
             self._usage["monthly"].append(usage)
-            
+
             # 定期清理过期数据
             self._cleanup_old_usage(timestamp)
+
+        if not within_limits:
+            LOGGER.warning(
+                "Cost limit exceeded after recording usage - model: %s cost=$%.4f",
+                model,
+                cost,
+                extra=LOG_EXTRA,
+            )
+
+        return within_limits
 
     def get_current_costs(self) -> Dict[str, float]:
         """获取当前时段的成本统计."""
@@ -156,6 +172,16 @@ class CostController:
                 model: count / total_calls
                 for model, count in model_calls.items()
             }
+
+    def is_budget_available(self) -> bool:
+        """判断当前预算是否允许继续调用LLM."""
+
+        costs = self.get_current_costs()
+        return (
+            costs["hourly"] < self.limits.hourly_budget and
+            costs["daily"] < self.limits.daily_budget and
+            costs["monthly"] < self.limits.monthly_budget
+        )
 
     def _calculate_cost(self, model: str, prompt_tokens: int,
                        completion_tokens: int) -> float:
@@ -226,13 +252,42 @@ class CostController:
         self._last_cleanup = current_time
 
 
-# 全局实例
-_controller = CostController()
+# 全局实例管理
+_CONTROLLER_LOCK = threading.Lock()
+_GLOBAL_CONTROLLER = CostController()
+_LAST_LIMITS: Optional[CostLimits] = None
+
 
 def get_controller() -> CostController:
-    """获取全局CostController实例."""
-    return _controller
+    """向后兼容的全局 CostController 访问方法."""
+
+    return _GLOBAL_CONTROLLER
+
+
+def get_cost_controller() -> CostController:
+    """显式返回全局 CostController 实例."""
+
+    return _GLOBAL_CONTROLLER
+
 
 def set_cost_limits(limits: CostLimits) -> None:
-    """设置全局成本限制."""
-    _controller.limits = limits
+    """设置全局成本限制（兼容旧接口）。"""
+
+    configure_cost_limits(limits)
+
+
+def configure_cost_limits(limits: CostLimits) -> None:
+    """设置全局成本限制，如果变更才更新。"""
+
+    global _LAST_LIMITS
+    with _CONTROLLER_LOCK:
+        if _LAST_LIMITS is None or limits != _LAST_LIMITS:
+            _GLOBAL_CONTROLLER.limits = limits
+            _LAST_LIMITS = limits
+
+
+def budget_available() -> bool:
+    """判断全局预算是否仍可用。"""
+
+    with _CONTROLLER_LOCK:
+        return _GLOBAL_CONTROLLER.is_budget_available()

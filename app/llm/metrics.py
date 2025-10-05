@@ -17,6 +17,8 @@ class _Metrics:
     model_calls: Dict[str, int] = field(default_factory=dict)
     decisions: Deque[Dict[str, object]] = field(default_factory=lambda: deque(maxlen=500))
     decision_action_counts: Dict[str, int] = field(default_factory=dict)
+    total_latency: float = 0.0
+    latency_samples: Deque[float] = field(default_factory=lambda: deque(maxlen=200))
 
 
 _METRICS = _Metrics()
@@ -31,6 +33,8 @@ def record_call(
     model: Optional[str] = None,
     prompt_tokens: Optional[int] = None,
     completion_tokens: Optional[int] = None,
+    *,
+    duration: Optional[float] = None,
 ) -> None:
     """Record a single LLM API invocation."""
 
@@ -49,6 +53,10 @@ def record_call(
             _METRICS.total_prompt_tokens += int(prompt_tokens)
         if completion_tokens:
             _METRICS.total_completion_tokens += int(completion_tokens)
+        if duration is not None:
+            duration_value = max(0.0, float(duration))
+            _METRICS.total_latency += duration_value
+            _METRICS.latency_samples.append(duration_value)
     _notify_listeners()
 
 
@@ -64,6 +72,12 @@ def snapshot(reset: bool = False) -> Dict[str, object]:
             "model_calls": dict(_METRICS.model_calls),
             "decision_action_counts": dict(_METRICS.decision_action_counts),
             "recent_decisions": list(_METRICS.decisions),
+            "average_latency": (
+                _METRICS.total_latency / _METRICS.total_calls
+                if _METRICS.total_calls
+                else 0.0
+            ),
+            "latency_samples": list(_METRICS.latency_samples),
         }
         if reset:
             _METRICS.total_calls = 0
@@ -73,6 +87,8 @@ def snapshot(reset: bool = False) -> Dict[str, object]:
             _METRICS.model_calls.clear()
             _METRICS.decision_action_counts.clear()
             _METRICS.decisions.clear()
+            _METRICS.total_latency = 0.0
+            _METRICS.latency_samples.clear()
         return data
 
 

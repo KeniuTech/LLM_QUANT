@@ -16,6 +16,13 @@ def _default_root() -> Path:
     return Path(__file__).resolve().parents[2] / "app" / "data"
 
 
+def _safe_float(value: object, fallback: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
 @dataclass
 class DataPaths:
     """Holds filesystem locations for persistent artifacts."""
@@ -198,8 +205,61 @@ class LLMEndpoint:
         self.provider = (self.provider or "ollama").lower()
         if self.temperature is not None:
             self.temperature = float(self.temperature)
-        if self.timeout is not None:
-            self.timeout = float(self.timeout)
+
+
+@dataclass
+class LLMCostSettings:
+    """Configurable budgets and weights for LLM cost control."""
+
+    enabled: bool = False
+    hourly_budget: float = 5.0
+    daily_budget: float = 50.0
+    monthly_budget: float = 500.0
+    model_weights: Dict[str, float] = field(default_factory=dict)
+
+    def update_from_dict(self, data: Mapping[str, object]) -> None:
+        if "enabled" in data:
+            self.enabled = bool(data.get("enabled"))
+        if "hourly_budget" in data:
+            self.hourly_budget = _safe_float(data.get("hourly_budget"), self.hourly_budget)
+        if "daily_budget" in data:
+            self.daily_budget = _safe_float(data.get("daily_budget"), self.daily_budget)
+        if "monthly_budget" in data:
+            self.monthly_budget = _safe_float(data.get("monthly_budget"), self.monthly_budget)
+        weights = data.get("model_weights") if isinstance(data, Mapping) else None
+        if isinstance(weights, Mapping):
+            normalized: Dict[str, float] = {}
+            for key, value in weights.items():
+                try:
+                    normalized[str(key)] = float(value)
+                except (TypeError, ValueError):
+                    continue
+            if normalized:
+                self.model_weights = normalized
+
+    def to_cost_limits(self):
+        """Convert into runtime `CostLimits` descriptor."""
+
+        from app.llm.cost import CostLimits  # Imported lazily to avoid cycles
+
+        weights: Dict[str, float] = {}
+        for key, value in (self.model_weights or {}).items():
+            try:
+                weights[str(key)] = float(value)
+            except (TypeError, ValueError):
+                continue
+        return CostLimits(
+            hourly_budget=float(self.hourly_budget),
+            daily_budget=float(self.daily_budget),
+            monthly_budget=float(self.monthly_budget),
+            model_weights=weights,
+        )
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, object]) -> "LLMCostSettings":
+        inst = cls()
+        inst.update_from_dict(data)
+        return inst
 
 
 @dataclass
@@ -241,6 +301,8 @@ class DepartmentSettings:
     data_scope: List[str] = field(default_factory=list)
     prompt: str = ""
     llm: LLMConfig = field(default_factory=LLMConfig)
+    prompt_template_id: Optional[str] = None
+    prompt_template_version: Optional[str] = None
 
 
 def _default_departments() -> Dict[str, DepartmentSettings]:
@@ -327,6 +389,7 @@ def _default_departments() -> Dict[str, DepartmentSettings]:
             description=item.get("description", ""),
             data_scope=list(item.get("data_scope", [])),
             prompt=item.get("prompt", ""),
+            prompt_template_id=f"{item['code']}_dept",
         )
         for item in presets
     }
@@ -355,6 +418,7 @@ class AppConfig:
     data_update_interval: int = 7  # 数据更新间隔（天）
     llm_providers: Dict[str, LLMProvider] = field(default_factory=_default_llm_providers)
     llm: LLMConfig = field(default_factory=LLMConfig)
+    llm_cost: LLMCostSettings = field(default_factory=LLMCostSettings)
     departments: Dict[str, DepartmentSettings] = field(default_factory=_default_departments)
     portfolio: PortfolioSettings = field(default_factory=PortfolioSettings)
 
@@ -462,6 +526,10 @@ def _load_from_file(cfg: AppConfig) -> None:
             max_sector_exposure=_float_value(limits_payload, "max_sector_exposure", current.max_sector_exposure),
         )
         cfg.portfolio = updated_portfolio
+
+    cost_payload = payload.get("llm_cost")
+    if isinstance(cost_payload, dict):
+        cfg.llm_cost.update_from_dict(cost_payload)
 
     legacy_profiles: Dict[str, Dict[str, object]] = {}
     legacy_routes: Dict[str, Dict[str, object]] = {}
@@ -574,6 +642,7 @@ def _load_from_file(cfg: AppConfig) -> None:
         for code, data in departments_payload.items():
             if not isinstance(data, dict):
                 continue
+            current_setting = cfg.departments.get(code)
             title = data.get("title") or code
             description = data.get("description") or ""
             weight = float(data.get("weight", 1.0))
@@ -606,6 +675,33 @@ def _load_from_file(cfg: AppConfig) -> None:
                     if isinstance(majority_raw, int) and majority_raw > 0:
                         llm_cfg.majority_threshold = majority_raw
                 resolved_cfg = llm_cfg
+            template_id_raw = data.get("prompt_template_id")
+            if isinstance(template_id_raw, str):
+                template_id_candidate = template_id_raw.strip()
+            elif template_id_raw is not None:
+                template_id_candidate = str(template_id_raw).strip()
+            else:
+                template_id_candidate = ""
+            if template_id_candidate:
+                template_id = template_id_candidate
+            elif current_setting and current_setting.prompt_template_id:
+                template_id = current_setting.prompt_template_id
+            else:
+                template_id = f"{code}_dept"
+
+            template_version_raw = data.get("prompt_template_version")
+            if isinstance(template_version_raw, str):
+                template_version_candidate = template_version_raw.strip()
+            elif template_version_raw is not None:
+                template_version_candidate = str(template_version_raw).strip()
+            else:
+                template_version_candidate = ""
+            if template_version_candidate:
+                template_version = template_version_candidate
+            elif current_setting:
+                template_version = current_setting.prompt_template_version
+            else:
+                template_version = None
             new_departments[code] = DepartmentSettings(
                 code=code,
                 title=title,
@@ -614,6 +710,8 @@ def _load_from_file(cfg: AppConfig) -> None:
                 data_scope=data_scope,
                 prompt=prompt_text,
                 llm=resolved_cfg,
+                prompt_template_id=template_id,
+                prompt_template_version=template_version,
             )
         if new_departments:
             cfg.departments = new_departments
@@ -648,6 +746,13 @@ def save_config(cfg: AppConfig | None = None) -> None:
             "primary": _endpoint_to_dict(cfg.llm.primary),
             "ensemble": [_endpoint_to_dict(ep) for ep in cfg.llm.ensemble],
         },
+        "llm_cost": {
+            "enabled": cfg.llm_cost.enabled,
+            "hourly_budget": cfg.llm_cost.hourly_budget,
+            "daily_budget": cfg.llm_cost.daily_budget,
+            "monthly_budget": cfg.llm_cost.monthly_budget,
+            "model_weights": cfg.llm_cost.model_weights,
+        },
         "llm_providers": {
             key: provider.to_dict()
             for key, provider in cfg.llm_providers.items()
@@ -659,6 +764,8 @@ def save_config(cfg: AppConfig | None = None) -> None:
                 "weight": dept.weight,
                 "data_scope": list(dept.data_scope),
                 "prompt": dept.prompt,
+                "prompt_template_id": dept.prompt_template_id,
+                "prompt_template_version": dept.prompt_template_version,
                 "llm": {
                     "strategy": dept.llm.strategy if dept.llm.strategy in ALLOWED_LLM_STRATEGIES else "single",
                     "majority_threshold": dept.llm.majority_threshold,

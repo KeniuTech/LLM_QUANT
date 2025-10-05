@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+import time
 from dataclasses import asdict
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -10,6 +11,7 @@ import requests
 
 from .context import ContextManager, Message
 from .templates import TemplateRegistry
+from .cost import configure_cost_limits, get_cost_controller, budget_available
 
 from app.utils.config import (
     DEFAULT_LLM_BASE_URLS,
@@ -200,6 +202,26 @@ def call_endpoint_with_messages(
     timeout = resolved["timeout"]
     api_key = resolved["api_key"]
 
+    cfg = get_config()
+    cost_cfg = getattr(cfg, "llm_cost", None)
+    enforce_cost = False
+    cost_controller = None
+    if cost_cfg and getattr(cost_cfg, "enabled", False):
+        try:
+            limits = cost_cfg.to_cost_limits()
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "成本控制配置解析失败，将忽略限制: %s",
+                exc,
+                extra=LOG_EXTRA,
+            )
+        else:
+            configure_cost_limits(limits)
+            enforce_cost = True
+            if not budget_available():
+                raise LLMError("LLM 调用预算已耗尽，请稍后重试。")
+            cost_controller = get_cost_controller()
+
     LOGGER.info(
         "触发 LLM 请求：provider=%s model=%s base=%s",
         provider_key,
@@ -217,18 +239,24 @@ def call_endpoint_with_messages(
             "stream": False,
             "options": {"temperature": temperature},
         }
+        start_time = time.perf_counter()
         response = requests.post(
             f"{base_url.rstrip('/')}/api/chat",
             json=payload,
             timeout=timeout,
         )
+        duration = time.perf_counter() - start_time
         if response.status_code != 200:
             raise LLMError(f"Ollama 调用失败: {response.status_code} {response.text}")
-        record_call(provider_key, model)
-        return response.json()
+        data = response.json()
+        record_call(provider_key, model, duration=duration)
+        if enforce_cost and cost_controller:
+            cost_controller.record_usage(model or provider_key, 0, 0)
+        return data
 
     if not api_key:
         raise LLMError(f"缺少 {provider_key} API Key (model={model})")
+    start_time = time.perf_counter()
     data = _request_openai_chat(
         base_url=base_url,
         api_key=api_key,
@@ -239,10 +267,28 @@ def call_endpoint_with_messages(
         tools=tools,
         tool_choice=tool_choice,
     )
+    duration = time.perf_counter() - start_time
     usage = data.get("usage", {}) if isinstance(data, dict) else {}
     prompt_tokens = usage.get("prompt_tokens") or usage.get("prompt_tokens_total")
     completion_tokens = usage.get("completion_tokens") or usage.get("completion_tokens_total")
-    record_call(provider_key, model, prompt_tokens, completion_tokens)
+    record_call(
+        provider_key,
+        model,
+        prompt_tokens,
+        completion_tokens,
+        duration=duration,
+    )
+    if enforce_cost and cost_controller:
+        prompt_count = int(prompt_tokens or 0)
+        completion_count = int(completion_tokens or 0)
+        within_limits = cost_controller.record_usage(model or provider_key, prompt_count, completion_count)
+        if not within_limits:
+            LOGGER.warning(
+                "LLM 成本预算已超限：provider=%s model=%s",
+                provider_key,
+                model,
+                extra=LOG_EXTRA,
+            )
     return data
 
 

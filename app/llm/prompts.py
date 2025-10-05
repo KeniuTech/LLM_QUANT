@@ -1,9 +1,12 @@
 """Prompt templates for natural language outputs."""
 from __future__ import annotations
 
+import logging
 from typing import Dict, TYPE_CHECKING
 
 from .templates import TemplateRegistry
+
+LOGGER = logging.getLogger(__name__)
 
 if TYPE_CHECKING:  # pragma: no cover
     from app.utils.config import DepartmentSettings
@@ -35,11 +38,49 @@ def department_prompt(
     role_description = settings.description.strip()
     role_instruction = settings.prompt.strip()
     
-    # Determine template ID based on department settings
-    template_id = f"{settings.code.lower()}_dept"
-    if not TemplateRegistry.get(template_id):
+    # Determine template ID and version
+    template_id = (getattr(settings, "prompt_template_id", None) or f"{settings.code.lower()}_dept").strip()
+    requested_version = getattr(settings, "prompt_template_version", None)
+    original_requested_version = requested_version
+    template = TemplateRegistry.get(template_id, version=requested_version)
+    applied_version = requested_version if template and requested_version else None
+
+    if not template:
+        if requested_version:
+            LOGGER.warning(
+                "Template %s version %s not found, falling back to active version",
+                template_id,
+                requested_version,
+            )
+        template = TemplateRegistry.get(template_id)
+        applied_version = TemplateRegistry.get_active_version(template_id)
+
+    if not template:
+        LOGGER.warning(
+            "Template %s unavailable, using department_base fallback",
+            template_id,
+        )
         template_id = "department_base"
-        
+        template = TemplateRegistry.get(template_id)
+        requested_version = None
+        applied_version = TemplateRegistry.get_active_version(template_id)
+
+    if not template:
+        raise ValueError("No prompt template available for department prompts")
+
+    if applied_version is None:
+        applied_version = TemplateRegistry.get_active_version(template_id)
+    template_meta = {
+        "template_id": template_id,
+        "requested_version": original_requested_version,
+        "applied_version": applied_version,
+    }
+
+    raw_container = getattr(context, "raw", None)
+    if isinstance(raw_container, dict):
+        meta_store = raw_container.setdefault("template_meta", {})
+        meta_store[settings.code] = template_meta
+
     # Prepare template variables
     template_vars = {
         "title": settings.title,
@@ -54,5 +95,4 @@ def department_prompt(
     }
     
     # Get template and format prompt
-    template = TemplateRegistry.get(template_id)
     return template.format(template_vars)

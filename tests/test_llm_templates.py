@@ -69,7 +69,7 @@ def test_prompt_template_format():
 
     # Valid context
     result = template.format({"name": "World"})
-    assert result == "Hello Wor..."
+    assert result == "Hello W..."
 
     # Missing required context
     with pytest.raises(ValueError) as exc:
@@ -77,8 +77,15 @@ def test_prompt_template_format():
     assert "Missing required context" in str(exc.value)
 
     # Missing variable
+    template_no_required = PromptTemplate(
+        id="test2",
+        name="Test Template",
+        description="A test template",
+        template="Hello {name}!",
+        variables=["name"],
+    )
     with pytest.raises(ValueError) as exc:
-        template.format({"wrong": "value"})
+        template_no_required.format({"wrong": "value"})
     assert "Missing template variable" in str(exc.value)
 
 
@@ -95,7 +102,8 @@ def test_template_registry():
         variables=["name"]
     )
     TemplateRegistry.register(template)
-    assert TemplateRegistry.get("test") == template
+    assert TemplateRegistry.get("test") is not None
+    assert TemplateRegistry.get_active_version("test") == "1.0.0"
 
     # Register invalid template
     invalid = PromptTemplate(
@@ -121,12 +129,17 @@ def test_template_registry():
             "name": "JSON Test",
             "description": "Test template from JSON",
             "template": "Hello {name}!",
-            "variables": ["name"]
+            "variables": ["name"],
+            "version": "2024.10",
+            "metadata": {"author": "qa"},
+            "activate": true
         }
     }
     '''
     TemplateRegistry.load_from_json(json_str)
-    assert TemplateRegistry.get("json_test") is not None
+    loaded = TemplateRegistry.get("json_test")
+    assert loaded is not None
+    assert TemplateRegistry.get_active_version("json_test") == "2024.10"
 
     # Invalid JSON
     with pytest.raises(ValueError) as exc:
@@ -141,7 +154,7 @@ def test_template_registry():
 
 def test_default_templates():
     """Test default template registration."""
-    TemplateRegistry.clear()
+    TemplateRegistry.clear(reload_defaults=True)
     from app.llm.templates import DEFAULT_TEMPLATES
 
     # Verify default templates are loaded

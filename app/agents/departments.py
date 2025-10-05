@@ -119,6 +119,10 @@ class DepartmentAgent:
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         prompt_body = department_prompt(self.settings, mutable_context)
+        template_meta = {}
+        raw_templates = mutable_context.raw.get("template_meta") if isinstance(mutable_context.raw, dict) else None
+        if isinstance(raw_templates, dict):
+            template_meta = dict(raw_templates.get(self.settings.code, {}))
         prompt_checksum = hashlib.sha1(prompt_body.encode("utf-8")).hexdigest()
         prompt_preview = prompt_body[:240]
         messages.append({"role": "user", "content": prompt_body})
@@ -330,6 +334,7 @@ class DepartmentAgent:
                 "instruction": self.settings.prompt,
                 "system": system_prompt,
             },
+            "template": template_meta,
             "messages_exchanged": len(messages),
             "supplement_rounds": len(tool_call_records),
         }

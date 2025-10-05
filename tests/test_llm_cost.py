@@ -1,8 +1,14 @@
 """Test cases for LLM cost control system."""
-import pytest
-from datetime import datetime
+import time
 
-from app.llm.cost import CostLimits, ModelCosts, CostController
+from app.llm.cost import (
+    CostLimits,
+    ModelCosts,
+    CostController,
+    configure_cost_limits,
+    get_cost_controller,
+    budget_available,
+)
 
 
 def test_cost_limits():
@@ -53,11 +59,11 @@ def test_cost_controller():
     assert controller.can_use_model("gpt-4", 1000, 500)
     
     # Then record the usage
-    controller.record_usage("gpt-4", 1000, 500)  # About $0.09
+    assert controller.record_usage("gpt-4", 1000, 500) is True  # About $0.09
     
     # Record usage for second model to maintain weight balance
     assert controller.can_use_model("gpt-3.5-turbo", 1000, 500)
-    controller.record_usage("gpt-3.5-turbo", 1000, 500)
+    assert controller.record_usage("gpt-3.5-turbo", 1000, 500)
     
     # Verify usage tracking
     costs = controller.get_current_costs()
@@ -85,10 +91,10 @@ def test_cost_controller_history():
     
     # Record one usage of each model
     assert controller.can_use_model("gpt-4", 1000, 500)
-    controller.record_usage("gpt-4", 1000, 500)
-    
+    assert controller.record_usage("gpt-4", 1000, 500)
+
     assert controller.can_use_model("gpt-3.5-turbo", 1000, 500)
-    controller.record_usage("gpt-3.5-turbo", 1000, 500)
+    assert controller.record_usage("gpt-3.5-turbo", 1000, 500)
     
     # Check usage tracking
     costs = controller.get_current_costs()
@@ -98,3 +104,23 @@ def test_cost_controller_history():
     distribution = controller.get_model_distribution()
     assert abs(distribution["gpt-4"] - 0.5) < 0.1
     assert abs(distribution["gpt-3.5-turbo"] - 0.5) < 0.1
+
+
+def test_global_controller_budget_toggle():
+    """Ensure global controller respects configured limits and budget flag."""
+    limits = CostLimits(hourly_budget=0.05, daily_budget=0.1, monthly_budget=1.0, model_weights={})
+    configure_cost_limits(limits)
+    controller = get_cost_controller()
+
+    assert budget_available() is True
+    within = controller.record_usage("gpt-4", 1000, 1000)
+    assert within is False  # deliberately exceed tiny budget
+    assert budget_available() is False
+
+    # Reset controller state to avoid cross-test contamination
+    with controller._usage_lock:  # type: ignore[attr-defined]
+        for bucket in controller._usage.values():  # type: ignore[attr-defined]
+            bucket.clear()
+        controller._last_cleanup = time.time()  # type: ignore[attr-defined]
+
+    configure_cost_limits(CostLimits.default())
