@@ -92,7 +92,10 @@ def render_portfolio_config() -> None:
         ["最大持仓数", max_total_positions],
         ["行业敞口上限", f"{max_sector_exposure:.1%}"],
     ], columns=["配置项", "当前值"])
-    
+
+    # 统一转为字符串以避免 Arrow 在混合类型列上报错
+    df["当前值"] = df["当前值"].astype(str)
+
     st.table(df.set_index("配置项"))
     
     # 保存按钮
