@@ -2470,6 +2470,130 @@ def render_llm_settings() -> None:
 
     st.caption("部门配置存储为独立 LLM 参数，执行时会自动套用对应 Provider 的连接信息。")
 
+def render_market_visualization() -> None:
+    """Render a standalone market data visualization dashboard."""
+
+    st.header("股票行情可视化")
+    options = _load_stock_options()
+    default_code = options[0] if options else "000001.SZ"
+
+    if options:
+        selection = st.selectbox("选择股票", options, index=0)
+        ts_code = _parse_ts_code(selection)
+        LOGGER.debug("选择股票：%s", ts_code, extra=LOG_EXTRA)
+    else:
+        ts_code = st.text_input("输入股票代码（如 000001.SZ）", value=default_code).strip().upper()
+        LOGGER.debug("输入股票：%s", ts_code, extra=LOG_EXTRA)
+
+    col_start, col_end = st.columns(2)
+    default_start = date.today() - timedelta(days=180)
+    start_date = col_start.date_input("开始日期", value=default_start, key="viz_start")
+    end_date = col_end.date_input("结束日期", value=date.today(), key="viz_end")
+    LOGGER.debug("行情可视化日期范围：%s-%s", start_date, end_date, extra=LOG_EXTRA)
+
+    if start_date > end_date:
+        LOGGER.warning("无效日期范围：%s>%s", start_date, end_date, extra=LOG_EXTRA)
+        st.error("开始日期不能晚于结束日期")
+        return
+
+    with st.spinner("正在加载行情数据..."):
+        try:
+            df = _load_daily_frame(ts_code, start_date, end_date)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("加载行情数据失败", extra=LOG_EXTRA)
+            st.error(f"读取数据失败：{exc}")
+            return
+
+    if df.empty:
+        LOGGER.warning("指定区间无行情数据：%s %s-%s", ts_code, start_date, end_date, extra=LOG_EXTRA)
+        st.warning("未查询到该区间的交易数据，请确认数据库已拉取对应日线。")
+        return
+
+    price_df = df[["close"]].rename(columns={"close": "收盘价"})
+    volume_df = df[["vol"]].rename(columns={"vol": "成交量(手)"})
+
+    sampled = price_df.resample("3D").last().dropna() if price_df.shape[0] > 180 else price_df
+    volume_sampled = volume_df.resample("3D").mean().dropna() if volume_df.shape[0] > 180 else volume_df
+
+    first_close = sampled.iloc[0, 0]
+    last_close = sampled.iloc[-1, 0]
+    delta_abs = last_close - first_close
+    delta_pct = (delta_abs / first_close * 100) if first_close else 0.0
+
+    metric_col1, metric_col2, metric_col3 = st.columns(3)
+    metric_col1.metric("最新收盘价", f"{last_close:.2f}", delta=f"{delta_abs:+.2f}")
+    metric_col2.metric("区间涨跌幅", f"{delta_pct:+.2f}%")
+    metric_col3.metric("平均成交量", f"{volume_sampled['成交量(手)'].mean():.0f}")
+
+    df_reset = df.reset_index().rename(columns={
+        "trade_date": "交易日",
+        "open": "开盘价",
+        "high": "最高价",
+        "low": "最低价",
+        "close": "收盘价",
+        "vol": "成交量(手)",
+        "amount": "成交额(千元)",
+    })
+    df_reset["成交额(千元)"] = df_reset["成交额(千元)"] / 1000
+
+    numeric_columns = ["开盘价", "最高价", "最低价", "收盘价", "成交量(手)", "成交额(千元)"]
+    for col in numeric_columns:
+        if col in df_reset.columns:
+            df_reset[col] = pd.to_numeric(df_reset[col], errors="coerce")
+    df_reset["交易日"] = pd.to_datetime(df_reset["交易日"])
+
+    candle_fig = go.Figure(
+        data=[
+            go.Candlestick(
+                x=df_reset["交易日"],
+                open=df_reset["开盘价"],
+                high=df_reset["最高价"],
+                low=df_reset["最低价"],
+                close=df_reset["收盘价"],
+                name="K线",
+            )
+        ]
+    )
+    candle_fig.update_layout(height=420, margin=dict(l=10, r=10, t=40, b=10))
+    st.plotly_chart(candle_fig, width="stretch")
+
+    vol_fig = px.bar(
+        df_reset,
+        x="交易日",
+        y="成交量(手)",
+        labels={"成交量(手)": "成交量(手)"},
+        title="成交量",
+    )
+    vol_fig.update_layout(height=280, margin=dict(l=10, r=10, t=40, b=10))
+    st.plotly_chart(vol_fig, width="stretch")
+
+    amt_fig = px.bar(
+        df_reset,
+        x="交易日",
+        y="成交额(千元)",
+        labels={"成交额(千元)": "成交额(千元)"},
+        title="成交额",
+    )
+    amt_fig.update_layout(height=280, margin=dict(l=10, r=10, t=40, b=10))
+    st.plotly_chart(amt_fig, width="stretch")
+
+    df_reset["月份"] = df_reset["交易日"].dt.to_period("M").astype(str)
+    df_reset["收盘价"] = pd.to_numeric(df_reset["收盘价"], errors="coerce")
+    box_fig = px.box(
+        df_reset,
+        x="月份",
+        y="收盘价",
+        points="outliers",
+        title="月度收盘价分布",
+    )
+    box_fig.update_layout(height=320, margin=dict(l=10, r=10, t=40, b=10))
+    st.plotly_chart(box_fig, width="stretch")
+
+    st.caption("提示：成交量单位为手，成交额以千元显示。箱线图按月展示收盘价分布。")
+    st.dataframe(df_reset.tail(20), width="stretch")
+    LOGGER.info("行情可视化完成，展示行数=%s", len(df_reset), extra=LOG_EXTRA)
+
+
 def render_tests() -> None:
     LOGGER.info("渲染自检页面", extra=LOG_EXTRA)
     st.header("自检测试")
@@ -2628,138 +2752,6 @@ def render_tests() -> None:
                 progress_bar.progress(1.0)
 
     st.divider()
-    st.subheader("股票行情可视化")
-    options = _load_stock_options()
-    default_code = options[0] if options else "000001.SZ"
-
-    if options:
-        selection = st.selectbox("选择股票", options, index=0)
-        ts_code = _parse_ts_code(selection)
-        LOGGER.debug("选择股票：%s", ts_code, extra=LOG_EXTRA)
-    else:
-        ts_code = st.text_input("输入股票代码（如 000001.SZ）", value=default_code).strip().upper()
-        LOGGER.debug("输入股票：%s", ts_code, extra=LOG_EXTRA)
-
-    viz_col1, viz_col2 = st.columns(2)
-    default_start = date.today() - timedelta(days=180)
-    start_date = viz_col1.date_input("开始日期", value=default_start, key="viz_start")
-    end_date = viz_col2.date_input("结束日期", value=date.today(), key="viz_end")
-    LOGGER.debug("行情可视化日期范围：%s-%s", start_date, end_date, extra=LOG_EXTRA)
-
-    if start_date > end_date:
-        LOGGER.warning("无效日期范围：%s>%s", start_date, end_date, extra=LOG_EXTRA)
-        st.error("开始日期不能晚于结束日期")
-        return
-
-    with st.spinner("正在加载行情数据..."):
-        try:
-            df = _load_daily_frame(ts_code, start_date, end_date)
-        except Exception as exc:  # noqa: BLE001
-            LOGGER.exception("加载行情数据失败", extra=LOG_EXTRA)
-            st.error(f"读取数据失败：{exc}")
-            return
-
-    if df.empty:
-        LOGGER.warning("指定区间无行情数据：%s %s-%s", ts_code, start_date, end_date, extra=LOG_EXTRA)
-        st.warning("未查询到该区间的交易数据，请确认数据库已拉取对应日线。")
-        return
-
-    price_df = df[["close"]].rename(columns={"close": "收盘价"})
-    volume_df = df[["vol"]].rename(columns={"vol": "成交量(手)"})
-
-    if price_df.shape[0] > 180:
-        sampled = price_df.resample('3D').last().dropna()
-    else:
-        sampled = price_df
-
-    if volume_df.shape[0] > 180:
-        volume_sampled = volume_df.resample('3D').mean().dropna()
-    else:
-        volume_sampled = volume_df
-
-    first_close = sampled.iloc[0, 0]
-    last_close = sampled.iloc[-1, 0]
-    delta_abs = last_close - first_close
-    delta_pct = (delta_abs / first_close * 100) if first_close else 0.0
-
-    metric_col1, metric_col2, metric_col3 = st.columns(3)
-    metric_col1.metric("最新收盘价", f"{last_close:.2f}", delta=f"{delta_abs:+.2f}")
-    metric_col2.metric("区间涨跌幅", f"{delta_pct:+.2f}%")
-    metric_col3.metric("平均成交量", f"{volume_sampled['成交量(手)'].mean():.0f}")
-
-    df_reset = df.reset_index().rename(columns={
-        "trade_date": "交易日",
-        "open": "开盘价",
-        "high": "最高价",
-        "low": "最低价",
-        "close": "收盘价",
-        "vol": "成交量(手)",
-        "amount": "成交额(千元)",
-    })
-    df_reset["成交额(千元)"] = df_reset["成交额(千元)"] / 1000
-    
-    # 确保所有列的数据类型正确，避免PyArrow序列化错误
-    numeric_columns = ["开盘价", "最高价", "最低价", "收盘价", "成交量(手)", "成交额(千元)"]
-    for col in numeric_columns:
-        if col in df_reset.columns:
-            df_reset[col] = pd.to_numeric(df_reset[col], errors='coerce')
-    
-    # 确保日期列是datetime类型
-    df_reset["交易日"] = pd.to_datetime(df_reset["交易日"])
-
-    candle_fig = go.Figure(
-        data=[
-            go.Candlestick(
-                x=df_reset["交易日"],
-                open=df_reset["开盘价"],
-                high=df_reset["最高价"],
-                low=df_reset["最低价"],
-                close=df_reset["收盘价"],
-                name="K线",
-            )
-        ]
-    )
-    candle_fig.update_layout(height=420, margin=dict(l=10, r=10, t=40, b=10))
-    st.plotly_chart(candle_fig, width='stretch')
-
-    vol_fig = px.bar(
-        df_reset,
-        x="交易日",
-        y="成交量(手)",
-        labels={"成交量(手)": "成交量(手)"},
-        title="成交量",
-    )
-    vol_fig.update_layout(height=280, margin=dict(l=10, r=10, t=40, b=10))
-    st.plotly_chart(vol_fig, width='stretch')
-
-    amt_fig = px.bar(
-        df_reset,
-        x="交易日",
-        y="成交额(千元)",
-        labels={"成交额(千元)": "成交额(千元)"},
-        title="成交额",
-    )
-    amt_fig.update_layout(height=280, margin=dict(l=10, r=10, t=40, b=10))
-    st.plotly_chart(amt_fig, width='stretch')
-
-    df_reset["月份"] = df_reset["交易日"].dt.to_period("M").astype(str)
-    # 确保收盘价列是数值类型
-    df_reset["收盘价"] = pd.to_numeric(df_reset["收盘价"], errors='coerce')
-    box_fig = px.box(
-        df_reset,
-        x="月份",
-        y="收盘价",
-        points="outliers",
-        title="月度收盘价分布",
-    )
-    box_fig.update_layout(height=320, margin=dict(l=10, r=10, t=40, b=10))
-    st.plotly_chart(box_fig, width='stretch')
-
-    st.caption("提示：成交量单位为手，成交额以千元显示。箱线图按月展示收盘价分布。")
-    st.dataframe(df_reset.tail(20), width='stretch')
-    LOGGER.info("行情可视化完成，展示行数=%s", len(df_reset), extra=LOG_EXTRA)
-
-    st.divider()
     st.subheader("LLM 接口测试")
     st.json(llm_config_snapshot())
     llm_prompt = st.text_area("测试 Prompt", value="请概述今天的市场重点。", height=160)
@@ -2889,10 +2881,10 @@ def main() -> None:
             st.error(f"❌ 自动数据更新失败：{exc}")
     
     render_global_dashboard()
-    tabs = st.tabs(["今日计划", "回测与复盘", "日志钻取", "数据与设置", "自检测试"])
+    tabs = st.tabs(["今日计划", "回测与复盘", "行情可视化", "日志钻取", "数据与设置", "自检测试"])
     LOGGER.debug(
         "Tabs 初始化完成：%s",
-        ["今日计划", "回测与复盘", "日志钻取", "数据与设置", "自检测试"],
+        ["今日计划", "回测与复盘", "行情可视化", "日志钻取", "数据与设置", "自检测试"],
         extra=LOG_EXTRA,
     )
     with tabs[0]:
@@ -2900,8 +2892,10 @@ def main() -> None:
     with tabs[1]:
         render_backtest_review()
     with tabs[2]:
-        render_log_viewer()
+        render_market_visualization()
     with tabs[3]:
+        render_log_viewer()
+    with tabs[4]:
         st.header("系统设置")
         settings_tabs = st.tabs(["配置概览", "LLM 设置", "投资组合", "数据源"])
 
@@ -2917,7 +2911,7 @@ def main() -> None:
 
         with settings_tabs[3]:
             render_data_settings()
-    with tabs[4]:
+    with tabs[5]:
         render_tests()
 
 
