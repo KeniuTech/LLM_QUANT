@@ -61,7 +61,7 @@ def list_investment_pool(
         query.append(f"AND status IN ({placeholders})")
         params.extend(list(status))
 
-    query.append("ORDER BY score DESC NULLS LAST, ts_code")
+    query.append("ORDER BY (score IS NULL), score DESC, ts_code")
     query.append("LIMIT ?")
     params.append(int(limit))
 

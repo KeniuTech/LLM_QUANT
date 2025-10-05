@@ -431,6 +431,38 @@ def _load_from_file(cfg: AppConfig) -> None:
     if isinstance(weights_payload, dict):
         cfg.agent_weights.update_from_dict(weights_payload)
 
+    portfolio_payload = payload.get("portfolio")
+    if isinstance(portfolio_payload, dict):
+        limits_payload = portfolio_payload.get("position_limits")
+        if not isinstance(limits_payload, dict):
+            limits_payload = portfolio_payload
+
+        current = cfg.portfolio
+
+        def _float_value(container: Dict[str, object], key: str, fallback: float) -> float:
+            value = container.get(key) if isinstance(container, dict) else None
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return fallback
+
+        def _int_value(container: Dict[str, object], key: str, fallback: int) -> int:
+            value = container.get(key) if isinstance(container, dict) else None
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return fallback
+
+        updated_portfolio = PortfolioSettings(
+            initial_capital=_float_value(portfolio_payload, "initial_capital", current.initial_capital),
+            currency=str(portfolio_payload.get("currency") or current.currency),
+            max_position=_float_value(limits_payload, "max_position", current.max_position),
+            min_position=_float_value(limits_payload, "min_position", current.min_position),
+            max_total_positions=_int_value(limits_payload, "max_total_positions", current.max_total_positions),
+            max_sector_exposure=_float_value(limits_payload, "max_sector_exposure", current.max_sector_exposure),
+        )
+        cfg.portfolio = updated_portfolio
+
     legacy_profiles: Dict[str, Dict[str, object]] = {}
     legacy_routes: Dict[str, Dict[str, object]] = {}
 
@@ -600,6 +632,16 @@ def save_config(cfg: AppConfig | None = None) -> None:
         "decision_method": cfg.decision_method,
         "rss_sources": cfg.rss_sources,
         "agent_weights": cfg.agent_weights.as_dict(),
+        "portfolio": {
+            "initial_capital": cfg.portfolio.initial_capital,
+            "currency": cfg.portfolio.currency,
+            "position_limits": {
+                "max_position": cfg.portfolio.max_position,
+                "min_position": cfg.portfolio.min_position,
+                "max_total_positions": cfg.portfolio.max_total_positions,
+                "max_sector_exposure": cfg.portfolio.max_sector_exposure,
+            },
+        },
         "llm": {
             "strategy": cfg.llm.strategy if cfg.llm.strategy in ALLOWED_LLM_STRATEGIES else "single",
             "majority_threshold": cfg.llm.majority_threshold,
