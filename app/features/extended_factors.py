@@ -8,9 +8,21 @@ end-to-end automated decision-making requirements.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Sequence
+from typing import Dict, List, Sequence, Optional
 
-from app.core.indicators import momentum, volatility, rolling_mean, normalize
+import numpy as np
+
+from app.core.indicators import momentum, rolling_mean, normalize
+from app.core.technical import (
+    rsi, macd, bollinger_bands, obv_momentum, price_volume_trend
+)
+from app.core.momentum import (
+    adaptive_momentum, momentum_quality, momentum_regime
+)
+from app.core.volatility import (
+    volatility, garch_volatility, volatility_regime,
+    volume_price_correlation
+)
 
 
 @dataclass
@@ -27,169 +39,193 @@ class FactorSpec:
 
 # Extended factors focusing on momentum, value, and liquidity signals
 EXTENDED_FACTORS: List[FactorSpec] = [
+    # 技术分析因子
+    FactorSpec("tech_rsi_14", 14),           # 14日RSI
+    FactorSpec("tech_macd_signal", 26),       # MACD信号
+    FactorSpec("tech_bb_position", 20),       # 布林带位置
+    FactorSpec("tech_obv_momentum", 20),      # OBV动量
+    FactorSpec("tech_pv_trend", 20),          # 价量趋势
+    
+    # 趋势跟踪因子
+    FactorSpec("trend_ma_cross", 20),         # 均线交叉信号
+    FactorSpec("trend_price_channel", 20),    # 价格通道突破
+    FactorSpec("trend_adx", 14),              # 平均趋向指标
+    
+    # 市场微观结构因子
+    FactorSpec("micro_tick_direction", 5),    # 逐笔方向
+    FactorSpec("micro_trade_imbalance", 10),  # 交易失衡
+    
+    # 波动率预测因子
+    FactorSpec("vol_garch", 20),             # GARCH波动率
+    FactorSpec("vol_range_pred", 10),        # 波动区间预测
+    FactorSpec("vol_regime", 20),            # 波动率状态
+    
+    # 量价联合因子
+    FactorSpec("volume_price_corr", 20),     # 量价相关性
+    FactorSpec("volume_price_diverge", 10),   # 量价背离
+    FactorSpec("volume_intensity", 5),        # 成交强度
+    
     # 增强动量因子
-    FactorSpec("mom_10_30", 0),  # 10日与30日动量差
-    FactorSpec("mom_5_20_rank", 0),  # 相对排名动量因子
-    FactorSpec("mom_dynamic", 0),  # 动态窗口动量因子
-    # 波动率相关因子
-    FactorSpec("volat_5", 5),  # 短期波动率
-    FactorSpec("volat_ratio", 0),  # 长短期波动率比率
-    # 换手率扩展因子
-    FactorSpec("turn_60", 60),  # 长期换手率
-    FactorSpec("turn_rank", 0),  # 换手率相对排名
+    FactorSpec("momentum_adaptive", 20),      # 自适应动量
+    FactorSpec("momentum_regime", 20),        # 动量区间
+    FactorSpec("momentum_quality", 20),       # 动量质量,
+    
     # 价格均线比率因子
-    FactorSpec("price_ma_10_ratio", 0),  # 当前价格与10日均线比率
-    FactorSpec("price_ma_20_ratio", 0),  # 当前价格与20日均线比率
-    FactorSpec("price_ma_60_ratio", 0),  # 当前价格与60日均线比率
-    # 成交量均线比率因子
-    FactorSpec("volume_ma_5_ratio", 0),  # 当前成交量与5日均线比率
-    FactorSpec("volume_ma_20_ratio", 0),  # 当前成交量与20日均线比率
-    # 高级估值因子
-    FactorSpec("val_ps_score", 0),  # PS估值评分
-    FactorSpec("val_multiscore", 0),  # 综合估值评分
-    FactorSpec("val_dividend_score", 0),  # 股息率估值评分
-    # 市场状态因子
-    FactorSpec("market_regime", 0),  # 市场状态因子
-    FactorSpec("trend_strength", 0),  # 趋势强度因子
+    FactorSpec("price_ma_10_ratio", 10),     # 当前价格与10日均线比率
+    FactorSpec("price_ma_20_ratio", 20),     # 当前价格与20日均线比率
+    FactorSpec("price_ma_60_ratio", 60),     # 当前价格与60日均线比率
+    
+    # 成交量均线比率因子 
+    FactorSpec("volume_ma_5_ratio", 5),      # 当前成交量与5日均线比率
+    FactorSpec("volume_ma_20_ratio", 20),    # 当前成交量与20日均线比率
 ]
 
 
-def compute_extended_factor_values(
-    close_series: Sequence[float],
-    volume_series: Sequence[float],
-    turnover_series: Sequence[float],
-    latest_fields: Dict[str, float],
-) -> Dict[str, float]:
-    """Compute values for extended factors.
+class ExtendedFactors:
+    """扩展因子计算实现类。
     
-    Args:
-        close_series: Closing prices series (most recent first)
-        volume_series: Trading volume series (most recent first)
-        turnover_series: Turnover rate series (most recent first)
-        latest_fields: Latest available fields including valuation ratios
-        
-    Returns:
-        Dictionary mapping factor names to computed values
+    该类实现了一组用于量化交易的扩展因子计算。包括:
+    1. 技术分析因子 (RSI, MACD, 布林带等)
+    2. 趋势跟踪因子 (均线交叉等)
+    3. 波动率预测因子 (GARCH, 波动率状态等)
+    4. 量价联合因子 (量价相关性等)
+    5. 动量强化因子 (自适应动量等)
+    6. 均线比率因子 (价格/成交量均线比率)
+    
+    使用示例:
+        calculator = ExtendedFactors()
+        factor_value = calculator.compute_factor(
+            "tech_rsi_14", 
+            close_series,
+            volume_series
+        )
+        all_factors = calculator.compute_all_factors(close_series, volume_series)
+        normalized = calculator.normalize_factors(all_factors)
     """
-    if not close_series:
-        return {}
+    
+    def __init__(self):
+        """初始化因子计算器"""
+        self.factor_specs = {spec.name: spec for spec in EXTENDED_FACTORS}
         
-    results: Dict[str, float] = {}
-    
-    # 增强动量因子
-    # 10日与30日动量差
-    if len(close_series) >= 30:
-        mom_10 = momentum(close_series, 10)
-        mom_30 = momentum(close_series, 30)
-        if mom_10 is not None and mom_30 is not None:
-            results["mom_10_30"] = mom_10 - mom_30
-    
-    # 相对排名动量因子
-    # 这里需要市场数据来计算相对排名，暂时使用简化版本
-    if len(close_series) >= 20:
-        mom_20 = momentum(close_series, 20)
-        if mom_20 is not None:
-            # 简化处理：将动量标准化
-            results["mom_5_20_rank"] = min(1.0, max(0.0, (mom_20 + 0.2) / 0.4))
-    
-    # 动态窗口动量因子
-    # 根据波动率动态调整窗口
-    if len(close_series) >= 20:
-        volat_20 = volatility(close_series, 20)
-        mom_20 = momentum(close_series, 20)
-        if volat_20 is not None and mom_20 is not None and volat_20 > 0:
-            # 波动率调整后的动量
-            results["mom_dynamic"] = mom_20 / volat_20
-    
-    # 波动率相关因子
-    # 短期波动率
-    if len(close_series) >= 5:
-        results["volat_5"] = volatility(close_series, 5)
-    
-    # 长短期波动率比率
-    if len(close_series) >= 20 and len(close_series) >= 5:
-        volat_5 = volatility(close_series, 5)
-        volat_20 = volatility(close_series, 20)
-        if volat_5 is not None and volat_20 is not None and volat_20 > 0:
-            results["volat_ratio"] = volat_5 / volat_20
-    
-    # 换手率扩展因子
-    # 长期换手率
-    if len(turnover_series) >= 60:
-        results["turn_60"] = rolling_mean(turnover_series, 60)
-    
-    # 换手率相对排名
-    if len(turnover_series) >= 20:
-        turn_20 = rolling_mean(turnover_series, 20)
-        if turn_20 is not None:
-            # 简化处理：将换手率标准化
-            results["turn_rank"] = min(1.0, max(0.0, turn_20 / 5.0))  # 假设5%为高换手率
-    
-    # 价格均线比率因子
-    if len(close_series) >= 10:
-        ma_10 = rolling_mean(close_series, 10)
-        if ma_10 is not None and ma_10 > 0:
-            results["price_ma_10_ratio"] = close_series[0] / ma_10
-    
-    if len(close_series) >= 20:
-        ma_20 = rolling_mean(close_series, 20)
-        if ma_20 is not None and ma_20 > 0:
-            results["price_ma_20_ratio"] = close_series[0] / ma_20
-    
-    if len(close_series) >= 60:
-        ma_60 = rolling_mean(close_series, 60)
-        if ma_60 is not None and ma_60 > 0:
-            results["price_ma_60_ratio"] = close_series[0] / ma_60
-    
-    # 成交量均线比率因子
-    if len(volume_series) >= 5:
-        vol_ma_5 = rolling_mean(volume_series, 5)
-        if vol_ma_5 is not None and vol_ma_5 > 0:
-            results["volume_ma_5_ratio"] = volume_series[0] / vol_ma_5
-    
-    if len(volume_series) >= 20:
-        vol_ma_20 = rolling_mean(volume_series, 20)
-        if vol_ma_20 is not None and vol_ma_20 > 0:
-            results["volume_ma_20_ratio"] = volume_series[0] / vol_ma_20
-    
-    # 高级估值因子
-    ps = latest_fields.get("daily_basic.ps")
-    if ps is not None and ps > 0:
-        # PS估值评分
-        results["val_ps_score"] = 2.5 / (2.5 + ps)  # 使用2.5作为scale参数
-    
-    pe = latest_fields.get("daily_basic.pe")
-    pb = latest_fields.get("daily_basic.pb")
-    # 综合估值评分
-    scores = []
-    if pe is not None and pe > 0:
-        scores.append(12.0 / (12.0 + pe))  # PE评分
-    if pb is not None and pb > 0:
-        scores.append(2.5 / (2.5 + pb))   # PB评分
-    if ps is not None and ps > 0:
-        scores.append(2.5 / (2.5 + ps))   # PS评分
-    
-    if scores:
-        results["val_multiscore"] = sum(scores) / len(scores)
-    
-    dv_ratio = latest_fields.get("daily_basic.dv_ratio")
-    if dv_ratio is not None:
-        # 股息率估值评分
-        results["val_dividend_score"] = min(1.0, max(0.0, dv_ratio / 5.0))  # 假设5%为高股息率
-    
-    # 市场状态因子
-    # 简单的市场状态指标：基于价格位置
-    if len(close_series) >= 60:
-        ma_60 = rolling_mean(close_series, 60)
-        if ma_60 is not None and ma_60 > 0:
-            results["market_regime"] = close_series[0] / ma_60
-    
-    # 趋势强度因子
-    if len(close_series) >= 20:
-        mom_20 = momentum(close_series, 20)
-        volat_20 = volatility(close_series, 20)
-        if mom_20 is not None and volat_20 is not None and volat_20 > 0:
-            # 趋势强度：动量与波动率的比率
-            results["trend_strength"] = abs(mom_20) / volat_20
-    
-    return results
+    def compute_factor(self, 
+                      factor_name: str,
+                      close_series: Sequence[float],
+                      volume_series: Sequence[float]) -> Optional[float]:
+        """计算单个因子值
+        
+        Args:
+            factor_name: 因子名称
+            close_series: 收盘价序列，从新到旧排序
+            volume_series: 成交量序列，从新到旧排序
+            
+        Returns:
+            因子值，如果计算失败则返回None
+        """
+        try:
+            spec = self.factor_specs.get(factor_name)
+            if spec is None:
+                print(f"Unknown factor: {factor_name}")
+                return None
+                
+            if len(close_series) < spec.window:
+                return None
+                
+            # 技术分析因子
+            if factor_name == "tech_rsi_14":
+                return rsi(close_series, 14)
+                
+            elif factor_name == "tech_macd_signal":
+                _, signal = macd(close_series)
+                return signal
+                
+            elif factor_name == "tech_bb_position":
+                upper, lower = bollinger_bands(close_series, 20)
+                pos = (close_series[0] - lower) / (upper - lower + 1e-8)
+                return pos
+                
+            elif factor_name == "tech_obv_momentum":
+                return obv_momentum(close_series, volume_series, 20)
+                
+            elif factor_name == "tech_pv_trend":
+                return price_volume_trend(close_series, volume_series, 20)
+            
+            # 趋势跟踪因子
+            elif factor_name == "trend_ma_cross":
+                ma_5 = rolling_mean(close_series, 5)
+                ma_20 = rolling_mean(close_series, 20)
+                return ma_5 - ma_20
+            
+            # 波动率预测因子
+            elif factor_name == "vol_garch":
+                return garch_volatility(close_series, 20)
+                
+            elif factor_name == "vol_regime":
+                regime, _ = volatility_regime(close_series, volume_series, 20)
+                return regime
+                
+            # 量价联合因子
+            elif factor_name == "volume_price_corr":
+                return volume_price_correlation(close_series, volume_series, 20)
+                
+            # 增强动量因子
+            elif factor_name == "momentum_adaptive":
+                return adaptive_momentum(close_series, volume_series, 20)
+                
+            elif factor_name == "momentum_regime":
+                return momentum_regime(close_series, volume_series, 20)
+                
+            elif factor_name == "momentum_quality":
+                return momentum_quality(close_series, 20)
+                
+            # 均线比率因子
+            elif factor_name.endswith("_ratio"):
+                if "price_ma" in factor_name:
+                    window = int(factor_name.split("_")[2]) 
+                    ma = rolling_mean(close_series, window)
+                    return close_series[0] / ma if ma > 0 else None
+                    
+                elif "volume_ma" in factor_name:
+                    window = int(factor_name.split("_")[2])
+                    ma = rolling_mean(volume_series, window) 
+                    return volume_series[0] / ma if ma > 0 else None
+            
+            return None
+            
+        except Exception as e:
+            print(f"Error computing factor {factor_name}: {str(e)}")
+            return None
+
+    def compute_all_factors(self,
+                          close_series: Sequence[float],
+                          volume_series: Sequence[float]) -> Dict[str, float]:
+        """计算所有扩展因子值
+        
+        Args:
+            close_series: 收盘价序列，从新到旧排序
+            volume_series: 成交量序列，从新到旧排序
+            
+        Returns:
+            因子名称到因子值的映射字典
+        """
+        results = {}
+        
+        for factor_name in self.factor_specs:
+            value = self.compute_factor(factor_name, close_series, volume_series)
+            if value is not None:
+                results[factor_name] = value
+                
+        return results
+    def normalize_factors(self, factors: Dict[str, float]) -> Dict[str, float]:
+        """标准化因子值到[-1,1]区间
+        
+        Args:
+            factors: 原始因子值字典
+            
+        Returns:
+            标准化后的因子值字典
+        """
+        results = {}
+        for name, value in factors.items():
+            if value is not None:
+                results[name] = normalize(value)
+        return results

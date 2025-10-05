@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, date, timezone
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
@@ -12,7 +13,9 @@ from app.utils.data_access import DataBroker
 from app.utils.db import db_session
 from app.utils.logging import get_logger
 # 导入扩展因子模块
-from app.features.extended_factors import compute_extended_factor_values
+from app.features.extended_factors import ExtendedFactors
+# 导入因子验证功能
+from app.features.validation import check_data_sufficiency, detect_outliers
 
 
 LOGGER = get_logger(__name__)
@@ -294,9 +297,12 @@ def _compute_batch_factors(
             
             if values:
                 # 检测并处理异常值
-                values = _detect_and_handle_outliers(values, ts_code)
-                batch_results.append((ts_code, values))
-                validation_stats["success"] += 1
+                cleaned_values = detect_outliers(values, ts_code, trade_date)
+                if cleaned_values:
+                    batch_results.append((ts_code, cleaned_values))
+                    validation_stats["success"] += 1
+                else:
+                    validation_stats["outliers"] += 1
             else:
                 validation_stats["skipped"] += 1
         except Exception as e:
@@ -318,21 +324,42 @@ def _check_data_availability(
     specs: Sequence[FactorSpec],
 ) -> bool:
     """检查证券数据是否足够计算所有请求的因子"""
-    # 获取最小需要的数据天数
-    min_days = 1  # 至少需要当天的数据
-    for spec in specs:
-        if spec.window > min_days:
-            min_days = spec.window
+    # 检查所需的最大窗口
+    close_windows = [spec.window for spec in specs if spec.name.startswith(("mom_", "volat_"))]
+    turnover_windows = [spec.window for spec in specs if spec.name.startswith("turn_")]
+    max_close_window = max(close_windows) if close_windows else 0
+    max_turn_window = max(turnover_windows) if turnover_windows else 0
     
-    # 检查基本数据是否存在
-    basic_data = broker.fetch_latest(
+    # 获取时间序列数据
+    close_series = _fetch_series_values(broker, "daily", "close", ts_code, trade_date, max_close_window)
+    if max_close_window > 0 and not check_data_sufficiency(
+        close_series, max_close_window, "close", ts_code, trade_date
+    ):
+        return False
+        
+    turnover_series = _fetch_series_values(
+        broker, "daily_basic", "turnover_rate", ts_code, trade_date, max_turn_window
+    )
+    if max_turn_window > 0 and not check_data_sufficiency(
+        turnover_series, max_turn_window, "turnover_rate", ts_code, trade_date
+    ):
+        return False
+    
+    # 检查快照数据
+    latest_fields = broker.fetch_latest(
         ts_code,
         trade_date,
-        ["daily.close", "daily_basic.turnover_rate"],
+        ["daily.close", "daily_basic.turnover_rate", "daily_basic.pe", "daily_basic.pb"]
     )
-    
-    # 检查时间序列数据是否足够
-    close_check = broker.fetch_series("daily", "close", ts_code, trade_date, min_days)
+    required_fields = {"daily.close", "daily_basic.turnover_rate"}
+    for field in required_fields:
+        if latest_fields.get(field) is None:
+            LOGGER.warning(
+                "缺少必需字段 field=%s ts_code=%s date=%s",
+                field, ts_code, trade_date,
+                extra=LOG_EXTRA
+            )
+            return False
     
     return (
         bool(basic_data.get("daily.close")) and 
@@ -485,9 +512,8 @@ def _compute_security_factors(
             )
     
     # 计算扩展因子值
-    extended_factors = compute_extended_factor_values(
-        close_series, volume_series, turnover_series, latest_fields
-    )
+    calculator = ExtendedFactors()
+    extended_factors = calculator.compute_all_factors(close_series, volume_series)
     results.update(extended_factors)
     
     # 确保返回结果不为空
