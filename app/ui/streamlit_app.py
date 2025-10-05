@@ -1254,6 +1254,12 @@ def render_log_viewer() -> None:
                 LOGGER.exception("日志对比失败", extra=LOG_EXTRA)
                 st.error(f"日志对比分析失败：{e}")
 
+    return
+
+
+def render_backtest_review() -> None:
+    """渲染回测执行、调参与结果复盘页面。"""
+    st.header("回测与复盘")
     cfg = get_config()
     default_start, default_end = _default_backtest_range(window_days=60)
     LOGGER.debug(
@@ -2016,14 +2022,16 @@ def render_settings() -> None:
         st.success("设置已保存，仅在当前会话生效。")
 
     st.write("新闻源开关与数据库备份将在此配置。")
+    st.caption("提示：LLM 设置已迁移至单独的标签页。")
 
-    st.divider()
+
+def render_llm_settings() -> None:
+    cfg = get_config()
     st.subheader("LLM 设置")
     providers = cfg.llm_providers
     provider_keys = sorted(providers.keys())
     st.caption("先在 Provider 中维护基础连接（URL、Key、模型），再为全局与各部门设置个性化参数。")
 
-    # Provider management -------------------------------------------------
     provider_select_col, provider_manage_col = st.columns([3, 1])
     if provider_keys:
         try:
@@ -2066,7 +2074,7 @@ def render_settings() -> None:
         title_val = st.text_input("备注名称", value=provider_cfg.title or "", key=title_key)
         base_val = st.text_input("Base URL", value=provider_cfg.base_url or "", key=base_key, help="调用地址，例如：https://api.openai.com")
         api_val = st.text_input("API Key", value=provider_cfg.api_key or "", key=api_key_key, type="password")
-        
+
         enabled_val = st.checkbox("启用", value=provider_cfg.enabled, key=enabled_key)
         mode_val = st.selectbox("模式", options=["openai", "ollama"], index=0 if provider_cfg.mode == "openai" else 1, key=mode_key)
         st.markdown("可用模型：")
@@ -2074,7 +2082,6 @@ def render_settings() -> None:
             st.code("\n".join(provider_cfg.models), language="text")
         else:
             st.info("尚未获取模型列表，可点击下方按钮自动拉取。")
-        # ADD: show cache last updated if available
         try:
             cache_key = f"{selected_provider}|{(base_val or '').strip()}"
             entry = _MODEL_CACHE.get(cache_key)
@@ -2262,7 +2269,6 @@ def render_settings() -> None:
             st.success("全局 LLM 配置已保存。")
             st.json(llm_config_snapshot())
 
-    # Department configuration -------------------------------------------
     st.markdown("##### 部门配置")
     dept_settings = cfg.departments or {}
     dept_rows = [
@@ -2381,7 +2387,6 @@ def render_settings() -> None:
         st.rerun()
 
     st.caption("部门配置存储为独立 LLM 参数，执行时会自动套用对应 Provider 的连接信息。")
-
 
 def render_tests() -> None:
     LOGGER.info("渲染自检页面", extra=LOG_EXTRA)
@@ -2802,26 +2807,35 @@ def main() -> None:
             st.error(f"❌ 自动数据更新失败：{exc}")
     
     render_global_dashboard()
-    tabs = st.tabs(["今日计划", "回测与复盘", "数据与设置", "自检测试"])
-    LOGGER.debug("Tabs 初始化完成：%s", ["今日计划", "回测与复盘", "数据与设置", "自检测试"], extra=LOG_EXTRA)
+    tabs = st.tabs(["今日计划", "回测与复盘", "日志钻取", "数据与设置", "自检测试"])
+    LOGGER.debug(
+        "Tabs 初始化完成：%s",
+        ["今日计划", "回测与复盘", "日志钻取", "数据与设置", "自检测试"],
+        extra=LOG_EXTRA,
+    )
     with tabs[0]:
         render_today_plan()
     with tabs[1]:
-        render_log_viewer()
+        render_backtest_review()
     with tabs[2]:
+        render_log_viewer()
+    with tabs[3]:
         st.header("系统设置")
-        settings_tabs = st.tabs(["基本配置", "投资组合", "数据源"])
-        
+        settings_tabs = st.tabs(["基本配置", "LLM 设置", "投资组合", "数据源"])
+
         with settings_tabs[0]:
             render_settings()
-            
+
         with settings_tabs[1]:
+            render_llm_settings()
+
+        with settings_tabs[2]:
             from app.ui.portfolio_config import render_portfolio_config
             render_portfolio_config()
-            
-        with settings_tabs[2]:
+
+        with settings_tabs[3]:
             render_data_settings()
-    with tabs[3]:
+    with tabs[4]:
         render_tests()
 
 
