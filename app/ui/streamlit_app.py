@@ -452,7 +452,7 @@ def render_today_plan() -> None:
     batch_symbols = st.multiselect("批量重评估（可多选）", symbols, default=[])
     
     # 一键重评估所有标的按钮
-    if st.button("一键重评估所有标的", type="primary", use_container_width=True):
+    if st.button("一键重评估所有标的", type="primary", width='stretch'):
         with st.spinner("正在对所有标的进行重评估，请稍候..."):
             try:
                 # 解析交易日
@@ -831,6 +831,9 @@ def render_today_plan() -> None:
             
             # 显示新闻表格
             news_df = pd.DataFrame(news_data)
+            # 确保所有列都是字符串类型，避免PyArrow序列化错误
+            for col in news_df.columns:
+                news_df[col] = news_df[col].astype(str)
             st.dataframe(news_df, width='stretch', hide_index=True)
             
             # 添加新闻详情展开视图
@@ -1139,8 +1142,11 @@ def render_log_viewer() -> None:
                     # 将sqlite3.Row对象转换为字典列表
                     rows_dict = [{key: row[key] for key in row.keys()} for row in rows]
                     log_df = pd.DataFrame(rows_dict)
-                    # 格式化时间戳
+                    # 格式化时间戳并确保数据类型一致
                     log_df["ts"] = pd.to_datetime(log_df["ts"]).dt.strftime("%Y-%m-%d %H:%M:%S")
+                    # 确保所有列都是字符串类型，避免PyArrow序列化错误
+                    for col in log_df.columns:
+                        log_df[col] = log_df[col].astype(str)
                 else:
                     log_df = pd.DataFrame(columns=["ts", "stage", "level", "msg"])
                 
@@ -1154,8 +1160,7 @@ def render_log_viewer() -> None:
                         "stage": st.column_config.TextColumn("执行阶段"),
                         "level": st.column_config.TextColumn("日志级别"),
                         "msg": st.column_config.TextColumn("日志消息", width="large")
-                    },
-                    use_container_width=True
+                    }
                 )
                 
                 # 下载功能
@@ -1218,6 +1223,12 @@ def render_log_viewer() -> None:
                     df2 = pd.DataFrame(logs2, columns=["level", "count"])
                     df2["date"] = compare_date2.strftime("%Y-%m-%d")
                     
+                    # 确保所有列的数据类型一致，避免PyArrow序列化错误
+                    for df in [df1, df2]:
+                        for col in df.columns:
+                            if col != "level":  # level列保持字符串类型
+                                df[col] = df[col].astype(object)
+                    
                     compare_df = pd.concat([df1, df2])
                     
                     # 绘制对比图表
@@ -1229,7 +1240,7 @@ def render_log_viewer() -> None:
                         barmode="group",
                         title=f"日志级别分布对比 ({compare_date1} vs {compare_date2})"
                     )
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
                     
                     # 显示详细对比表格
                     st.write("日志统计对比：")
@@ -1898,7 +1909,7 @@ def render_log_viewer() -> None:
                     fig.update_layout(height=300, margin=dict(l=10, r=10, t=30, b=10))
                     if use_log_y:
                         fig.update_yaxes(type="log")
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
                     # ADD: export pivot
                     try:
                         csv_buf = pivot.reset_index()
@@ -2601,6 +2612,15 @@ def render_tests() -> None:
         "amount": "成交额(千元)",
     })
     df_reset["成交额(千元)"] = df_reset["成交额(千元)"] / 1000
+    
+    # 确保所有列的数据类型正确，避免PyArrow序列化错误
+    numeric_columns = ["开盘价", "最高价", "最低价", "收盘价", "成交量(手)", "成交额(千元)"]
+    for col in numeric_columns:
+        if col in df_reset.columns:
+            df_reset[col] = pd.to_numeric(df_reset[col], errors='coerce')
+    
+    # 确保日期列是datetime类型
+    df_reset["交易日"] = pd.to_datetime(df_reset["交易日"])
 
     candle_fig = go.Figure(
         data=[
@@ -2615,7 +2635,7 @@ def render_tests() -> None:
         ]
     )
     candle_fig.update_layout(height=420, margin=dict(l=10, r=10, t=40, b=10))
-    st.plotly_chart(candle_fig, use_container_width=True)
+    st.plotly_chart(candle_fig, width='stretch')
 
     vol_fig = px.bar(
         df_reset,
@@ -2625,7 +2645,7 @@ def render_tests() -> None:
         title="成交量",
     )
     vol_fig.update_layout(height=280, margin=dict(l=10, r=10, t=40, b=10))
-    st.plotly_chart(vol_fig, use_container_width=True)
+    st.plotly_chart(vol_fig, width='stretch')
 
     amt_fig = px.bar(
         df_reset,
@@ -2635,9 +2655,11 @@ def render_tests() -> None:
         title="成交额",
     )
     amt_fig.update_layout(height=280, margin=dict(l=10, r=10, t=40, b=10))
-    st.plotly_chart(amt_fig, use_container_width=True)
+    st.plotly_chart(amt_fig, width='stretch')
 
     df_reset["月份"] = df_reset["交易日"].dt.to_period("M").astype(str)
+    # 确保收盘价列是数值类型
+    df_reset["收盘价"] = pd.to_numeric(df_reset["收盘价"], errors='coerce')
     box_fig = px.box(
         df_reset,
         x="月份",
@@ -2646,7 +2668,7 @@ def render_tests() -> None:
         title="月度收盘价分布",
     )
     box_fig.update_layout(height=320, margin=dict(l=10, r=10, t=40, b=10))
-    st.plotly_chart(box_fig, use_container_width=True)
+    st.plotly_chart(box_fig, width='stretch')
 
     st.caption("提示：成交量单位为手，成交额以千元显示。箱线图按月展示收盘价分布。")
     st.dataframe(df_reset.tail(20), width='stretch')
