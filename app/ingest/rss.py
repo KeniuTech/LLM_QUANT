@@ -18,6 +18,8 @@ import hashlib
 import random
 import time
 
+from app.ingest.entity_recognition import company_mapper, initialize_company_mapping
+
 try:  # pragma: no cover - optional dependency at runtime
     import feedparser  # type: ignore[import-not-found]
 except ImportError:  # pragma: no cover - graceful fallback
@@ -96,6 +98,15 @@ class RssFeedConfig:
 
 
 @dataclass
+class StockMention:
+    """A mention of a stock in text."""
+    matched_text: str
+    ts_code: str
+    match_type: str  # 'code', 'full_name', 'short_name', 'alias'
+    context: str     # 相关的上下文片段
+    confidence: float  # 匹配的置信度
+
+@dataclass
 class RssItem:
     """Structured representation of an RSS entry."""
 
@@ -106,8 +117,214 @@ class RssItem:
     summary: str
     source: str
     ts_codes: List[str] = field(default_factory=list)
-    industries: List[str] = field(default_factory=list)  # 新增：相关行业列表
-    important_keywords: List[str] = field(default_factory=list)  # 新增：重要关键词列表
+    stock_mentions: List[StockMention] = field(default_factory=list)
+    industries: List[str] = field(default_factory=list)
+    important_keywords: List[str] = field(default_factory=list)
+    
+    def __post_init__(self):
+        """Initialize company mapper if not already initialized."""
+        # 测试环境下跳过数据库初始化
+        if not hasattr(self, '_skip_db_init'):  # 仅在非测试环境下初始化
+            from app.utils.db import db_session
+            
+            # 如果company_mapper还没有数据，初始化它
+            if not company_mapper.name_to_code:
+                with db_session() as conn:
+                    initialize_company_mapping(conn)
+    
+    def extract_entities(self) -> None:
+        """Extract and validate entity mentions from title and summary."""
+        # 分别处理标题和摘要
+        title_matches = company_mapper.find_codes(self.title)
+        summary_matches = company_mapper.find_codes(self.summary)
+        
+        # 按优先级合并去重后的匹配
+        code_best_matches = {}  # ts_code -> (matched_text, match_type, is_title, context)
+        
+        # 优先级顺序: 代码 > 全称 > 简称 > 别名
+        priority = {'code': 0, 'full_name': 1, 'short_name': 2, 'alias': 3}
+        
+        for matches, text, is_title in [(title_matches, self.title, True), 
+                                      (summary_matches, self.summary, False)]:
+            for matched_text, ts_code, match_type in matches:
+                # 提取上下文
+                context = self._extract_context(text, matched_text)
+                
+                # 如果是新代码或优先级更高的匹配
+                if (ts_code not in code_best_matches or 
+                    priority[match_type] < priority[code_best_matches[ts_code][1]]):
+                    code_best_matches[ts_code] = (matched_text, match_type, is_title, context)
+        
+        # 创建股票提及列表
+        for ts_code, (matched_text, match_type, is_title, context) in code_best_matches.items():
+            confidence = self._calculate_confidence(match_type, matched_text, context, is_title)
+            
+            mention = StockMention(
+                matched_text=matched_text,
+                ts_code=ts_code,
+                match_type=match_type,
+                context=context,
+                confidence=confidence
+            )
+            self.stock_mentions.append(mention)
+        
+        # 更新ts_codes列表，只包含高置信度的匹配
+        self.ts_codes = list(set(
+            mention.ts_code
+            for mention in self.stock_mentions
+            if mention.confidence > 0.7  # 只保留高置信度的匹配
+        ))
+        
+        # 提取行业关键词
+        self.extract_industries()
+        
+        # 提取重要关键词
+        self.extract_important_keywords()
+        
+    def _extract_context(self, text: str, matched_text: str) -> str:
+        """提取匹配文本的上下文，尽量提取完整的句子."""
+        # 找到匹配文本的位置
+        start_pos = text.find(matched_text)
+        if start_pos == -1:
+            return ""
+            
+        # 向前找到句子开始（句号、问号、感叹号或换行符之后）
+        sent_start = start_pos
+        while sent_start > 0:
+            if text[sent_start-1] in '。？！\n':
+                break
+            sent_start -= 1
+            
+        # 向后找到句子结束
+        sent_end = start_pos + len(matched_text)
+        while sent_end < len(text):
+            if text[sent_end] in '。？！\n':
+                sent_end += 1
+                break
+            sent_end += 1
+            
+        # 如果上下文太长，则截取固定长度
+        context = text[sent_start:sent_end].strip()
+        if len(context) > 100:  # 最大上下文长度
+            start = max(0, start_pos - 30)
+            end = min(len(text), start_pos + len(matched_text) + 30)
+            context = text[start:end].strip()
+            
+        return context
+        
+    def extract_industries(self) -> None:
+        """从新闻标题和摘要中提取行业关键词."""
+        content = f"{self.title} {self.summary}".lower()
+        found_industries = set()
+        
+        # 对每个行业检查其关键词
+        for industry, keywords in INDUSTRY_KEYWORDS.items():
+            # 如果找到任意关键词，认为属于该行业
+            if any(keyword.lower() in content for keyword in keywords):
+                found_industries.add(industry)
+                
+        self.industries = list(found_industries)
+        
+    def extract_important_keywords(self) -> None:
+        """提取重要关键词，包括积极/消极情感词和特定事件."""
+        content = f"{self.title} {self.summary}".lower()
+        found_keywords = set()
+        
+        # 1. 检查积极关键词
+        for keyword in POSITIVE_KEYWORDS:
+            if keyword.lower() in content:
+                found_keywords.add(f"+{keyword}")  # 加前缀表示积极
+                
+        # 2. 检查消极关键词
+        for keyword in NEGATIVE_KEYWORDS:
+            if keyword.lower() in content:
+                found_keywords.add(f"-{keyword}")  # 加前缀表示消极
+                
+        # 3. 检查特定事件关键词
+        event_keywords = {
+            # 公司行为
+            "收购": "M&A",
+            "并购": "M&A",
+            "重组": "重组",
+            "分拆": "分拆",
+            "上市": "IPO",
+            # 财务事件
+            "业绩": "业绩",
+            "亏损": "业绩预警",
+            "盈利": "业绩预增",
+            "分红": "分红",
+            "回购": "回购",
+            # 监管事件
+            "立案": "监管",
+            "调查": "监管",
+            "问询": "监管",
+            "处罚": "处罚",
+            # 重大项目
+            "中标": "中标",
+            "签约": "签约",
+            "战略合作": "合作",
+        }
+        
+        for trigger, event in event_keywords.items():
+            if trigger in content:
+                found_keywords.add(f"#{event}")  # 加前缀表示事件
+                
+        self.important_keywords = list(found_keywords)
+        
+    def _calculate_confidence(self, match_type: str, matched_text: str, context: str, is_title: bool = False) -> float:
+        """计算实体匹配的置信度.
+        
+        考虑以下因素：
+        1. 匹配类型的基础置信度
+        2. 实体在文本中的位置（标题/开头更重要）
+        3. 上下文关键词
+        4. 股票相关动词
+        5. 实体的完整性
+        """
+        # 基础置信度
+        base_confidence = {
+            'code': 0.9,      # 直接的股票代码匹配
+            'full_name': 0.85,# 完整公司名称匹配
+            'short_name': 0.7,# 公司简称匹配
+            'alias': 0.6      # 别名匹配
+        }.get(match_type, 0.5)
+        
+        confidence = base_confidence
+        context_lower = context.lower()
+        
+        # 1. 位置加权
+        if is_title:
+            confidence += 0.1
+        if context.startswith(matched_text):
+            confidence += 0.05
+            
+        # 2. 实体完整性检查
+        if match_type == 'code' and '.' in matched_text:  # 完整股票代码（带市场后缀）
+            confidence += 0.05
+        elif match_type == 'full_name' and any(suffix in matched_text for suffix in ["股份有限公司", "有限公司"]):
+            confidence += 0.05
+            
+        # 3. 上下文关键词
+        context_bonus = 0.0
+        corporate_terms = ["公司", "集团", "企业", "上市", "控股", "总部"]
+        if any(term in context_lower for term in corporate_terms):
+            context_bonus += 0.1
+            
+        # 4. 股票相关动词
+        stock_verbs = ["发布", "公告", "披露", "表示", "报告", "投资", "回购", "增持", "减持"]
+        if any(verb in context_lower for verb in stock_verbs):
+            context_bonus += 0.05
+            
+        # 5. 财务/业务相关词汇
+        business_terms = ["业绩", "营收", "利润", "股价", "市值", "经营", "产品", "服务", "战略"]
+        if any(term in context_lower for term in business_terms):
+            context_bonus += 0.05
+            
+        # 限制上下文加成的最大值
+        confidence += min(context_bonus, 0.2)
+            
+        # 确保置信度在0-1之间
+        return min(1.0, max(0.0, confidence))
 
 
 DEFAULT_RSS_SOURCES: Tuple[RssFeedConfig, ...] = ()
@@ -255,7 +472,7 @@ def _fetch_feed_items(
 
 
 def deduplicate_items(items: Iterable[RssItem]) -> List[RssItem]:
-    """Drop duplicate stories by link/id fingerprint."""
+    """Drop duplicate stories by link/id fingerprint and process entities."""
 
     seen = set()
     unique: List[RssItem] = []
@@ -264,7 +481,14 @@ def deduplicate_items(items: Iterable[RssItem]) -> List[RssItem]:
         if key in seen:
             continue
         seen.add(key)
-        unique.append(item)
+        
+        # 提取实体和相关信息
+        item.extract_entities()
+        
+        # 如果找到了相关股票，则保留这条新闻
+        if item.stock_mentions:
+            unique.append(item)
+            
     return unique
 
 
