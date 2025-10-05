@@ -28,13 +28,13 @@ class DataAccessConfig:
             start_ts = time.strptime(start_date, "%Y%m%d")
             if end_date:
                 end_ts = time.strptime(end_date, "%Y%m%d")
-                days = (time.mktime(end_ts) - time.mktime(start_ts)) / (24 * 3600)
-                if days > self.max_history_days:
-                    errors.append(
-                        f"Date range exceeds max {self.max_history_days} days"
-                    )
-                if days < 0:
+                delta_days = (time.mktime(end_ts) - time.mktime(start_ts)) / (24 * 3600)
+                if delta_days < 0:
                     errors.append("End date before start date")
+                elif delta_days > self.max_history_days:
+                    errors.append(
+                        f"Date range ({int(delta_days)} days) exceeds max {self.max_history_days} days"
+                    )
         except ValueError:
             errors.append("Invalid date format (expected YYYYMMDD)")
 
