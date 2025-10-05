@@ -1995,34 +1995,98 @@ def render_backtest_review() -> None:
             st.info("请选择至少一个配置进行对比。")
 
 
-def render_settings() -> None:
-    LOGGER.info("渲染设置页面", extra=LOG_EXTRA)
-    st.header("数据与设置")
+def render_config_overview() -> None:
+    """Render a concise overview of persisted configuration values."""
+
+    LOGGER.info("渲染配置概览页", extra=LOG_EXTRA)
     cfg = get_config()
-    LOGGER.debug("当前 TuShare Token 是否已配置=%s", bool(cfg.tushare_token), extra=LOG_EXTRA)
-    
-    # 基础配置
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        token = st.text_input("TuShare Token", value=cfg.tushare_token or "", type="password")
-    with col2:
-        auto_update = st.checkbox(
-            "自动更新数据", 
-            value=cfg.auto_update_data, 
-            help="勾选后，每次启动程序将自动执行Tushare和RSS数据拉取"
+
+    st.subheader("核心配置概览")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("决策方式", cfg.decision_method.upper())
+    col2.metric("自动更新数据", "启用" if cfg.auto_update_data else "关闭")
+    col3.metric("数据更新间隔(天)", cfg.data_update_interval)
+
+    col4, col5, col6 = st.columns(3)
+    col4.metric("强制刷新", "开启" if cfg.force_refresh else "关闭")
+    col5.metric("TuShare Token", "已配置" if cfg.tushare_token else "未配置")
+    col6.metric("配置文件", cfg.data_paths.config_file.name)
+    st.caption(f"配置文件路径：{cfg.data_paths.config_file}")
+
+    st.divider()
+    st.subheader("RSS 数据源状态")
+    rss_sources = cfg.rss_sources or {}
+    if rss_sources:
+        rows: List[Dict[str, object]] = []
+        for name, payload in rss_sources.items():
+            if isinstance(payload, dict):
+                rows.append(
+                    {
+                        "名称": name,
+                        "启用": "是" if payload.get("enabled", True) else "否",
+                        "URL": payload.get("url", "-"),
+                        "关键词数": len(payload.get("keywords", []) or []),
+                    }
+                )
+            elif isinstance(payload, bool):
+                rows.append(
+                    {
+                        "名称": name,
+                        "启用": "是" if payload else "否",
+                        "URL": "-",
+                        "关键词数": 0,
+                    }
+                )
+        if rows:
+            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+        else:
+            st.info("未配置 RSS 数据源。")
+    else:
+        st.info("未在配置文件中找到 RSS 数据源。")
+
+    st.divider()
+    st.subheader("部门配置")
+    dept_rows: List[Dict[str, object]] = []
+    for code, dept in cfg.departments.items():
+        dept_rows.append(
+            {
+                "部门": dept.title or code,
+                "代码": code,
+                "权重": dept.weight,
+                "LLM 策略": dept.llm.strategy,
+                "模板": dept.prompt_template_id or f"{code}_dept",
+                "模板版本": dept.prompt_template_version or "(激活版本)",
+            }
         )
+    if dept_rows:
+        st.dataframe(pd.DataFrame(dept_rows), hide_index=True, width="stretch")
+    else:
+        st.info("尚未配置任何部门。")
 
-    if st.button("保存设置"):
-        LOGGER.info("保存设置按钮被点击", extra=LOG_EXTRA)
-        cfg.tushare_token = token.strip() or None
-        cfg.auto_update_data = auto_update
-        LOGGER.info("TuShare Token 更新，是否为空=%s", cfg.tushare_token is None, extra=LOG_EXTRA)
-        LOGGER.info("自动更新数据设置=%s", cfg.auto_update_data, extra=LOG_EXTRA)
-        save_config()
-        st.success("设置已保存，仅在当前会话生效。")
+    st.divider()
+    st.subheader("LLM 成本控制")
+    cost = cfg.llm_cost
+    col_a, col_b, col_c, col_d = st.columns(4)
+    col_a.metric("成本控制", "启用" if cost.enabled else "关闭")
+    col_b.metric("小时预算($)", f"{cost.hourly_budget:.2f}")
+    col_c.metric("日预算($)", f"{cost.daily_budget:.2f}")
+    col_d.metric("月预算($)", f"{cost.monthly_budget:.2f}")
 
-    st.write("新闻源开关与数据库备份将在此配置。")
-    st.caption("提示：LLM 设置已迁移至单独的标签页。")
+    if cost.model_weights:
+        weight_rows = (
+            pd.DataFrame(
+                [
+                    {"模型": model, "占比上限": f"{limit * 100:.0f}%"}
+                    for model, limit in cost.model_weights.items()
+                ]
+            )
+        )
+        st.dataframe(weight_rows, hide_index=True, width="stretch")
+    else:
+        st.caption("未配置模型占比限制。")
+
+    st.divider()
+    st.caption("提示：数据源、LLM 及投资组合设置可在对应标签页中调整。")
 
 
 def render_llm_settings() -> None:
@@ -2821,10 +2885,10 @@ def main() -> None:
         render_log_viewer()
     with tabs[3]:
         st.header("系统设置")
-        settings_tabs = st.tabs(["基本配置", "LLM 设置", "投资组合", "数据源"])
+        settings_tabs = st.tabs(["配置概览", "LLM 设置", "投资组合", "数据源"])
 
         with settings_tabs[0]:
-            render_settings()
+            render_config_overview()
 
         with settings_tabs[1]:
             render_llm_settings()
