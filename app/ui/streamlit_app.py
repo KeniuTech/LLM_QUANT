@@ -2033,34 +2033,13 @@ def render_settings() -> None:
         title_key = f"provider_title_{selected_provider}"
         base_key = f"provider_base_{selected_provider}"
         api_key_key = f"provider_api_{selected_provider}"
-        default_model_key = f"provider_default_model_{selected_provider}"
         mode_key = f"provider_mode_{selected_provider}"
-        temp_key = f"provider_temp_{selected_provider}"
-        timeout_key = f"provider_timeout_{selected_provider}"
-        prompt_key = f"provider_prompt_{selected_provider}"
         enabled_key = f"provider_enabled_{selected_provider}"
 
         title_val = st.text_input("备注名称", value=provider_cfg.title or "", key=title_key)
         base_val = st.text_input("Base URL", value=provider_cfg.base_url or "", key=base_key, help="调用地址，例如：https://api.openai.com")
         api_val = st.text_input("API Key", value=provider_cfg.api_key or "", key=api_key_key, type="password")
         
-        # 添加缺失的表单字段
-        default_model_val = st.selectbox(
-            "默认模型", 
-            options=provider_cfg.models or [""], 
-            index=0 if not provider_cfg.models else (provider_cfg.models.index(provider_cfg.default_model) if provider_cfg.default_model in provider_cfg.models else 0),
-            key=f"provider_default_model_{selected_provider}"
-        )
-        temp_val = st.number_input("默认温度", value=provider_cfg.default_temperature, min_value=0.0, max_value=2.0, step=0.1, key=temp_key)
-        timeout_val = st.number_input(
-            "默认超时(秒)",
-            value=float(provider_cfg.default_timeout) if provider_cfg.default_timeout is not None else 30.0,
-            min_value=1.0,
-            max_value=300.0,
-            step=1.0,
-            key=timeout_key,
-        )
-        prompt_template_val = st.text_area("Prompt 模板", value=provider_cfg.prompt_template or "", key=prompt_key)
         enabled_val = st.checkbox("启用", value=provider_cfg.enabled, key=enabled_key)
         mode_val = st.selectbox("模式", options=["openai", "ollama"], index=0 if provider_cfg.mode == "openai" else 1, key=mode_key)
         st.markdown("可用模型：")
@@ -2099,13 +2078,6 @@ def render_settings() -> None:
             provider_cfg.title = title_val.strip()
             provider_cfg.base_url = base_val.strip()
             provider_cfg.api_key = api_val.strip() or None
-            if provider_cfg.models and default_model_val in provider_cfg.models:
-                provider_cfg.default_model = default_model_val
-            else:
-                provider_cfg.default_model = default_model_val
-            provider_cfg.default_temperature = float(temp_val)
-            provider_cfg.default_timeout = float(timeout_val)
-            provider_cfg.prompt_template = prompt_template_val.strip()
             provider_cfg.enabled = enabled_val
             provider_cfg.mode = mode_val
             providers[selected_provider] = provider_cfg
@@ -2114,7 +2086,6 @@ def render_settings() -> None:
             save_config()
             st.success("Provider 已保存。")
             st.session_state[title_key] = provider_cfg.title or ""
-            st.session_state[default_model_key] = provider_cfg.default_model or ""
 
         provider_in_use = (cfg.llm.primary.provider == selected_provider) or any(
             ep.provider == selected_provider for ep in cfg.llm.ensemble
