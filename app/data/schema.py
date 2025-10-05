@@ -10,6 +10,17 @@ from app.utils.db import db_session
 
 SCHEMA_STATEMENTS: Iterable[str] = (
     """
+    CREATE TABLE IF NOT EXISTS fetch_jobs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_type TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        error_msg TEXT,
+        metadata TEXT -- JSON object for additional info
+    );
+    """,
+    """
     CREATE TABLE IF NOT EXISTS stock_basic (
       ts_code TEXT PRIMARY KEY,
       symbol TEXT,
@@ -515,17 +526,32 @@ def _missing_tables() -> List[str]:
     return [name for name in REQUIRED_TABLES if name not in existing]
 
 
-def initialize_database() -> MigrationResult:
-    """Create tables and indexes required by the application."""
-
-    missing = _missing_tables()
-    if not missing:
-        return MigrationResult(executed=0, skipped=True, missing_tables=[])
-
-    executed = 0
-    with db_session() as conn:
-        cursor = conn.cursor()
+def initialize_database() -> None:
+    """Initialize the SQLite database with all required tables."""
+    with db_session() as session:
+        cursor = session.cursor()
+        
+        # 创建表
         for statement in SCHEMA_STATEMENTS:
-            cursor.executescript(statement)
-            executed += 1
-    return MigrationResult(executed=executed, skipped=False, missing_tables=missing)
+            try:
+                cursor.execute(statement)
+            except Exception as e:  # noqa: BLE001
+                print(f"初始化数据库时出错: {e}")
+                raise
+                
+        # 添加触发器以自动更新 updated_at 字段
+        try:
+            cursor.execute("""
+                CREATE TRIGGER IF NOT EXISTS update_fetch_jobs_timestamp
+                AFTER UPDATE ON fetch_jobs
+                BEGIN
+                    UPDATE fetch_jobs
+                    SET updated_at = CURRENT_TIMESTAMP
+                    WHERE id = NEW.id;
+                END;
+            """)
+        except Exception as e:  # noqa: BLE001
+            print(f"创建触发器时出错: {e}")
+            raise
+            
+        session.commit()

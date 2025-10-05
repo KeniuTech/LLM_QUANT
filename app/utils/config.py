@@ -40,6 +40,18 @@ class DataPaths:
 
 
 @dataclass
+class PortfolioSettings:
+    """Portfolio configuration settings."""
+    
+    initial_capital: float = 1000000  # 默认100万
+    currency: str = "CNY"  # 默认人民币
+    max_position: float = 0.2  # 单个持仓上限 20%
+    min_position: float = 0.02  # 单个持仓下限 2%
+    max_total_positions: int = 20  # 最大持仓数
+    max_sector_exposure: float = 0.35  # 行业敞口上限 35%
+
+
+@dataclass
 class AgentWeights:
     """Default weighting for decision agents."""
 
@@ -340,9 +352,11 @@ class AppConfig:
     agent_weights: AgentWeights = field(default_factory=AgentWeights)
     force_refresh: bool = False
     auto_update_data: bool = False
+    data_update_interval: int = 7  # 数据更新间隔（天）
     llm_providers: Dict[str, LLMProvider] = field(default_factory=_default_llm_providers)
     llm: LLMConfig = field(default_factory=LLMConfig)
     departments: Dict[str, DepartmentSettings] = field(default_factory=_default_departments)
+    portfolio: PortfolioSettings = field(default_factory=PortfolioSettings)
 
     def resolve_llm(self, route: Optional[str] = None) -> LLMConfig:
         return self.llm

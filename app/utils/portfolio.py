@@ -7,6 +7,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from .db import db_session
 from .logging import get_logger
+from .portfolio_init import get_portfolio_config
 
 LOGGER = get_logger(__name__)
 LOG_EXTRA = {"stage": "portfolio"}
@@ -169,8 +170,11 @@ class PortfolioSnapshot:
 
 
 def get_latest_snapshot() -> Optional[PortfolioSnapshot]:
-    """Fetch the most recent portfolio snapshot."""
-
+    """Fetch the most recent portfolio snapshot.
+    
+    Returns:
+        最新的投资组合快照，如果没有数据则返回初始快照（仅包含初始资金）
+    """
     sql = """
     SELECT trade_date, total_value, cash, invested_value, unrealized_pnl,
            realized_pnl, net_flow, exposure, notes, metadata
@@ -186,7 +190,22 @@ def get_latest_snapshot() -> Optional[PortfolioSnapshot]:
             return None
 
     if not row:
-        return None
+        # 如果没有快照，返回初始状态（只有初始资金）
+        config = get_portfolio_config()
+        initial_capital = config["initial_capital"]
+        return PortfolioSnapshot(
+            trade_date="",  # 空日期表示初始状态
+            total_value=initial_capital,
+            cash=initial_capital,
+            invested_value=0.0,
+            unrealized_pnl=0.0,
+            realized_pnl=0.0,
+            net_flow=0.0,
+            exposure=0.0,
+            notes="Initial portfolio state",
+            metadata={"initial_capital": initial_capital, "currency": config["currency"]},
+        )
+        
     return PortfolioSnapshot(
         trade_date=row["trade_date"],
         total_value=row["total_value"],

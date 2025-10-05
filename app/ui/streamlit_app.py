@@ -25,6 +25,7 @@ import streamlit as st
 from app.agents.base import AgentContext
 from app.agents.game import Decision
 from app.backtest.engine import BtConfig, run_backtest
+from app.ui.portfolio_config import render_portfolio_config
 from app.backtest.decision_env import DecisionEnv, ParameterSpec
 from app.data.schema import initialize_database
 from app.ingest.checker import run_boot_check
@@ -2667,9 +2668,78 @@ def render_tests() -> None:
                 st.write(response)
 
 
+def render_data_settings() -> None:
+    """渲染数据源配置界面."""
+    st.subheader("Tushare 数据源")
+    cfg = get_config()
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        tushare_token = st.text_input(
+            "Tushare Token",
+            value=cfg.tushare_token or "",
+            type="password",
+            help="从 tushare.pro 获取的 API token"
+        )
+        
+    with col2:
+        auto_update = st.checkbox(
+            "启动时自动更新数据",
+            value=cfg.auto_update_data,
+            help="启动应用时自动检查并更新数据"
+        )
+        
+    update_interval = st.slider(
+        "数据更新间隔(天)",
+        min_value=1,
+        max_value=30,
+        value=cfg.data_update_interval,
+        help="自动更新时检查的数据时间范围"
+    )
+    
+    if st.button("保存数据源配置"):
+        cfg.tushare_token = tushare_token
+        cfg.auto_update_data = auto_update
+        cfg.data_update_interval = update_interval
+        save_config(cfg)
+        st.success("数据源配置已更新！")
+        
+    st.divider()
+    st.subheader("数据更新记录")
+    
+    with db_session() as session:
+        df = pd.read_sql_query(
+            """
+            SELECT job_type, status, created_at, updated_at, error_msg
+            FROM fetch_jobs 
+            ORDER BY created_at DESC 
+            LIMIT 50
+            """,
+            session
+        )
+        
+    if not df.empty:
+        df["duration"] = (df["updated_at"] - df["created_at"]).dt.total_seconds().round(2)
+        df = df.drop(columns=["updated_at"])
+        df = df.rename(columns={
+            "job_type": "数据类型",
+            "status": "状态",
+            "created_at": "开始时间",
+            "error_msg": "错误信息",
+            "duration": "耗时(秒)"
+        })
+        st.dataframe(df, width='stretch')
+    else:
+        st.info("暂无数据更新记录")
+
+
 def main() -> None:
     LOGGER.info("初始化 Streamlit UI", extra=LOG_EXTRA)
     st.set_page_config(page_title="多智能体个人投资助理", layout="wide")
+    
+    # 确保数据库表已创建
+    from app.data.schema import initialize_database
+    initialize_database()
     
     # 检查是否需要自动更新数据
     cfg = get_config()
@@ -2713,7 +2783,18 @@ def main() -> None:
     with tabs[1]:
         render_log_viewer()
     with tabs[2]:
-        render_settings()
+        st.header("系统设置")
+        settings_tabs = st.tabs(["基本配置", "投资组合", "数据源"])
+        
+        with settings_tabs[0]:
+            render_settings()
+            
+        with settings_tabs[1]:
+            from app.ui.portfolio_config import render_portfolio_config
+            render_portfolio_config()
+            
+        with settings_tabs[2]:
+            render_data_settings()
     with tabs[3]:
         render_tests()
 

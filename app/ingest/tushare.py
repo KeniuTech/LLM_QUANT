@@ -227,6 +227,9 @@ def _fetch_paginated(endpoint: str, params: Dict[str, object], limit: int | None
     return merged
 
 
+from .job_logger import JobLogger
+
+
 @dataclass
 class FetchJob:
     name: str
@@ -1602,35 +1605,58 @@ def collect_data_coverage(start: date, end: date) -> Dict[str, Dict[str, object]
 
 
 def run_ingestion(job: FetchJob, include_limits: bool = True) -> None:
-    LOGGER.info("启动 TuShare 拉取任务：%s", job.name, extra=LOG_EXTRA)
-    try:
-        ensure_data_coverage(
-            job.start,
-            job.end,
-            ts_codes=job.ts_codes,
-            include_limits=include_limits,
-            include_extended=True,
-            force=True,
-        )
-    except Exception as exc:
-        alerts.add_warning("TuShare", f"拉取任务失败：{job.name}", str(exc))
-        raise
-    else:
-        alerts.clear_warnings("TuShare")
-        if job.granularity == "daily":
-            try:
+    """运行数据拉取任务。
+
+    Args:
+        job: 任务配置
+        include_limits: 是否包含涨跌停数据
+    """
+    with JobLogger("TuShare数据获取") as logger:
+        LOGGER.info("启动 TuShare 拉取任务：%s", job.name, extra=LOG_EXTRA)
+        
+        try:
+            # 拉取基础数据
+            ensure_data_coverage(
+                job.start,
+                job.end,
+                ts_codes=job.ts_codes,
+                include_limits=include_limits,
+                include_extended=True,
+                force=True,
+            )
+            
+            # 记录任务元数据
+            logger.update_metadata({
+                "name": job.name,
+                "start": str(job.start),
+                "end": str(job.end),
+                "codes": len(job.ts_codes) if job.ts_codes else 0
+            })
+            
+            alerts.clear_warnings("TuShare")
+            
+            # 对日线数据计算因子
+            if job.granularity == "daily":
                 LOGGER.info("开始计算因子：%s", job.name, extra=LOG_EXTRA)
-                compute_factor_range(
-                    job.start,
-                    job.end,
-                    ts_codes=job.ts_codes,
-                    skip_existing=False,
-                )
-            except Exception as exc:
-                alerts.add_warning("Factors", f"因子计算失败：{job.name}", str(exc))
-                LOGGER.exception("因子计算失败 job=%s", job.name, extra=LOG_EXTRA)
-                raise
-            else:
-                alerts.clear_warnings("Factors")
+                try:
+                    compute_factor_range(
+                        job.start,
+                        job.end,
+                        ts_codes=job.ts_codes,
+                        skip_existing=False,
+                    )
+                    alerts.clear_warnings("Factors")
+                except Exception as exc:
+                    LOGGER.exception("因子计算失败 job=%s", job.name, extra=LOG_EXTRA)
+                    alerts.add_warning("Factors", f"因子计算失败：{job.name}", str(exc))
+                    logger.update_status("failed", f"因子计算失败：{exc}")
+                    raise
                 LOGGER.info("因子计算完成：%s", job.name, extra=LOG_EXTRA)
+                alerts.clear_warnings("Factors")
+                
+        except Exception as exc:
+            LOGGER.exception("数据拉取失败 job=%s", job.name, extra=LOG_EXTRA)
+            alerts.add_warning("TuShare", f"拉取任务失败：{job.name}", str(exc))
+            logger.update_status("failed", f"数据拉取失败：{exc}")
+            raise
         LOGGER.info("任务 %s 完成", job.name, extra=LOG_EXTRA)
