@@ -21,6 +21,8 @@ import plotly.graph_objects as go
 import requests
 from requests.exceptions import RequestException
 import streamlit as st
+import numpy as np
+from collections import Counter
 
 from app.agents.base import AgentContext
 from app.agents.game import Decision
@@ -443,14 +445,95 @@ def render_today_plan() -> None:
         st.info("所选交易日暂无 agent_utils 记录。")
         return
 
-    default_ts = q.get("code", [symbols[0]])[0]
-    try:
-        default_ts_idx = symbols.index(default_ts)
-    except ValueError:
-        default_ts_idx = 0
-    ts_code = st.selectbox("标的", symbols, index=default_ts_idx)
-    # ADD: batch selection for re-evaluation
-    batch_symbols = st.multiselect("批量重评估（可多选）", symbols, default=[])
+    # ADD: 投资助理模式开关（不指定具体标的）
+    assistant_mode = st.checkbox(
+        "投资助理（不指定标的）",
+        value=False,
+        help="开启后不显示具体标的，展示基于候选投资池的组合级建议与汇总信息。",
+    )
+
+    if assistant_mode:
+        ts_code = None
+        batch_symbols = []
+        st.info("已开启投资助理模式：以下内容为组合级（去标的）建议，不包含任何具体标的代码。")
+        # 展示候选池聚合信息（不暴露具体代码）
+        try:
+            candidates = list_investment_pool(trade_date=trade_date)
+            if candidates:
+                scores = [float(item.score or 0.0) for item in candidates]
+                statuses = [item.status or "UNKNOWN" for item in candidates]
+                tags = []
+                rationales = []
+                for item in candidates:
+                    if getattr(item, "tags", None):
+                        tags.extend(item.tags)
+                    if getattr(item, "rationale", None):
+                        rationales.append(str(item.rationale))
+                cnt = Counter(statuses)
+                tag_cnt = Counter(tags)
+                st.subheader("候选池聚合概览（已匿名化）")
+                col_a, col_b, col_c = st.columns(3)
+                col_a.metric("候选数", f"{len(candidates)}")
+                col_b.metric("平均评分", f"{np.mean(scores):.3f}" if scores else "-")
+                col_c.metric("中位评分", f"{np.median(scores):.3f}" if scores else "-")
+
+                st.write("状态分布：")
+                st.json(dict(cnt))
+
+                if tag_cnt:
+                    st.write("常见标签（示例）：")
+                    st.json(dict(tag_cnt.most_common(10)))
+
+                if rationales:
+                    st.write("汇总理由（节选，不含代码）：")
+                    # 显示前三条去重理由摘要
+                    seen = set()
+                    excerpts = []
+                    for r in rationales:
+                        s = r.strip()
+                        if not s:
+                            continue
+                        if s in seen:
+                            continue
+                        seen.add(s)
+                        excerpts.append(s)
+                        if len(excerpts) >= 3:
+                            break
+                    for idx, ex in enumerate(excerpts, start=1):
+                        st.markdown(f"**理由 {idx}:** {ex}")
+
+                # 简单生成组合级建议（示例逻辑，可后续替换为更复杂策略）
+                avg_score = float(np.mean(scores)) if scores else 0.0
+                # 建议使用现金比例：基线 10%，根据平均评分上下调整，限制在[0, 30%]
+                suggest_pct = max(0.0, min(0.3, 0.10 + (avg_score - 0.5) * 0.2))
+                st.subheader("组合级建议（不指定标的）")
+                st.write(
+                    f"基于候选池平均评分 {avg_score:.3f}，建议今日用于新增买入的现金比例约为 {suggest_pct:.0%}。"
+                )
+                st.write(
+                    "建议分配思路：在候选池中挑选若干得分较高的标的按目标权重等比例分配，或以分批买入的方式分摊入场时点。"
+                )
+                if st.button("生成组合级操作建议（仅输出，不执行）"):
+                    st.success("已生成组合级建议（仅供参考）。")
+                    st.write({
+                        "候选数": len(candidates),
+                        "平均评分": avg_score,
+                        "建议新增买入比例": f"{suggest_pct:.0%}",
+                    })
+            else:
+                st.info("所选交易日暂无候选投资池数据。")
+        except Exception:
+            LOGGER.exception("加载候选池聚合信息失败", extra=LOG_EXTRA)
+            st.error("加载候选池数据时发生错误。")
+    else:
+        default_ts = q.get("code", [symbols[0]])[0]
+        try:
+            default_ts_idx = symbols.index(default_ts)
+        except ValueError:
+            default_ts_idx = 0
+        ts_code = st.selectbox("标的", symbols, index=default_ts_idx)
+        # ADD: batch selection for re-evaluation
+        batch_symbols = st.multiselect("批量重评估（可多选）", symbols, default=[])
     
     # 一键重评估所有标的按钮
     if st.button("一键重评估所有标的", type="primary", width='stretch'):
