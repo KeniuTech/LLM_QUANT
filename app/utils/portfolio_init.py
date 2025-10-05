@@ -1,7 +1,6 @@
 """Initialize portfolio database tables."""
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from .logging import get_logger
@@ -78,7 +77,7 @@ SCHEMA_STATEMENTS = [
         tags TEXT,  -- JSON array
         metadata TEXT,  -- JSON object
         PRIMARY KEY (trade_date, ts_code)
-    )
+    );
     """,
     
     # 数据获取任务表
@@ -91,7 +90,6 @@ SCHEMA_STATEMENTS = [
         updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
         error_msg TEXT,
         metadata TEXT  -- JSON object for additional info
-    )
     );
     """,
     

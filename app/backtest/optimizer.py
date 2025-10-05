@@ -131,6 +131,7 @@ def _metrics_to_dict(metrics: EpisodeMetrics) -> Dict[str, float | Dict[str, int
         "volatility": metrics.volatility,
         "sharpe_like": metrics.sharpe_like,
         "turnover": metrics.turnover,
+        "turnover_value": metrics.turnover_value,
         "trade_count": float(metrics.trade_count),
         "risk_count": float(metrics.risk_count),
     }

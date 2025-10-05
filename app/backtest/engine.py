@@ -704,6 +704,7 @@ class BacktestEngine:
             unrealized_pnl += (price - cost_basis) * qty
 
         nav = state.cash + market_value
+        turnover_ratio = daily_turnover / nav if nav else 0.0
         result.nav_series.append(
             {
                 "trade_date": trade_date_str,
@@ -713,6 +714,7 @@ class BacktestEngine:
                 "realized_pnl": state.realized_pnl,
                 "unrealized_pnl": unrealized_pnl,
                 "turnover": daily_turnover,
+                "turnover_ratio": turnover_ratio,
             }
         )
         if executed_trades:
@@ -817,10 +819,25 @@ class BacktestEngine:
                 )
             )
 
+        total_value = market_value + state.cash
+        turnover_ratio = daily_turnover / total_value if total_value else 0.0
         snapshot_metadata = {
             "holdings": len(state.holdings),
             "turnover_value": daily_turnover,
+            "turnover_ratio": turnover_ratio,
+            "trade_count": len(trades),
         }
+
+        exposure = (market_value / total_value) if total_value else 0.0
+        net_flow = 0.0
+        for trade in trades:
+            value = float(trade.get("value", 0.0) or 0.0)
+            fee = float(trade.get("fee", 0.0) or 0.0)
+            action = str(trade.get("action", "")).lower()
+            if action.startswith("buy"):
+                net_flow -= value + fee
+            elif action.startswith("sell"):
+                net_flow += value - fee
 
         with db_session() as conn:
             conn.execute(
@@ -836,8 +853,8 @@ class BacktestEngine:
                     market_value,
                     unrealized_pnl,
                     state.realized_pnl,
-                    None,
-                    None,
+                    net_flow,
+                    exposure,
                     None,
                     json.dumps(snapshot_metadata, ensure_ascii=False),
                 ),

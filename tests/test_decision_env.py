@@ -26,6 +26,7 @@ class _StubEngine:
                 "realized_pnl": 1.0,
                 "unrealized_pnl": 1.0,
                 "turnover": 20000.0,
+                "turnover_ratio": 0.2,
             }
         ]
         result.trades = [
@@ -65,14 +66,18 @@ def test_decision_env_returns_risk_metrics(monkeypatch):
     env = DecisionEnv(bt_config=cfg, parameter_specs=specs, baseline_weights={"A_mom": 0.5})
 
     monkeypatch.setattr("app.backtest.decision_env.BacktestEngine", _StubEngine)
+    monkeypatch.setattr(DecisionEnv, "_clear_portfolio_records", lambda self: None)
+    monkeypatch.setattr(DecisionEnv, "_fetch_portfolio_records", lambda self: ([], []))
 
     obs, reward, done, info = env.step([0.8])
 
     assert done is True
     assert "risk_count" in obs and obs["risk_count"] == 1.0
-    assert obs["turnover"] == pytest.approx(20000.0)
+    assert obs["turnover"] == pytest.approx(0.2)
+    assert obs["turnover_value"] == pytest.approx(20000.0)
     assert info["risk_events"][0]["reason"] == "limit_up"
     assert info["risk_breakdown"]["limit_up"] == 1
+    assert info["nav_series"][0]["turnover_ratio"] == pytest.approx(0.2)
     assert reward < obs["total_return"]
 
 
@@ -83,10 +88,11 @@ def test_default_reward_penalizes_metrics():
         volatility=0.05,
         nav_series=[],
         trades=[],
-        turnover=1000.0,
+        turnover=0.3,
+        turnover_value=5000.0,
         trade_count=0,
         risk_count=2,
         risk_breakdown={"foo": 2},
     )
     reward = DecisionEnv._default_reward(metrics)
-    assert reward == pytest.approx(0.1 - (0.5 * 0.2 + 0.05 * 2 + 0.00001 * 1000.0))
+    assert reward == pytest.approx(0.1 - (0.5 * 0.2 + 0.05 * 2 + 0.1 * 0.3))

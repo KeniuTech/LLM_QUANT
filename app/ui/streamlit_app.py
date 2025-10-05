@@ -1563,6 +1563,9 @@ def render_log_viewer() -> None:
                                         "weights": info.get("weights", {}),
                                         "nav_series": info.get("nav_series"),
                                         "trades": info.get("trades"),
+                                        "portfolio_snapshots": info.get("portfolio_snapshots"),
+                                        "portfolio_trades": info.get("portfolio_trades"),
+                                        "risk_breakdown": info.get("risk_breakdown"),
                                         "selected_agents": list(selected_agents),
                                         "action_values": list(action_values),
                                         "experiment_id": resolved_experiment_id,
@@ -1586,6 +1589,14 @@ def render_log_viewer() -> None:
                 col_metrics[1].metric("最大回撤", f"{observation.get('max_drawdown', 0.0):+.2%}")
                 col_metrics[2].metric("波动率", f"{observation.get('volatility', 0.0):+.2%}")
                 col_metrics[3].metric("奖励", f"{reward:+.4f}")
+
+                turnover_ratio = float(observation.get("turnover", 0.0) or 0.0)
+                turnover_value = float(observation.get("turnover_value", 0.0) or 0.0)
+                risk_count = float(observation.get("risk_count", 0.0) or 0.0)
+                col_metrics_extra = st.columns(3)
+                col_metrics_extra[0].metric("平均换手率", f"{turnover_ratio:.2%}")
+                col_metrics_extra[1].metric("成交额", f"{turnover_value:,.0f}")
+                col_metrics_extra[2].metric("风险事件数", f"{int(risk_count)}")
 
                 weights_dict = single_result.get("weights") or {}
                 if weights_dict:
@@ -1619,6 +1630,21 @@ def render_log_viewer() -> None:
                 if trades:
                     st.write("成交记录：")
                     st.dataframe(pd.DataFrame(trades), hide_index=True, width='stretch')
+
+                snapshots = single_result.get("portfolio_snapshots") or []
+                if snapshots:
+                    with st.expander("投资组合快照", expanded=False):
+                        st.dataframe(pd.DataFrame(snapshots), hide_index=True, width='stretch')
+
+                portfolio_trades = single_result.get("portfolio_trades") or []
+                if portfolio_trades:
+                    with st.expander("组合成交明细", expanded=False):
+                        st.dataframe(pd.DataFrame(portfolio_trades), hide_index=True, width='stretch')
+
+                risk_breakdown = single_result.get("risk_breakdown") or {}
+                if risk_breakdown:
+                    with st.expander("风险事件统计", expanded=False):
+                        st.json(risk_breakdown)
 
                 if st.button("清除单次调参结果", key="clear_decision_env_single"):
                     st.session_state.pop(_DECISION_ENV_SINGLE_RESULT_KEY, None)
