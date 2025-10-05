@@ -14,6 +14,7 @@ from app.utils.db import db_session
 from app.utils.logging import get_logger
 # 导入扩展因子模块
 from app.features.extended_factors import ExtendedFactors
+from app.features.sentiment_factors import SentimentFactors
 # 导入因子验证功能
 from app.features.validation import check_data_sufficiency, detect_outliers
 
@@ -77,6 +78,11 @@ DEFAULT_FACTORS: List[FactorSpec] = [
     # 市场状态因子
     FactorSpec("market_regime", 0),  # 市场状态因子
     FactorSpec("trend_strength", 0),  # 趋势强度因子
+    # 情绪因子
+    FactorSpec("sent_momentum", 20),  # 新闻情感动量
+    FactorSpec("sent_impact", 0),    # 新闻影响力
+    FactorSpec("sent_market", 20),   # 市场情绪指数
+    FactorSpec("sent_divergence", 0), # 行业情绪背离度
 ]
 
 
@@ -419,7 +425,10 @@ def _compute_security_factors(
     trade_date: str,
     specs: Sequence[FactorSpec],
 ) -> Dict[str, float | None]:
-    """计算单个证券的因子值"""
+    """计算单个证券的因子值
+    
+    包括基础因子、扩展因子和情绪因子的计算。
+    """
     # 确定所需的最大窗口大小
     close_windows = [spec.window for spec in specs if _factor_prefix(spec.name) in {"mom", "volat"}]
     turnover_windows = [spec.window for spec in specs if _factor_prefix(spec.name) == "turn"]

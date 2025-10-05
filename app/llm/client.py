@@ -4,9 +4,12 @@ from __future__ import annotations
 import json
 from collections import Counter
 from dataclasses import asdict
-from typing import Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 import requests
+
+from .context import ContextManager, Message
+from .templates import TemplateRegistry
 
 from app.utils.config import (
     DEFAULT_LLM_BASE_URLS,
@@ -247,11 +250,58 @@ def _normalize_response(text: str) -> str:
     return " ".join(text.strip().split())
 
 
-def run_llm(prompt: str, *, system: Optional[str] = None) -> str:
-    """Execute the globally configured LLM strategy with the given prompt."""
+def run_llm(
+    prompt: str, 
+    *,
+    system: Optional[str] = None,
+    context_id: Optional[str] = None,
+    template_id: Optional[str] = None,
+    template_vars: Optional[Dict[str, Any]] = None
+) -> str:
+    """Execute the globally configured LLM strategy with the given prompt.
+    
+    Args:
+        prompt: Raw prompt string or template variable if template_id is provided
+        system: Optional system message
+        context_id: Optional context ID for conversation tracking
+        template_id: Optional template ID to use
+        template_vars: Variables to use with the template
+    """
+    # Get config and prepare context
+    cfg = get_config()
+    if context_id:
+        context = ContextManager.get_context(context_id)
+        if not context:
+            context = ContextManager.create_context(context_id)
+    else:
+        context = None
 
-    settings = get_config().llm
-    return run_llm_with_config(settings, prompt, system=system)
+    # Apply template if specified
+    if template_id:
+        template = TemplateRegistry.get(template_id)
+        if not template:
+            raise ValueError(f"Template {template_id} not found")
+        vars_dict = template_vars or {}
+        if isinstance(prompt, str):
+            vars_dict["prompt"] = prompt
+        elif isinstance(prompt, dict):
+            vars_dict.update(prompt)
+        prompt = template.format(vars_dict)
+
+    # Add to context if tracking
+    if context:
+        if system:
+            context.add_message(Message(role="system", content=system))
+        context.add_message(Message(role="user", content=prompt))
+
+    # Execute LLM call
+    response = run_llm_with_config(cfg.llm, prompt, system=system)
+
+    # Update context with response
+    if context:
+        context.add_message(Message(role="assistant", content=response))
+
+    return response
 
 
 def _run_majority_vote(config: LLMConfig, prompt: str, system: Optional[str]) -> str:
