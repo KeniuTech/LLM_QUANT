@@ -961,86 +961,8 @@ def render_today_plan() -> None:
         st.error(f"获取新闻数据时发生错误：{e}")
 
     st.divider()
-    st.subheader("投资池与仓位概览")
-
-    snapshot = get_latest_snapshot()
-    if snapshot:
-        col_a, col_b, col_c = st.columns(3)
-        if snapshot.total_value is not None:
-            col_a.metric("组合净值", f"{snapshot.total_value:,.2f}")
-        if snapshot.cash is not None:
-            col_b.metric("现金余额", f"{snapshot.cash:,.2f}")
-        if snapshot.invested_value is not None:
-            col_c.metric("持仓市值", f"{snapshot.invested_value:,.2f}")
-        detail_cols = st.columns(4)
-        if snapshot.unrealized_pnl is not None:
-            detail_cols[0].metric("浮盈", f"{snapshot.unrealized_pnl:,.2f}")
-        if snapshot.realized_pnl is not None:
-            detail_cols[1].metric("已实现盈亏", f"{snapshot.realized_pnl:,.2f}")
-        if snapshot.net_flow is not None:
-            detail_cols[2].metric("净流入", f"{snapshot.net_flow:,.2f}")
-        if snapshot.exposure is not None:
-            detail_cols[3].metric("风险敞口", f"{snapshot.exposure:.2%}")
-        if snapshot.notes:
-            st.caption(f"备注：{snapshot.notes}")
-    else:
-        st.info("暂无组合快照，请在执行回测或实盘同步后写入 portfolio_snapshots。")
-
-    candidates = list_investment_pool(trade_date=trade_date)
-    if candidates:
-        candidate_df = pd.DataFrame(
-            [
-                {
-                    "交易日": item.trade_date,
-                    "代码": item.ts_code,
-                    "评分": item.score,
-                    "状态": item.status,
-                    "标签": "、".join(item.tags) if item.tags else "-",
-                    "理由": item.rationale or "",
-                }
-                for item in candidates
-            ]
-        )
-        st.write("候选投资池：")
-        st.dataframe(candidate_df, width='stretch', hide_index=True)
-    else:
-        st.caption("候选投资池暂无数据。")
-
-    positions = list_positions(active_only=False)
-    if positions:
-        position_df = pd.DataFrame(
-            [
-                {
-                    "ID": pos.id,
-                    "代码": pos.ts_code,
-                    "开仓日": pos.opened_date,
-                    "平仓日": pos.closed_date or "-",
-                    "状态": pos.status,
-                    "数量": pos.quantity,
-                    "成本": pos.cost_price,
-                    "现价": pos.market_price,
-                    "市值": pos.market_value,
-                    "浮盈": pos.unrealized_pnl,
-                    "已实现": pos.realized_pnl,
-                    "目标权重": pos.target_weight,
-                }
-                for pos in positions
-            ]
-        )
-        st.write("组合持仓：")
-        st.dataframe(position_df, width='stretch', hide_index=True)
-    else:
-        st.caption("组合持仓暂无记录。")
-
-    trades = list_recent_trades(limit=20)
-    if trades:
-        trades_df = pd.DataFrame(trades)
-        st.write("近期成交：")
-        st.dataframe(trades_df, width='stretch', hide_index=True)
-    else:
-        st.caption("近期成交暂无记录。")
-
-    st.caption("数据来源：agent_utils、investment_pool、portfolio_positions、portfolio_trades、portfolio_snapshots。")
+    # 提示用户跳转到单独的“投资池与仓位概览”页
+    st.info("投资池与仓位概览已移至单独页面。请在侧边或页面导航中选择“投资池/仓位”以查看详细信息。")
 
     st.divider()
     st.subheader("策略重评估")
@@ -1281,6 +1203,100 @@ def render_log_viewer() -> None:
         compare_date1 = st.date_input("对比日期1", value=date.today() - timedelta(days=1))
     with col4:
         compare_date2 = st.date_input("对比日期2", value=date.today())
+
+
+def render_pool_overview() -> None:
+    """单独的投资池与仓位概览页面（从今日计划中提取）。"""
+    LOGGER.info("渲染投资池与仓位概览页面", extra=LOG_EXTRA)
+    st.header("投资池与仓位概览")
+
+    snapshot = get_latest_snapshot()
+    if snapshot:
+        col_a, col_b, col_c = st.columns(3)
+        if snapshot.total_value is not None:
+            col_a.metric("组合净值", f"{snapshot.total_value:,.2f}")
+        if snapshot.cash is not None:
+            col_b.metric("现金余额", f"{snapshot.cash:,.2f}")
+        if snapshot.invested_value is not None:
+            col_c.metric("持仓市值", f"{snapshot.invested_value:,.2f}")
+        detail_cols = st.columns(4)
+        if snapshot.unrealized_pnl is not None:
+            detail_cols[0].metric("浮盈", f"{snapshot.unrealized_pnl:,.2f}")
+        if snapshot.realized_pnl is not None:
+            detail_cols[1].metric("已实现盈亏", f"{snapshot.realized_pnl:,.2f}")
+        if snapshot.net_flow is not None:
+            detail_cols[2].metric("净流入", f"{snapshot.net_flow:,.2f}")
+        if snapshot.exposure is not None:
+            detail_cols[3].metric("风险敞口", f"{snapshot.exposure:.2%}")
+        if snapshot.notes:
+            st.caption(f"备注：{snapshot.notes}")
+    else:
+        st.info("暂无组合快照，请在执行回测或实盘同步后写入 portfolio_snapshots。")
+
+    # 候选池
+    try:
+        # trade_date param optional; use latest available if not provided
+        latest_date = _get_latest_trade_date()
+        candidates = list_investment_pool(trade_date=latest_date)
+    except Exception:
+        LOGGER.exception("加载候选池失败", extra=LOG_EXTRA)
+        candidates = []
+
+    if candidates:
+        candidate_df = pd.DataFrame(
+            [
+                {
+                    "交易日": item.trade_date,
+                    "代码": item.ts_code,
+                    "评分": item.score,
+                    "状态": item.status,
+                    "标签": "、".join(item.tags) if item.tags else "-",
+                    "理由": item.rationale or "",
+                }
+                for item in candidates
+            ]
+        )
+        st.write("候选投资池：")
+        st.dataframe(candidate_df, width='stretch', hide_index=True)
+    else:
+        st.caption("候选投资池暂无数据。")
+
+    # 持仓
+    positions = list_positions(active_only=False)
+    if positions:
+        position_df = pd.DataFrame(
+            [
+                {
+                    "ID": pos.id,
+                    "代码": pos.ts_code,
+                    "开仓日": pos.opened_date,
+                    "平仓日": pos.closed_date or "-",
+                    "状态": pos.status,
+                    "数量": pos.quantity,
+                    "成本": pos.cost_price,
+                    "现价": pos.market_price,
+                    "市值": pos.market_value,
+                    "浮盈": pos.unrealized_pnl,
+                    "已实现": pos.realized_pnl,
+                    "目标权重": pos.target_weight,
+                }
+                for pos in positions
+            ]
+        )
+        st.write("组合持仓：")
+        st.dataframe(position_df, width='stretch', hide_index=True)
+    else:
+        st.caption("组合持仓暂无记录。")
+
+    trades = list_recent_trades(limit=20)
+    if trades:
+        trades_df = pd.DataFrame(trades)
+        st.write("近期成交：")
+        st.dataframe(trades_df, width='stretch', hide_index=True)
+    else:
+        st.caption("近期成交暂无记录。")
+
+    st.caption("数据来源：agent_utils、investment_pool、portfolio_positions、portfolio_trades、portfolio_snapshots。")
     
     if st.button("执行对比", type="secondary"):
         with st.spinner("执行日志对比分析中..."):
@@ -2964,7 +2980,7 @@ def main() -> None:
             st.error(f"❌ 自动数据更新失败：{exc}")
     
     render_global_dashboard()
-    tabs = st.tabs(["今日计划", "回测与复盘", "行情可视化", "日志钻取", "数据与设置", "自检测试"])
+    tabs = st.tabs(["今日计划", "投资池/仓位", "回测与复盘", "行情可视化", "日志钻取", "数据与设置", "自检测试"])
     LOGGER.debug(
         "Tabs 初始化完成：%s",
         ["今日计划", "回测与复盘", "行情可视化", "日志钻取", "数据与设置", "自检测试"],
@@ -2973,12 +2989,14 @@ def main() -> None:
     with tabs[0]:
         render_today_plan()
     with tabs[1]:
-        render_backtest_review()
+        render_pool_overview()
     with tabs[2]:
-        render_market_visualization()
+        render_backtest_review()
     with tabs[3]:
-        render_log_viewer()
+        render_market_visualization()
     with tabs[4]:
+        render_log_viewer()
+    with tabs[5]:
         st.header("系统设置")
         settings_tabs = st.tabs(["配置概览", "LLM 设置", "投资组合", "数据源"])
 
@@ -2994,7 +3012,7 @@ def main() -> None:
 
         with settings_tabs[3]:
             render_data_settings()
-    with tabs[5]:
+    with tabs[6]:
         render_tests()
 
 
