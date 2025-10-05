@@ -377,6 +377,7 @@ class DataBroker:
         trade_date: str,
         where_clause: str,
         params: Sequence[object],
+        auto_refresh: bool = True,
     ) -> bool:
         """Generic helper to test if a record exists (used for limit/suspend lookups)."""
 
@@ -415,6 +416,7 @@ class DataBroker:
         ts_code: str,
         trade_date: str,
         window: int,
+        auto_refresh: bool = True,
     ) -> List[Dict[str, object]]:
         if window <= 0:
             return []

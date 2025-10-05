@@ -399,7 +399,13 @@ class DepartmentAgent:
                 lines.append(f"- {table}: 已返回窗口 {window} 的数据，跳过重复请求")
                 continue
 
-            rows = self._broker.fetch_table_rows(table, ts_code, trade_date, window)
+            rows = self._broker.fetch_table_rows(
+                table,
+                ts_code,
+                trade_date,
+                window,
+                auto_refresh=False  # 避免在回测过程中触发自动补数
+            )
             if rows:
                 preview = ", ".join(
                     f"{row.get('trade_date', 'NA')}" for row in rows[: min(len(rows), 5)]

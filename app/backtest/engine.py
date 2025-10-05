@@ -139,6 +139,7 @@ class BacktestEngine:
                 ts_code,
                 trade_date_str,
                 self.required_fields,
+                auto_refresh=False  # 避免回测时触发自动补数
             )
 
             closes = self.data_broker.fetch_series(
@@ -147,6 +148,7 @@ class BacktestEngine:
                 ts_code,
                 trade_date_str,
                 window=60,
+                auto_refresh=False,  # 避免在回测中触发自动补数
             )
             close_values = [value for _date, value in closes if value is not None]
 
@@ -171,6 +173,7 @@ class BacktestEngine:
                 ts_code,
                 trade_date_str,
                 window=20,
+                auto_refresh=False,  # 避免在回测中触发自动补数
             )
             turnover_values = [value for _date, value in turnover_series if value is not None]
 
@@ -255,9 +258,10 @@ class BacktestEngine:
             is_suspended = self.data_broker.fetch_flags(
                 "suspend",
                 ts_code,
-                trade_date_str,
-                "suspend_date <= ? AND (resume_date IS NULL OR resume_date > ?)",
-                (trade_date_str, trade_date_str),
+                trade_date,
+                "trade_date = ?",
+                [trade_date],
+                auto_refresh=False,  # 避免在回测中触发自动补数
             )
 
             features = {
@@ -511,7 +515,7 @@ class BacktestEngine:
         if not price_map and state.holdings:
             trade_date_compact = trade_date.strftime("%Y%m%d")
             for ts_code in list(state.holdings.keys()):
-                fetched = self.data_broker.fetch_latest(ts_code, trade_date_compact, ["daily.close"])
+                fetched = self.data_broker.fetch_latest(ts_code, trade_date_compact, ["daily.close"], auto_refresh=False)
                 price = fetched.get("daily.close")
                 if price:
                     price_map[ts_code] = float(price)
