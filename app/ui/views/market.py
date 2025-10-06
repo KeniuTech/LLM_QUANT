@@ -1,7 +1,7 @@
 """行情可视化页面。"""
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import pandas as pd
 import plotly.express as px
@@ -53,6 +53,27 @@ def _load_daily_frame(ts_code: str, start: date, end: date) -> pd.DataFrame:
     return df
 
 
+def _load_trade_date_range(ts_code: str) -> tuple[date | None, date | None]:
+    """Fetch earliest and latest available trade dates for a stock."""
+
+    with db_session(read_only=True) as conn:
+        row = conn.execute(
+            "SELECT MIN(trade_date) AS min_date, MAX(trade_date) AS max_date FROM daily WHERE ts_code = ?",
+            (ts_code,),
+        ).fetchone()
+    if not row:
+        return None, None
+
+    min_raw = row["min_date"]
+    max_raw = row["max_date"]
+    if not min_raw or not max_raw:
+        return None, None
+
+    min_date = datetime.strptime(min_raw, "%Y%m%d").date()
+    max_date = datetime.strptime(max_raw, "%Y%m%d").date()
+    return min_date, max_date
+
+
 def render_market_visualization() -> None:
     st.header("行情可视化")
     st.caption("按标的查看 K 线、成交量以及常用指标。")
@@ -64,11 +85,60 @@ def render_market_visualization() -> None:
 
     selection = st.selectbox("选择标的", options, index=0)
     ts_code = _parse_ts_code(selection)
+    min_date, max_date = _load_trade_date_range(ts_code)
+    if not max_date:
+        st.info("所选标的暂无可视化数据，请先同步行情。")
+        return
+
+    default_end = max_date
+    default_start = max(min_date, max_date - timedelta(days=180)) if min_date else max_date - timedelta(days=180)
+
+    session = st.session_state
+    last_ts_code = session.get("market_selected_ts_code")
+    start_store_key = "market_start_date_value"
+    end_store_key = "market_end_date_value"
+    if last_ts_code != ts_code:
+        session["market_selected_ts_code"] = ts_code
+        session[start_store_key] = default_start
+        session[end_store_key] = default_end
+    else:
+        start_state = session.get(start_store_key, default_start)
+        end_state = session.get(end_store_key, default_end)
+        if min_date:
+            start_state = min(max(start_state, min_date), max_date)
+            end_state = min(max(end_state, min_date), max_date)
+        if start_state > end_state:
+            start_state = max(min_date or start_state, max_date - timedelta(days=30))
+            end_state = max_date
+        session[start_store_key] = start_state
+        session[end_store_key] = end_state
+
     col1, col2 = st.columns(2)
     with col1:
-        start_date = st.date_input("开始日期", value=date.today() - timedelta(days=120))
+        start_date = st.date_input(
+            "开始日期",
+            value=session.get(start_store_key, default_start),
+            key="market_start_date_picker",
+            min_value=min_date,
+            max_value=max_date,
+        )
     with col2:
-        end_date = st.date_input("结束日期", value=date.today())
+        end_date = st.date_input(
+            "结束日期",
+            value=session.get(end_store_key, default_end),
+            key="market_end_date_picker",
+            min_value=min_date,
+            max_value=max_date,
+        )
+
+    if min_date:
+        start_date = max(start_date, min_date)
+        end_date = max(end_date, min_date)
+    end_date = min(end_date, max_date)
+    start_date = min(start_date, max_date)
+
+    session[start_store_key] = start_date
+    session[end_store_key] = end_date
 
     if start_date > end_date:
         st.error("开始日期不能晚于结束日期。")

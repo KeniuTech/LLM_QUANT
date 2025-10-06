@@ -21,10 +21,15 @@ _WARNINGS_PLACEHOLDER = None
 
 
 def _ensure_dashboard_elements(metrics_container: object, decisions_container: object) -> Dict[str, object]:
+    # Create dedicated placeholders so successive updates rewrite the same slots
+    metrics_calls = metrics_container.empty()
+    metrics_prompt = metrics_container.empty()
+    metrics_completion = metrics_container.empty()
+
     elements = {
-        "metrics_calls": metrics_container.metric,
-        "metrics_prompt": metrics_container.metric,
-        "metrics_completion": metrics_container.metric,
+        "metrics_calls": metrics_calls,
+        "metrics_prompt": metrics_prompt,
+        "metrics_completion": metrics_completion,
         "provider_distribution": metrics_container.empty(),
         "model_distribution": metrics_container.empty(),
         "decisions_list": decisions_container.empty(),
@@ -50,9 +55,9 @@ def update_dashboard_sidebar(metrics: Optional[Dict[str, object]] = None) -> Non
     if metrics is None:
         metrics = snapshot_llm_metrics()
 
-    elements["metrics_calls"]("LLM 调用", metrics.get("total_calls", 0))
-    elements["metrics_prompt"]("Prompt Tokens", metrics.get("total_prompt_tokens", 0))
-    elements["metrics_completion"]("Completion Tokens", metrics.get("total_completion_tokens", 0))
+    elements["metrics_calls"].metric("LLM 调用", metrics.get("total_calls", 0))
+    elements["metrics_prompt"].metric("Prompt Tokens", metrics.get("total_prompt_tokens", 0))
+    elements["metrics_completion"].metric("Completion Tokens", metrics.get("total_completion_tokens", 0))
 
     provider_calls = metrics.get("provider_calls", {})
     model_calls = metrics.get("model_calls", {})
