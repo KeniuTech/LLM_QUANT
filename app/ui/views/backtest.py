@@ -297,12 +297,6 @@ def render_backtest_review() -> None:
     with tab_rl:
         st.caption("使用 DecisionEnv 对代理权重进行强化学习调参，支持单次与批量实验。")
 
-        disable_departments = st.checkbox(
-            "禁用部门 LLM（仅规则代理，适合离线快速评估）",
-            value=True,
-            help="关闭部门调用后不依赖外部 LLM 网络，仅根据规则代理权重模拟。",
-        )
-
         default_experiment_id = f"streamlit_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         experiment_id = st.text_input(
             "实验 ID",
@@ -509,6 +503,15 @@ def render_backtest_review() -> None:
             if specs:
                 st.caption("动作维度顺序：" + "，".join(spec_labels))
 
+            disable_departments = st.checkbox(
+                "禁用部门 LLM（仅规则代理，适合离线快速评估）",
+                value=True,
+                help="关闭部门调用后不依赖外部 LLM 网络，仅根据规则代理权重模拟。",
+            )
+            
+            st.divider()
+            st.subheader("单次调参")
+            
             run_decision_env = st.button("执行单次调参", key="run_decision_env_button")
             just_finished_single = False
             if run_decision_env:
@@ -878,6 +881,7 @@ def render_backtest_review() -> None:
                     st.success("已清除自动探索结果。")
 
             st.divider()
+            st.subheader("批量调参")
             st.caption("批量调参：在下方输入多组动作，每行表示一组 0-1 之间的值，用逗号分隔。")
             default_grid = "\n".join(
                 [
