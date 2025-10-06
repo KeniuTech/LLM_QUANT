@@ -109,45 +109,52 @@ def render_market_visualization() -> None:
     end_store_key = "market_end_date_value"
     start_widget_key = "market_start_date_picker"
     end_widget_key = "market_end_date_picker"
+
+    # 初始化或更新session状态
     if last_ts_code != ts_code:
         session["market_selected_ts_code"] = ts_code
         session[start_store_key] = default_start
         session[end_store_key] = default_end
-        session[start_widget_key] = default_start
-        session[end_widget_key] = default_end
-    else:
-        start_state = session.get(start_store_key, default_start)
-        end_state = session.get(end_store_key, default_end)
-        if min_date:
-            start_state = min(max(start_state, min_date), max_date)
-            end_state = min(max(end_state, min_date), max_date)
-        if start_state > end_state:
-            start_state = max(min_date or start_state, max_date - timedelta(days=30))
-            end_state = max_date
-        session[start_store_key] = start_state
-        session[end_store_key] = end_state
-        if session.get(start_widget_key) != start_state:
-            session[start_widget_key] = start_state
-        if session.get(end_widget_key) != end_state:
-            session[end_widget_key] = end_state
 
+    # 使用columns实现横向布局
     col1, col2 = st.columns(2)
-    with col1:
-        start_date = st.date_input(
-            "开始日期",
-            value=session.get(start_store_key, default_start),
-            key=start_widget_key,
-            min_value=min_date,
-            max_value=max_date,
-        )
-    with col2:
-        end_date = st.date_input(
-            "结束日期",
-            value=session.get(end_store_key, default_end),
-            key=end_widget_key,
-            min_value=min_date,
-            max_value=max_date,
-        )
+
+    if last_ts_code != ts_code:
+        # 第一次加载时，直接使用默认值初始化widget
+        with col1:
+            start_date = st.date_input(
+                "开始日期",
+                value=default_start,
+                key=start_widget_key,
+                min_value=min_date,
+                max_value=max_date,
+            )
+        with col2:
+            end_date = st.date_input(
+                "结束日期",
+                value=default_end,
+                key=end_widget_key,
+                min_value=min_date,
+                max_value=max_date,
+            )
+    else:
+        # 后续加载时，直接使用widget的当前值
+        with col1:
+            start_date = st.date_input(
+                "开始日期",
+                value=session.get(start_widget_key, default_start),
+                key=start_widget_key,
+                min_value=min_date,
+                max_value=max_date,
+            )
+        with col2:
+            end_date = st.date_input(
+                "结束日期",
+                value=session.get(end_widget_key, default_end),
+                key=end_widget_key,
+                min_value=min_date,
+                max_value=max_date,
+            )
 
     if min_date:
         start_date = max(start_date, min_date)
