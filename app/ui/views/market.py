@@ -13,17 +13,22 @@ from app.utils.db import db_session
 from app.ui.shared import LOGGER, LOG_EXTRA
 
 
-def _load_stock_options(limit: int = 500) -> list[str]:
+def _load_stock_options(limit: int = 500, min_history: int = 30) -> list[str]:
     try:
         with db_session(read_only=True) as conn:
             rows = conn.execute(
                 """
-                SELECT DISTINCT ts_code
-                FROM daily
-                ORDER BY trade_date DESC
+                SELECT ts_code
+                FROM (
+                    SELECT ts_code, MAX(trade_date) AS latest_date, COUNT(*) AS history_rows
+                    FROM daily
+                    GROUP BY ts_code
+                )
+                WHERE history_rows >= ?
+                ORDER BY ts_code ASC
                 LIMIT ?
                 """,
-                (limit,),
+                (min_history, limit),
             ).fetchall()
     except Exception:  # noqa: BLE001
         LOGGER.exception("加载股票列表失败", extra=LOG_EXTRA)
@@ -85,6 +90,11 @@ def render_market_visualization() -> None:
 
     selection = st.selectbox("选择标的", options, index=0)
     ts_code = _parse_ts_code(selection)
+    manual_input = st.text_input("或直接输入标的代码", value=ts_code, key="market_manual_ts_code")
+    if manual_input:
+        manual_ts = manual_input.strip().upper()
+        if manual_ts:
+            ts_code = manual_ts
     min_date, max_date = _load_trade_date_range(ts_code)
     if not max_date:
         st.info("所选标的暂无可视化数据，请先同步行情。")
