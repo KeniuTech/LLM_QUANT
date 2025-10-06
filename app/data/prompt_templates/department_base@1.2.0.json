@@ -1,0 +1,31 @@
+{
+  "department_base": {
+    "name": "部门基础模板",
+    "description": "审慎分析骨架（结构化输出版）",
+    "template": "部门：{title}\n股票代码：{ts_code}\n交易日：{trade_date}\n\n【角色定位】\n- 研究职责：{description}\n- 执行要点：{instruction}\n\n【量化检查】\n- 数据覆盖：\n{data_scope}\n- 模型特征：\n{features}\n- 市场切片：\n{market_snapshot}\n- 附加观察：\n{supplements}\n\n【分析流程】\n1. 使用事实句描述当前市场位置（包含至少 1 项相对指标）。\n2. 归纳 2-3 条策略信号，每条需关联具体字段并给出方向。\n3. 对每条信号列出对应的风险验证指标与触发阈值。\n4. 最终给出操作建议，并在 `confidence` 中量化判断依据。\n\n【输出格式】\n仅输出 JSON，不包含额外文字：\n{\n  \"action\": \"BUY|BUY_S|BUY_M|BUY_L|SELL|HOLD\",\n  \"confidence\": 小数,\n  \"summary\": \"一句话\",\n  \"signals\": [\n    {\n      \"statement\": \"现象描述\",\n      \"evidence\": \"对应字段或数据来源\",\n      \"direction\": \"bullish|bearish|neutral\"\n    }\n  ],\n  \"risks\": [\n    {\n      \"threat\": \"风险描述\",\n      \"monitor\": \"观测指标\",\n      \"threshold\": \"触发阈值\"\n    }\n  ]\n}\n若缺少关键数据，请在 `risks` 中新增一项 `monitor` 为 `data_gap`。",
+    "variables": [
+      "title",
+      "ts_code",
+      "trade_date",
+      "description",
+      "instruction",
+      "data_scope",
+      "features",
+      "market_snapshot",
+      "supplements"
+    ],
+    "max_length": 4000,
+    "required_context": [
+      "ts_code",
+      "trade_date",
+      "features",
+      "market_snapshot"
+    ],
+    "version": "1.2.0",
+    "metadata": {
+      "label": "structured_v2",
+      "notes": "增加信号与风险的结构化字段。"
+    },
+    "activate": true
+  }
+}

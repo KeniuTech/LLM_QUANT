@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
@@ -633,4 +634,59 @@ def register_default_templates() -> None:
 
 
 # Auto-register default templates on module import
+EXTERNAL_TEMPLATE_DIR = Path(__file__).resolve().parents[1] / "data" / "prompt_templates"
+
+
+def load_external_template_configs(directory: Path | str = EXTERNAL_TEMPLATE_DIR) -> None:
+    """Load additional template versions from JSON files in the given directory."""
+
+    directory_path = Path(directory)
+    if not directory_path.exists() or not directory_path.is_dir():
+        return
+
+    for file_path in sorted(directory_path.glob("*.json")):
+        try:
+            raw_data = file_path.read_text(encoding="utf-8")
+        except OSError:
+            logging.warning("无法读取提示模板配置文件 %s", file_path)
+            continue
+
+        try:
+            payload = json.loads(raw_data)
+        except json.JSONDecodeError as exc:
+            logging.warning("提示模板配置文件 %s 解析失败：%s", file_path, exc)
+            continue
+
+        enriched_payload = {}
+        for template_id, cfg in payload.items():
+            if not isinstance(cfg, dict):
+                logging.warning(
+                    "提示模板配置文件 %s 中的 %s 配置无效（应为对象）",
+                    file_path,
+                    template_id,
+                )
+                continue
+            metadata = cfg.get("metadata") or {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            metadata.setdefault("source", file_path.name)
+            enriched_payload[template_id] = {
+                **cfg,
+                "metadata": metadata,
+            }
+
+        if not enriched_payload:
+            continue
+
+        try:
+            TemplateRegistry.load_from_json(json.dumps(enriched_payload, ensure_ascii=False))
+        except Exception as exc:  # noqa: BLE001
+            logging.warning(
+                "注册提示模板配置 %s 失败：%s",
+                file_path,
+                exc,
+            )
+
+
 register_default_templates()
+load_external_template_configs()

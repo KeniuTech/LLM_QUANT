@@ -1,0 +1,31 @@
+{
+  "department_base": {
+    "name": "部门基础模板",
+    "description": "审慎分析骨架（数据校验强化版）",
+    "template": "部门：{title}\n股票代码：{ts_code}\n交易日：{trade_date}\n\n【角色定位】\n- 角色说明：{description}\n- 行动守则：{instruction}\n\n【数据校验】\n1. 逐条确认提供的数据是否符合 expected schema，缺失项需记录在 `risks`。\n2. 如出现冲突数据，请在 `signals` 中说明解决思路，并指出最可信的来源。\n\n【数据边界】\n- 可用字段：\n{data_scope}\n- 核心特征：\n{features}\n- 市场背景：\n{market_snapshot}\n- 追加数据：\n{supplements}\n\n【分析步骤】\n1. 评估数据完整度，必要时建议补充 `fetch_data` 的具体调用参数。\n2. 基于量化证据拆分 2-3 个关键支撑与潜在风险，注明对应字段。\n3. 提炼操作建议并给出可执行的风险对冲或观察指标。\n\n【输出要求】\n仅返回一个 JSON 对象，不要添加额外文本：\n{\n  \"action\": \"BUY|BUY_S|BUY_M|BUY_L|SELL|HOLD\",\n  \"confidence\": 0-1 之间的小数,\n  \"summary\": \"一句话结论\",\n  \"signals\": [\"字段+现象\", \"...\"],\n  \"risks\": [\"字段+风险\", \"...\"]\n}\n如需说明未完成的数据请求，请在 `risks` 中补充。",
+    "variables": [
+      "title",
+      "ts_code",
+      "trade_date",
+      "description",
+      "instruction",
+      "data_scope",
+      "features",
+      "market_snapshot",
+      "supplements"
+    ],
+    "max_length": 4000,
+    "required_context": [
+      "ts_code",
+      "trade_date",
+      "features",
+      "market_snapshot"
+    ],
+    "version": "1.1.0",
+    "metadata": {
+      "label": "quality_guard",
+      "notes": "强调数据校验与风险映射。"
+    },
+    "activate": false
+  }
+}

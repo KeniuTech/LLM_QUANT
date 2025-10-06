@@ -25,6 +25,7 @@ from app.ingest.tushare import run_ingestion
 from app.llm.client import run_llm
 from app.llm.metrics import reset as reset_llm_metrics
 from app.llm.metrics import snapshot as snapshot_llm_metrics
+from app.llm.templates import TemplateRegistry
 from app.utils import alerts
 from app.utils.config import get_config, save_config
 from app.utils.tuning import log_tuning_result
@@ -463,6 +464,47 @@ def render_backtest_review() -> None:
                         )
                         spec_labels.append(f"department:{dept_code}:tool_choice")
                         action_values.append(tool_value)
+
+                        template_id = (settings.prompt_template_id or f"{dept_code}_dept").strip()
+                        versions = [ver for ver in TemplateRegistry.list_versions(template_id) if isinstance(ver, str)]
+                        if versions:
+                            active_version = TemplateRegistry.get_active_version(template_id)
+                            default_version = (
+                                settings.prompt_template_version
+                                or active_version
+                                or versions[0]
+                            )
+                            try:
+                                default_index = versions.index(default_version)
+                            except ValueError:
+                                default_index = 0
+                            version_choice = st.selectbox(
+                                "提示模板版本",
+                                versions,
+                                index=default_index,
+                                key=f"{prefix}_template_version",
+                                help="离散动作将按版本列表顺序映射，可用于强化学习优化。",
+                            )
+                            selected_index = versions.index(version_choice)
+                            ratio = (
+                                0.0
+                                if len(versions) == 1
+                                else selected_index / (len(versions) - 1)
+                            )
+                            specs.append(
+                                ParameterSpec(
+                                    name=f"dept_prompt_version_{dept_code}",
+                                    target=f"department.{dept_code}.prompt_template_version",
+                                    values=list(versions),
+                                )
+                            )
+                            spec_labels.append(f"department:{dept_code}:prompt_version")
+                            action_values.append(ratio)
+                            st.caption(
+                                f"激活版本：{active_version or '默认'} ｜ 当前选择：{version_choice}"
+                            )
+                        else:
+                            st.caption("当前模板未注册可选提示词版本，继续沿用激活版本。")
 
             if specs:
                 st.caption("动作维度顺序：" + "，".join(spec_labels))
