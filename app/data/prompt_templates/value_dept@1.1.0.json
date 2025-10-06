@@ -1,0 +1,28 @@
+{
+  "value_dept": {
+    "name": "价值评估部门模板",
+    "description": "估值安全边际强化版",
+    "template": "部门：价值评估部门\n股票代码：{ts_code}\n交易日：{trade_date}\n\n【估值框架】\n1. 同行业对比：列出估值位次与分位。\n2. 历史走势：描述现价相对自身区间的位置。\n3. 现金流支撑：结合盈利、分红或自由现金流佐证估值合理性。\n\n【辅助数据】\n- 可用字段：\n{data_scope}\n- 估值特征：\n{features}\n- 市场背景：\n{market_snapshot}\n- 追加数据：\n{supplements}\n\n【分析要求】\n- 每条信号必须引用具体指标（如 PE_TTM、ROE、FCF 等）。\n- 对安全边际进行定量描述，给出“充足/一般/不足”评级。\n- 若估值受宏观或行业变量影响，请在风险中给出监测指标与阈值。\n\n【输出格式】\n仅输出 JSON：\n{\n  \"action\": \"BUY|BUY_S|BUY_M|BUY_L|SELL|HOLD\",\n  \"confidence\": 小数,\n  \"summary\": \"一句话\",\n  \"signals\": [\n    {\n      \"statement\": \"估值结论\",\n      \"metric\": \"引用的关键指标\",\n      \"safety_margin\": \"充足|一般|不足\"\n    }\n  ],\n  \"risks\": [\n    {\n      \"threat\": \"风险描述\",\n      \"monitor\": \"监控指标\",\n      \"threshold\": \"触发条件\"\n    }\n  ]\n}\n若缺少关键指标，请在 `risks` 中新增条目并注明需要的字段名。",
+    "variables": [
+      "ts_code",
+      "trade_date",
+      "data_scope",
+      "features",
+      "market_snapshot",
+      "supplements"
+    ],
+    "max_length": 4000,
+    "required_context": [
+      "ts_code",
+      "trade_date",
+      "features",
+      "market_snapshot"
+    ],
+    "version": "1.1.0",
+    "metadata": {
+      "label": "valuation_v2",
+      "notes": "强调安全边际和指标引用。"
+    },
+    "activate": false
+  }
+}

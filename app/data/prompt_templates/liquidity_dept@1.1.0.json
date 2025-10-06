@@ -1,0 +1,28 @@
+{
+  "liquidity_dept": {
+    "name": "流动性评估部门模板",
+    "description": "执行容量评估版",
+    "template": "部门：流动性评估部门\n股票代码：{ts_code}\n交易日：{trade_date}\n\n【流动性结构】\n- 成交分布：\n{features}\n- 市场深度：\n{market_snapshot}\n- 额外观察：\n{supplements}\n\n【评估流程】\n1. 计算日内成交额、换手率与买卖盘差，给出执行难度评级（easy/normal/hard）。\n2. 检查是否存在交易限制（涨跌停、停牌、集合竞价等）。\n3. 给出建议单笔容量与滑点预估范围。\n\n【输出格式】\n仅输出 JSON：\n{\n  \"action\": \"BUY|BUY_S|BUY_M|BUY_L|SELL|HOLD\",\n  \"confidence\": 小数,\n  \"summary\": \"一句话\",\n  \"signals\": [\n    {\n      \"metric\": \"关键指标\",\n      \"value\": \"指标值\",\n      \"execution_grade\": \"easy|normal|hard\"\n    }\n  ],\n  \"risks\": [\n    {\n      \"threat\": \"执行风险\",\n      \"monitor\": \"监控指标\",\n      \"capacity_limit\": \"建议仓位上限\"\n    }\n  ]\n}\n如需额外数据，请在 `risks` 中说明缺口字段。",
+    "variables": [
+      "ts_code",
+      "trade_date",
+      "data_scope",
+      "features",
+      "market_snapshot",
+      "supplements"
+    ],
+    "max_length": 4000,
+    "required_context": [
+      "ts_code",
+      "trade_date",
+      "features",
+      "market_snapshot"
+    ],
+    "version": "1.1.0",
+    "metadata": {
+      "label": "liquidity_capacity",
+      "notes": "新增执行评级与容量建议。"
+    },
+    "activate": false
+  }
+}

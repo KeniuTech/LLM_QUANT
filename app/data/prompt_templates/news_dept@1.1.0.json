@@ -1,0 +1,28 @@
+{
+  "news_dept": {
+    "name": "新闻情绪部门模板",
+    "description": "情绪脉冲量化版",
+    "template": "部门：新闻情绪部门\n股票代码：{ts_code}\n交易日：{trade_date}\n\n【情绪脉冲拆解】\n- 舆情亮点：\n{features}\n- 市场反馈：\n{market_snapshot}\n- 数据补充：\n{supplements}\n\n【分析步骤】\n1. 将新闻分为“正面/负面/中性”并评估强度（0-1）。\n2. 识别是否存在事件驱动催化，给出时间窗口与触发条件。\n3. 检查情绪与价格表现是否一致，如不一致需给出交易策略提示。\n\n【输出格式】\n仅输出 JSON：\n{\n  \"action\": \"BUY|BUY_S|BUY_M|BUY_L|SELL|HOLD\",\n  \"confidence\": 小数,\n  \"summary\": \"一句话\",\n  \"signals\": [\n    {\n      \"headline\": \"事件/主题\",\n      \"sentiment\": \"positive|negative|neutral\",\n      \"intensity\": 小数,\n      \"impact_window\": \"时间窗口\"\n    }\n  ],\n  \"risks\": [\n    {\n      \"threat\": \"潜在风险\",\n      \"monitor\": \"监控指标\",\n      \"mitigation\": \"对冲或等待条件\"\n    }\n  ]\n}\n如需更多数据，请在 `risks` 中新增条目并说明来源。",
+    "variables": [
+      "ts_code",
+      "trade_date",
+      "data_scope",
+      "features",
+      "market_snapshot",
+      "supplements"
+    ],
+    "max_length": 4000,
+    "required_context": [
+      "ts_code",
+      "trade_date",
+      "features",
+      "market_snapshot"
+    ],
+    "version": "1.1.0",
+    "metadata": {
+      "label": "sentiment_pulse",
+      "notes": "引导强度和窗口化输出。"
+    },
+    "activate": false
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "macro_dept": {
+    "name": "宏观研究部门模板",
+    "description": "宏观驱动结构化版",
+    "template": "部门：宏观研究部门\n股票代码：{ts_code}\n交易日：{trade_date}\n\n【宏观信号板】\n- 宏观指标：\n{features}\n- 行业位置：\n{market_snapshot}\n- 补充材料：\n{supplements}\n\n【分析步骤】\n1. 将宏观指标划分为“增长、价格、流动性”三类，每类给出当前阶段（扩张/收缩/拐点）。\n2. 判断行业与指数的相对强弱，给出驱动因子和持续性判断。\n3. 列出未来 1-2 个重要事件或数据公布，并评估对策略的潜在冲击方向。\n\n【输出格式】\n仅输出 JSON：\n{\n  \"action\": \"BUY|BUY_S|BUY_M|BUY_L|SELL|HOLD\",\n  \"confidence\": 小数,\n  \"summary\": \"一句话\",\n  \"signals\": [\n    {\n      \"driver\": \"宏观驱动项\",\n      \"stage\": \"expansion|contraction|turning\",\n      \"evidence\": \"对应指标\"\n    }\n  ],\n  \"risks\": [\n    {\n      \"event\": \"未来事件\",\n      \"date\": \"预期日期\",\n      \"scenario\": \"正面|负面|不确定\"\n    }\n  ]\n}\n若存在数据缺口，请在 `risks` 中补充并说明所需指标。",
+    "variables": [
+      "ts_code",
+      "trade_date",
+      "data_scope",
+      "features",
+      "market_snapshot",
+      "supplements"
+    ],
+    "max_length": 4000,
+    "required_context": [
+      "ts_code",
+      "trade_date",
+      "features",
+      "market_snapshot"
+    ],
+    "version": "1.1.0",
+    "metadata": {
+      "label": "macro_matrix",
+      "notes": "对宏观驱动分类并输出阶段。"
+    },
+    "activate": false
+  }
+}
