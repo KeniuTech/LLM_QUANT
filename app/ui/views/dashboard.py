@@ -21,10 +21,12 @@ _WARNINGS_PLACEHOLDER = None
 
 
 def _ensure_dashboard_elements(metrics_container: object, decisions_container: object) -> Dict[str, object]:
-    # Create dedicated placeholders so successive updates rewrite the same slots
-    metrics_calls = metrics_container.empty()
-    metrics_prompt = metrics_container.empty()
-    metrics_completion = metrics_container.empty()
+    # Create horizontal layout so metrics stay in place during refreshes
+    metrics_row = metrics_container.container()
+    col_calls, col_prompt, col_completion = metrics_row.columns(3)
+    metrics_calls = col_calls.empty()
+    metrics_prompt = col_prompt.empty()
+    metrics_completion = col_completion.empty()
 
     elements = {
         "metrics_calls": metrics_calls,

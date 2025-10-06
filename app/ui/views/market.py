@@ -97,10 +97,14 @@ def render_market_visualization() -> None:
     last_ts_code = session.get("market_selected_ts_code")
     start_store_key = "market_start_date_value"
     end_store_key = "market_end_date_value"
+    start_widget_key = "market_start_date_picker"
+    end_widget_key = "market_end_date_picker"
     if last_ts_code != ts_code:
         session["market_selected_ts_code"] = ts_code
         session[start_store_key] = default_start
         session[end_store_key] = default_end
+        session[start_widget_key] = default_start
+        session[end_widget_key] = default_end
     else:
         start_state = session.get(start_store_key, default_start)
         end_state = session.get(end_store_key, default_end)
@@ -112,13 +116,17 @@ def render_market_visualization() -> None:
             end_state = max_date
         session[start_store_key] = start_state
         session[end_store_key] = end_state
+        if session.get(start_widget_key) != start_state:
+            session[start_widget_key] = start_state
+        if session.get(end_widget_key) != end_state:
+            session[end_widget_key] = end_state
 
     col1, col2 = st.columns(2)
     with col1:
         start_date = st.date_input(
             "开始日期",
             value=session.get(start_store_key, default_start),
-            key="market_start_date_picker",
+            key=start_widget_key,
             min_value=min_date,
             max_value=max_date,
         )
@@ -126,7 +134,7 @@ def render_market_visualization() -> None:
         end_date = st.date_input(
             "结束日期",
             value=session.get(end_store_key, default_end),
-            key="market_end_date_picker",
+            key=end_widget_key,
             min_value=min_date,
             max_value=max_date,
         )

@@ -28,6 +28,8 @@ from app.utils import alerts
 from app.utils.config import get_config, save_config
 from app.utils.tuning import log_tuning_result
 
+from app.utils.db import db_session
+
 from app.ui.shared import LOGGER, LOG_EXTRA, default_backtest_range
 from app.ui.views.dashboard import update_dashboard_sidebar
 
