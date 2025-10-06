@@ -252,98 +252,352 @@ class TemplateRegistry:
 DEFAULT_TEMPLATES = {
     "department_base": {
         "name": "部门基础模板",
-        "description": "通用的部门分析提示模板",
+        "description": "所有部门通用的审慎分析提示词骨架",
         "template": """
-部门名称：{title}
+部门：{title}
 股票代码：{ts_code}
 交易日：{trade_date}
 
-角色说明：{description}
-职责指令：{instruction}
+【角色定位】
+- 角色说明：{description}
+- 行动守则：{instruction}
 
-【可用数据范围】
+【数据边界】
+- 可用字段：
 {data_scope}
-
-【核心特征】
+- 核心特征：
 {features}
-
-【市场背景】
+- 市场背景：
 {market_snapshot}
-
-【追加数据】
+- 追加数据：
 {supplements}
 
-请基于以上数据给出该部门对当前股票的操作建议。输出必须是 JSON，字段如下：
+【分析步骤】
+1. 判断信息是否充分，如不充分，请说明缺口并优先调用工具 `fetch_data`（仅限 `daily`、`daily_basic`）。
+2. 梳理 2-3 个关键支撑信号与潜在风险，确保基于提供的数据。
+3. 结合量化证据与限制条件，给出操作建议和信心来源，避免主观臆测。
+
+【输出要求】
+仅返回一个 JSON 对象，不要添加额外文本：
 {{
   "action": "BUY|BUY_S|BUY_M|BUY_L|SELL|HOLD",
-  "confidence": 0-1 之间的小数，表示信心,
-  "summary": "一句话概括理由",
-  "signals": ["详细要点", "..."],
-  "risks": ["风险点", "..."]
+  "confidence": 0-1 之间的小数，
+  "summary": "一句话结论",
+  "signals": ["关键支撑要点", "..."],
+  "risks": ["关键风险要点", "..."]
 }}
-
-如需额外数据，请调用工具 `fetch_data`，仅支持请求 `daily` 或 `daily_basic` 表。
-请严格返回单个 JSON 对象，不要添加额外文本。
+如需说明未完成的数据请求，请在 `risks` 或 `signals` 中明确。
 """,
         "variables": [
-            "title", "ts_code", "trade_date", "description", "instruction",
-            "data_scope", "features", "market_snapshot", "supplements"
+            "title",
+            "ts_code",
+            "trade_date",
+            "description",
+            "instruction",
+            "data_scope",
+            "features",
+            "market_snapshot",
+            "supplements",
         ],
         "required_context": [
-            "ts_code", "trade_date", "features", "market_snapshot"
+            "ts_code",
+            "trade_date",
+            "features",
+            "market_snapshot",
         ],
-        "validation_rules": [
-            "len(features) > 0",
-            "len(market_snapshot) > 0"
-        ]
+        "metadata": {
+            "category": "department",
+            "preset": "base",
+        },
     },
     "momentum_dept": {
-        "name": "动量研究部门",
-        "description": "专注于动量因子分析的部门模板",
+        "name": "动量研究部门模板",
+        "description": "围绕价格与量能动量的决策提示",
         "template": """
-部门名称：动量研究部门
+部门：动量研究部门
 股票代码：{ts_code}
 交易日：{trade_date}
 
-角色说明：专注于分析股票价格动量、成交量动量和技术指标动量
-职责指令：重点关注以下方面:
-1. 价格趋势强度和持续性
-2. 成交量配合度
-3. 技术指标背离
+【角色定位】
+- 专注价格动量、成交量共振与技术指标背离。
+- 保持纪律，识别趋势延续与反转风险。
 
-【可用数据范围】
+【研究重点】
+1. 多时间窗口动量是否同向？
+2. 成交量是否验证价格走势？
+3. 是否出现过热或背离信号？
+
+【数据边界】
+- 可用字段：
 {data_scope}
-
-【动量特征】
+- 动量特征：
 {features}
-
-【市场背景】
+- 市场背景：
 {market_snapshot}
-
-【追加数据】
+- 追加数据：
 {supplements}
 
-请基于以上数据进行动量分析并给出操作建议。输出必须是 JSON，字段如下：
-{{
-  "action": "BUY|BUY_S|BUY_M|BUY_L|SELL|HOLD",
-  "confidence": 0-1 之间的小数，表示信心,
-  "summary": "一句话概括动量分析结论",
-  "signals": ["动量信号要点", "..."],
-  "risks": ["动量风险点", "..."]
-}}
+请沿用【部门基础模板】的分析步骤与输出要求，重点量化趋势动能和量价配合度。
 """,
         "variables": [
-            "ts_code", "trade_date", "data_scope", 
-            "features", "market_snapshot", "supplements"
+            "ts_code",
+            "trade_date",
+            "data_scope",
+            "features",
+            "market_snapshot",
+            "supplements",
         ],
         "required_context": [
-            "ts_code", "trade_date", "features", "market_snapshot"
+            "ts_code",
+            "trade_date",
+            "features",
+            "market_snapshot",
         ],
-        "validation_rules": [
-            "len(features) > 0",
-            "'momentum' in ' '.join(features.keys()).lower()"
-        ]
-    }
+        "metadata": {
+            "category": "department",
+            "preset": "momentum",
+        },
+    },
+    "value_dept": {
+        "name": "价值评估部门模板",
+        "description": "衡量估值与盈利质量的提示词",
+        "template": """
+部门：价值评估部门
+股票代码：{ts_code}
+交易日：{trade_date}
+
+【角色定位】
+- 关注估值分位、盈利质量与安全边际。
+- 从中期配置角度评价当前价格的性价比。
+
+【研究重点】
+1. 历史及同业视角的估值位置。
+2. 盈利与分红的可持续性。
+3. 潜在的估值修复催化或压制因素。
+
+【数据边界】
+- 可用字段：
+{data_scope}
+- 估值与质量特征：
+{features}
+- 市场背景：
+{market_snapshot}
+- 追加数据：
+{supplements}
+
+请按照【部门基础模板】的分析步骤输出结论，并明确估值安全边际来源。
+""",
+        "variables": [
+            "ts_code",
+            "trade_date",
+            "data_scope",
+            "features",
+            "market_snapshot",
+            "supplements",
+        ],
+        "required_context": [
+            "ts_code",
+            "trade_date",
+            "features",
+            "market_snapshot",
+        ],
+        "metadata": {
+            "category": "department",
+            "preset": "value",
+        },
+    },
+    "news_dept": {
+        "name": "新闻情绪部门模板",
+        "description": "针对舆情热度与事件影响的提示词",
+        "template": """
+部门：新闻情绪部门
+股票代码：{ts_code}
+交易日：{trade_date}
+
+【角色定位】
+- 监控舆情热度、事件驱动与短期情绪。
+- 评估新闻对价格波动的正负面影响。
+
+【研究重点】
+1. 新闻情绪是否集中且持续？
+2. 主题与行情是否匹配？
+3. 情绪驱动的风险敞口。
+
+【数据边界】
+- 可用字段：
+{data_scope}
+- 舆情特征：
+{features}
+- 市场背景：
+{market_snapshot}
+- 追加数据：
+{supplements}
+
+请遵循【部门基础模板】的分析步骤，突出情绪驱动的力度与时效性。
+""",
+        "variables": [
+            "ts_code",
+            "trade_date",
+            "data_scope",
+            "features",
+            "market_snapshot",
+            "supplements",
+        ],
+        "required_context": [
+            "ts_code",
+            "trade_date",
+            "features",
+            "market_snapshot",
+        ],
+        "metadata": {
+            "category": "department",
+            "preset": "news",
+        },
+    },
+    "liquidity_dept": {
+        "name": "流动性评估部门模板",
+        "description": "衡量成交活跃度与执行成本的提示词",
+        "template": """
+部门：流动性评估部门
+股票代码：{ts_code}
+交易日：{trade_date}
+
+【角色定位】
+- 评估成交活跃度、交易成本与可执行性。
+- 提醒潜在的流动性风险与仓位限制。
+
+【研究重点】
+1. 当前成交量与历史均值的对比。
+2. 价量限制（涨跌停、停牌等）对执行的影响。
+3. 预估滑点与转手难度。
+
+【数据边界】
+- 可用字段：
+{data_scope}
+- 流动性特征：
+{features}
+- 市场背景：
+{market_snapshot}
+- 追加数据：
+{supplements}
+
+请遵循【部门基础模板】的分析步骤，重点描述执行可行性与仓位建议。
+""",
+        "variables": [
+            "ts_code",
+            "trade_date",
+            "data_scope",
+            "features",
+            "market_snapshot",
+            "supplements",
+        ],
+        "required_context": [
+            "ts_code",
+            "trade_date",
+            "features",
+            "market_snapshot",
+        ],
+        "metadata": {
+            "category": "department",
+            "preset": "liquidity",
+        },
+    },
+    "macro_dept": {
+        "name": "宏观研究部门模板",
+        "description": "宏观与行业景气度分析提示词",
+        "template": """
+部门：宏观研究部门
+股票代码：{ts_code}
+交易日：{trade_date}
+
+【角色定位】
+- 追踪宏观周期、行业景气与相对强弱。
+- 评估宏观事件对该标的的方向性影响。
+
+【研究重点】
+1. 行业相对大盘的表现与热点程度。
+2. 宏观/政策事件对行业或标的的指引。
+3. 需警惕的宏观风险与流动性环境。
+
+【数据边界】
+- 可用字段：
+{data_scope}
+- 宏观特征：
+{features}
+- 市场背景：
+{market_snapshot}
+- 追加数据：
+{supplements}
+
+请执行【部门基础模板】的分析步骤，并输出宏观驱动的信号与风险。
+""",
+        "variables": [
+            "ts_code",
+            "trade_date",
+            "data_scope",
+            "features",
+            "market_snapshot",
+            "supplements",
+        ],
+        "required_context": [
+            "ts_code",
+            "trade_date",
+            "features",
+            "market_snapshot",
+        ],
+        "metadata": {
+            "category": "department",
+            "preset": "macro",
+        },
+    },
+    "risk_dept": {
+        "name": "风险控制部门模板",
+        "description": "识别极端风险与限制条件的提示词",
+        "template": """
+部门：风险控制部门
+股票代码：{ts_code}
+交易日：{trade_date}
+
+【角色定位】
+- 防范停牌、涨跌停、仓位与合规限制。
+- 必要时对高风险决策行使否决权。
+
+【研究重点】
+1. 交易限制或异常波动情况。
+2. 仓位、集中度或风险指标是否触顶。
+3. 潜在的黑天鹅或执行障碍。
+
+【数据边界】
+- 可用字段：
+{data_scope}
+- 风险特征：
+{features}
+- 市场背景：
+{market_snapshot}
+- 追加数据：
+{supplements}
+
+请按照【部门基础模板】的分析步骤，必要时明确阻止交易的理由。
+""",
+        "variables": [
+            "ts_code",
+            "trade_date",
+            "data_scope",
+            "features",
+            "market_snapshot",
+            "supplements",
+        ],
+        "required_context": [
+            "ts_code",
+            "trade_date",
+            "features",
+            "market_snapshot",
+        ],
+        "metadata": {
+            "category": "department",
+            "preset": "risk",
+        },
+    },
 }
 
 

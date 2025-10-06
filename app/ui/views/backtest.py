@@ -331,6 +331,7 @@ def render_backtest_review() -> None:
                 )
 
                 specs: List[ParameterSpec] = []
+                spec_labels: List[str] = []
                 action_values: List[float] = []
                 range_valid = True
                 for idx, agent_name in enumerate(selected_agents):
@@ -374,15 +375,111 @@ def render_backtest_review() -> None:
                             maximum=max_val,
                         )
                     )
+                    spec_labels.append(f"agent:{agent_name}")
                     action_values.append(action_val)
+
+                controls_valid = True
+                with st.expander("部门 LLM 参数", expanded=False):
+                    dept_codes = sorted(app_cfg.departments.keys())
+                    if not dept_codes:
+                        st.caption("当前未配置部门。")
+                    else:
+                        selected_departments = st.multiselect(
+                            "选择需要调整的部门",
+                            dept_codes,
+                            default=[],
+                            key="decision_env_departments",
+                        )
+                        tool_policy_values = ["auto", "none", "required"]
+                        for dept_code in selected_departments:
+                            settings = app_cfg.departments.get(dept_code)
+                            if not settings:
+                                continue
+                            st.subheader(f"部门：{settings.title or dept_code}")
+                            base_temp = 0.2
+                            if settings.llm and settings.llm.primary and settings.llm.primary.temperature is not None:
+                                base_temp = float(settings.llm.primary.temperature)
+                            prefix = f"decision_env_dept_{dept_code}"
+                            col_tmin, col_tmax, col_tslider = st.columns([1, 1, 2])
+                            temp_min = col_tmin.number_input(
+                                "温度最小值",
+                                min_value=0.0,
+                                max_value=2.0,
+                                value=max(0.0, base_temp - 0.3),
+                                step=0.05,
+                                key=f"{prefix}_temp_min",
+                            )
+                            temp_max = col_tmax.number_input(
+                                "温度最大值",
+                                min_value=0.0,
+                                max_value=2.0,
+                                value=min(2.0, base_temp + 0.3),
+                                step=0.05,
+                                key=f"{prefix}_temp_max",
+                            )
+                            if temp_max <= temp_min:
+                                controls_valid = False
+                                st.warning("温度最大值必须大于最小值。")
+                                temp_max = min(2.0, temp_min + 0.01)
+                            span = temp_max - temp_min
+                            if span <= 0:
+                                ratio_default = 0.0
+                            else:
+                                clamped = min(max(base_temp, temp_min), temp_max)
+                                ratio_default = (clamped - temp_min) / span
+                            temp_action = col_tslider.slider(
+                                "动作值（映射至温度区间）",
+                                min_value=0.0,
+                                max_value=1.0,
+                                value=float(ratio_default),
+                                step=0.01,
+                                key=f"{prefix}_temp_action",
+                            )
+                            specs.append(
+                                ParameterSpec(
+                                    name=f"dept_temperature_{dept_code}",
+                                    target=f"department.{dept_code}.temperature",
+                                    minimum=temp_min,
+                                    maximum=temp_max,
+                                )
+                            )
+                            spec_labels.append(f"department:{dept_code}:temperature")
+                            action_values.append(temp_action)
+
+                            col_tool, col_hint = st.columns([1, 2])
+                            tool_choice = col_tool.selectbox(
+                                "函数调用策略",
+                                tool_policy_values,
+                                index=tool_policy_values.index("auto"),
+                                key=f"{prefix}_tool_choice",
+                            )
+                            col_hint.caption("映射提示：0→auto，0.5→none，1→required。")
+                            if len(tool_policy_values) > 1:
+                                tool_value = tool_policy_values.index(tool_choice) / (len(tool_policy_values) - 1)
+                            else:
+                                tool_value = 0.0
+                            specs.append(
+                                ParameterSpec(
+                                    name=f"dept_tool_{dept_code}",
+                                    target=f"department.{dept_code}.function_policy",
+                                    values=tool_policy_values,
+                                )
+                            )
+                            spec_labels.append(f"department:{dept_code}:tool_choice")
+                            action_values.append(tool_value)
+
+                if specs:
+                    st.caption("动作维度顺序：" + "，".join(spec_labels))
 
                 run_decision_env = st.button("执行单次调参", key="run_decision_env_button")
                 just_finished_single = False
                 if run_decision_env:
-                    if not selected_agents:
-                        st.warning("请至少选择一个代理进行调参。")
-                    elif not range_valid:
+                    if not specs:
+                        st.warning("请至少配置一个动作维度（代理或部门参数）。")
+                    elif selected_agents and not range_valid:
                         st.error("请确保所有代理的最大权重大于最小权重。")
+                    elif not controls_valid:
+                        st.error("请修正部门参数的取值范围。")
                     else:
                         LOGGER.info(
                             "离线调参（单次）按钮点击，已选择代理=%s 动作=%s disable_departments=%s",
@@ -448,11 +545,11 @@ def render_backtest_review() -> None:
                                         resolved_experiment_id = experiment_id or str(uuid.uuid4())
                                         resolved_strategy = strategy_label or "DecisionEnv"
                                         action_payload = {
-                                            name: value
-                                            for name, value in zip(selected_agents, action_values)
+                                            label: value for label, value in zip(spec_labels, action_values)
                                         }
                                         metrics_payload = dict(observation)
                                         metrics_payload["reward"] = reward
+                                        metrics_payload["department_controls"] = info.get("department_controls")
                                         log_success = False
                                         try:
                                             log_tuning_result(
@@ -477,12 +574,14 @@ def render_backtest_review() -> None:
                                             "observation": dict(observation),
                                             "reward": float(reward),
                                             "weights": info.get("weights", {}),
+                                            "department_controls": info.get("department_controls"),
+                                            "actions": action_payload,
                                             "nav_series": info.get("nav_series"),
                                             "trades": info.get("trades"),
                                             "portfolio_snapshots": info.get("portfolio_snapshots"),
                                             "portfolio_trades": info.get("portfolio_trades"),
                                             "risk_breakdown": info.get("risk_breakdown"),
-                                            "selected_agents": list(selected_agents),
+                                            "spec_labels": list(spec_labels),
                                             "action_values": list(action_values),
                                             "experiment_id": resolved_experiment_id,
                                             "strategy_label": resolved_strategy,
@@ -562,6 +661,16 @@ def render_backtest_review() -> None:
                         with st.expander("风险事件统计", expanded=False):
                             st.json(risk_breakdown)
 
+                    department_info = single_result.get("department_controls") or {}
+                    if department_info:
+                        with st.expander("部门控制参数", expanded=False):
+                            st.json(department_info)
+
+                    action_snapshot = single_result.get("actions") or {}
+                    if action_snapshot:
+                        with st.expander("动作明细", expanded=False):
+                            st.json(action_snapshot)
+
                     if st.button("清除单次调参结果", key="clear_decision_env_single"):
                         st.session_state.pop(_DECISION_ENV_SINGLE_RESULT_KEY, None)
                         st.success("已清除单次调参结果缓存。")
@@ -584,10 +693,12 @@ def render_backtest_review() -> None:
                 run_batch = st.button("批量执行调参", key="run_decision_env_batch")
                 batch_just_ran = False
                 if run_batch:
-                    if not selected_agents:
-                        st.warning("请先选择调参代理。")
-                    elif not range_valid:
+                    if not specs:
+                        st.warning("请至少配置一个动作维度。")
+                    elif selected_agents and not range_valid:
                         st.error("请确保所有代理的最大权重大于最小权重。")
+                    elif not controls_valid:
+                        st.error("请修正部门参数的取值范围。")
                     else:
                         LOGGER.info(
                             "离线调参（批量）按钮点击，已选择代理=%s disable_departments=%s",
@@ -693,11 +804,12 @@ def render_backtest_review() -> None:
                                                     extra=LOG_EXTRA,
                                                 )
                                                 action_payload = {
-                                                    name: value
-                                                    for name, value in zip(selected_agents, action_vals)
+                                                    label: value
+                                                    for label, value in zip(spec_labels, action_vals)
                                                 }
                                                 metrics_payload = dict(observation)
                                                 metrics_payload["reward"] = reward
+                                                metrics_payload["department_controls"] = info.get("department_controls")
                                                 weights_payload = info.get("weights", {})
                                                 try:
                                                     log_tuning_result(
@@ -713,13 +825,14 @@ def render_backtest_review() -> None:
                                                 results.append(
                                                     {
                                                         "序号": idx,
-                                                        "动作": action_vals,
+                                                        "动作": action_payload,
                                                         "状态": "ok",
                                                         "总收益": observation.get("total_return", 0.0),
                                                         "最大回撤": observation.get("max_drawdown", 0.0),
                                                         "波动率": observation.get("volatility", 0.0),
                                                         "奖励": reward,
                                                         "权重": weights_payload,
+                                                        "部门控制": info.get("department_controls"),
                                                     }
                                                 )
                                     st.session_state[_DECISION_ENV_BATCH_RESULTS_KEY] = {

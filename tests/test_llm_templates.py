@@ -169,6 +169,12 @@ def test_default_templates():
     assert momentum is not None
     assert "动量研究部门" in momentum.name
 
+    assert TemplateRegistry.get("value_dept") is not None
+    assert TemplateRegistry.get("news_dept") is not None
+    assert TemplateRegistry.get("liquidity_dept") is not None
+    assert TemplateRegistry.get("macro_dept") is not None
+    assert TemplateRegistry.get("risk_dept") is not None
+
     # Validate template content
     assert all("{" + var + "}" in dept_base.template for var in dept_base.variables)
     assert all("{" + var + "}" in momentum.template for var in momentum.variables)

@@ -93,6 +93,38 @@ class DepartmentAgent:
         self._resolver = resolver
         self._broker = DataBroker()
         self._max_rounds = 3
+        self._tool_choice = "auto"
+
+    @property
+    def max_rounds(self) -> int:
+        return self._max_rounds
+
+    @max_rounds.setter
+    def max_rounds(self, value: Any) -> None:
+        try:
+            numeric = int(round(float(value)))
+        except (TypeError, ValueError):
+            raise ValueError("max_rounds must be numeric") from None
+        if numeric < 1:
+            numeric = 1
+        if numeric > 6:
+            numeric = 6
+        self._max_rounds = numeric
+
+    @property
+    def tool_choice(self) -> str:
+        return self._tool_choice
+
+    @tool_choice.setter
+    def tool_choice(self, value: Any) -> None:
+        if value is None:
+            self._tool_choice = "auto"
+            return
+        normalized = str(value).strip().lower()
+        allowed = {"auto", "none", "required"}
+        if normalized not in allowed:
+            raise ValueError(f"Unsupported tool choice: {value}")
+        self._tool_choice = normalized
 
     def _get_llm_config(self) -> LLMConfig:
         if self._resolver:
@@ -159,7 +191,7 @@ class DepartmentAgent:
                     primary_endpoint,
                     messages,
                     tools=tools,
-                    tool_choice="auto",
+                    tool_choice=self._tool_choice,
                 )
             except LLMError as exc:
                 LOGGER.warning(

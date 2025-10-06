@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import math
+import copy
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
@@ -18,16 +19,26 @@ LOG_EXTRA = {"stage": "decision_env"}
 
 @dataclass(frozen=True)
 class ParameterSpec:
-    """Defines how a scalar action dimension maps to strategy parameters."""
+    """Defines how an action dimension maps to strategy parameters or behaviors."""
 
     name: str
     target: str
     minimum: float = 0.0
     maximum: float = 1.0
+    values: Optional[Sequence[Any]] = None
 
     def clamp(self, value: float) -> float:
         clipped = max(0.0, min(1.0, float(value)))
         return self.minimum + clipped * (self.maximum - self.minimum)
+
+    def resolve(self, value: float) -> Any:
+        if self.values is not None:
+            if not self.values:
+                raise ValueError(f"ParameterSpec {self.name} configured with empty values list")
+            clipped = max(0.0, min(1.0, float(value)))
+            index = int(round(clipped * (len(self.values) - 1)))
+            return self.values[index]
+        return self.clamp(value)
 
 
 @dataclass
@@ -68,6 +79,7 @@ class DecisionEnv:
         self._reward_fn = reward_fn or self._default_reward
         self._last_metrics: Optional[EpisodeMetrics] = None
         self._last_action: Optional[Tuple[float, ...]] = None
+        self._last_department_controls: Optional[Dict[str, Dict[str, Any]]] = None
         self._episode = 0
         self._disable_departments = bool(disable_departments)
 
@@ -75,10 +87,15 @@ class DecisionEnv:
     def action_dim(self) -> int:
         return len(self._specs)
 
+    @property
+    def last_department_controls(self) -> Optional[Dict[str, Dict[str, Any]]]:
+        return self._last_department_controls
+
     def reset(self) -> Dict[str, float]:
         self._episode += 1
         self._last_metrics = None
         self._last_action = None
+        self._last_department_controls = None
         return {
             "episode": float(self._episode),
             "baseline_return": 0.0,
@@ -90,14 +107,24 @@ class DecisionEnv:
         action_array = [float(val) for val in action]
         self._last_action = tuple(action_array)
 
-        weights = self._build_weights(action_array)
-        LOGGER.info("episode=%s action=%s weights=%s", self._episode, action_array, weights, extra=LOG_EXTRA)
+        weights, department_controls = self._prepare_actions(action_array)
+        LOGGER.info(
+            "episode=%s action=%s weights=%s controls=%s",
+            self._episode,
+            action_array,
+            weights,
+            department_controls,
+            extra=LOG_EXTRA,
+        )
 
         cfg = replace(self._template_cfg)
         engine = BacktestEngine(cfg)
         engine.weights = weight_map(weights)
         if self._disable_departments:
             engine.department_manager = None
+            applied_controls: Dict[str, Dict[str, Any]] = {}
+        else:
+            applied_controls = self._apply_department_controls(engine, department_controls)
 
         self._clear_portfolio_records()
 
@@ -135,19 +162,153 @@ class DecisionEnv:
             "risk_events": getattr(result, "risk_events", []),
             "portfolio_snapshots": snapshots,
             "portfolio_trades": trades_override,
+            "department_controls": applied_controls,
         }
+        self._last_department_controls = applied_controls
         return observation, reward, True, info
 
-    def _build_weights(self, action: Sequence[float]) -> Dict[str, float]:
+    def _prepare_actions(
+        self,
+        action: Sequence[float],
+    ) -> Tuple[Dict[str, float], Dict[str, Dict[str, Any]]]:
         weights = dict(self._baseline_weights)
+        department_controls: Dict[str, Dict[str, Any]] = {}
         for idx, spec in enumerate(self._specs):
-            value = spec.clamp(action[idx])
+            try:
+                resolved = spec.resolve(action[idx])
+            except ValueError as exc:
+                LOGGER.warning("参数 %s 解析失败：%s", spec.name, exc, extra=LOG_EXTRA)
+                continue
             if spec.target.startswith("agent_weights."):
                 agent_name = spec.target.split(".", 1)[1]
-                weights[agent_name] = value
+                try:
+                    weights[agent_name] = float(resolved)
+                except (TypeError, ValueError):
+                    LOGGER.debug(
+                        "spec %s produced non-numeric weight %s; skipping",
+                        spec.name,
+                        resolved,
+                        extra=LOG_EXTRA,
+                    )
+                continue
+            if spec.target.startswith("department."):
+                target_path = spec.target.split(".")[1:]
+                if len(target_path) < 2:
+                    LOGGER.debug("未识别的部门目标：%s", spec.target, extra=LOG_EXTRA)
+                    continue
+                dept_code = target_path[0]
+                field = ".".join(target_path[1:])
+                dept_controls = department_controls.setdefault(dept_code, {})
+                dept_controls[field] = resolved
+                continue
             else:
                 LOGGER.debug("暂未支持的参数目标：%s", spec.target, extra=LOG_EXTRA)
-        return weights
+        return weights, department_controls
+
+    def _apply_department_controls(
+        self,
+        engine: BacktestEngine,
+        controls: Mapping[str, Mapping[str, Any]],
+    ) -> Dict[str, Dict[str, Any]]:
+        manager = getattr(engine, "department_manager", None)
+        if not manager or not getattr(manager, "agents", None):
+            return {}
+
+        applied: Dict[str, Dict[str, Any]] = {}
+        for dept_code, payload in controls.items():
+            agent = manager.agents.get(dept_code)
+            if not agent or not isinstance(payload, Mapping):
+                continue
+
+            applied_fields: Dict[str, Any] = {}
+
+            # Ensure mutable settings clone to avoid global side-effects
+            try:
+                original_settings = agent.settings
+                cloned_settings = replace(original_settings)
+                cloned_settings.llm = copy.deepcopy(original_settings.llm)
+                agent.settings = cloned_settings
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning(
+                    "复制部门 %s 配置失败：%s",
+                    dept_code,
+                    exc,
+                    extra=LOG_EXTRA,
+                )
+                continue
+
+            for raw_field, value in payload.items():
+                field = raw_field.lower()
+                if field == "function_policy":
+                    field = "tool_choice"
+                if field in {"prompt", "instruction"}:
+                    agent.settings.prompt = str(value)
+                    applied_fields[field] = agent.settings.prompt
+                    continue
+                if field == "description":
+                    agent.settings.description = str(value)
+                    applied_fields[field] = agent.settings.description
+                    continue
+                if field in {"prompt_template_id", "prompt_template"}:
+                    agent.settings.prompt_template_id = str(value)
+                    applied_fields["prompt_template_id"] = agent.settings.prompt_template_id
+                    continue
+                if field == "prompt_template_version":
+                    agent.settings.prompt_template_version = str(value)
+                    applied_fields["prompt_template_version"] = agent.settings.prompt_template_version
+                    continue
+                if field in {"temperature", "llm.temperature"}:
+                    try:
+                        temperature = max(0.0, min(2.0, float(value)))
+                        agent.settings.llm.primary.temperature = temperature
+                        applied_fields["temperature"] = temperature
+                    except (TypeError, ValueError):
+                        LOGGER.debug(
+                            "无效的温度值 %s for %s",
+                            value,
+                            dept_code,
+                            extra=LOG_EXTRA,
+                        )
+                    continue
+                if field in {"tool_choice", "tool_strategy"}:
+                    try:
+                        agent.tool_choice = value
+                        applied_fields["tool_choice"] = agent.tool_choice
+                    except ValueError:
+                        LOGGER.debug(
+                            "部门 %s 工具策略 %s 无效",
+                            dept_code,
+                            value,
+                            extra=LOG_EXTRA,
+                        )
+                    continue
+                if field == "max_rounds":
+                    try:
+                        agent.max_rounds = value
+                        applied_fields["max_rounds"] = agent.max_rounds
+                    except ValueError:
+                        LOGGER.debug(
+                            "部门 %s max_rounds %s 无效",
+                            dept_code,
+                            value,
+                            extra=LOG_EXTRA,
+                        )
+                    continue
+                if field == "prompt_template_override":
+                    agent.settings.prompt = str(value)
+                    applied_fields["prompt"] = agent.settings.prompt
+                    continue
+                LOGGER.debug(
+                    "部门 %s 未识别的控制项 %s",
+                    dept_code,
+                    raw_field,
+                    extra=LOG_EXTRA,
+                )
+
+            if applied_fields:
+                applied[dept_code] = applied_fields
+
+        return applied
 
     def _compute_metrics(
         self,
