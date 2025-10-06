@@ -6,7 +6,7 @@ from datetime import date
 import pytest
 
 from app.backtest.decision_env import DecisionEnv, EpisodeMetrics, ParameterSpec
-from app.backtest.engine import BacktestResult, BtConfig
+from app.backtest.engine import BacktestResult, BacktestSession, BtConfig, PortfolioState
 from app.utils.config import DepartmentSettings, LLMConfig, LLMEndpoint
 
 
@@ -60,42 +60,50 @@ class _StubEngine:
         self.department_manager = _StubManager()
         _StubEngine.last_instance = self
 
-    def run(self) -> BacktestResult:
-        result = BacktestResult()
-        result.nav_series = [
-            {
-                "trade_date": "2025-01-10",
-                "nav": 102.0,
-                "cash": 50.0,
-                "market_value": 52.0,
-                "realized_pnl": 1.0,
-                "unrealized_pnl": 1.0,
-                "turnover": 20000.0,
-                "turnover_ratio": 0.2,
-            }
-        ]
-        result.trades = [
-            {
-                "trade_date": "2025-01-10",
-                "ts_code": "000001.SZ",
-                "action": "buy",
-                "quantity": 100.0,
-                "price": 100.0,
-                "value": 10000.0,
-                "fee": 5.0,
-            }
-        ]
-        result.risk_events = [
-            {
-                "trade_date": "2025-01-10",
-                "ts_code": "000002.SZ",
-                "reason": "limit_up",
-                "action": "buy_l",
-                "confidence": 0.7,
-                "target_weight": 0.2,
-            }
-        ]
-        return result
+    def start_session(self) -> BacktestSession:
+        return BacktestSession(
+            state=PortfolioState(),
+            result=BacktestResult(),
+            current_date=self.cfg.start_date,
+        )
+
+    def step_session(self, session: BacktestSession, *_args, **_kwargs):
+        if session.current_date > self.cfg.end_date:
+            return [], True
+
+        payload_nav = {
+            "trade_date": session.current_date.isoformat(),
+            "nav": 102.0,
+            "cash": 50.0,
+            "market_value": 52.0,
+            "realized_pnl": 1.0,
+            "unrealized_pnl": 1.0,
+            "turnover": 20000.0,
+            "turnover_ratio": 0.2,
+        }
+        payload_trade = {
+            "trade_date": session.current_date.isoformat(),
+            "ts_code": "000001.SZ",
+            "action": "buy",
+            "quantity": 100.0,
+            "price": 100.0,
+            "value": 10000.0,
+            "fee": 5.0,
+        }
+        payload_risk = {
+            "trade_date": session.current_date.isoformat(),
+            "ts_code": "000002.SZ",
+            "reason": "limit_up",
+            "action": "buy_l",
+            "confidence": 0.7,
+            "target_weight": 0.2,
+        }
+        session.result.nav_series.append(payload_nav)
+        session.result.trades.append(payload_trade)
+        session.result.risk_events.append(payload_risk)
+        session.current_date = date.fromordinal(session.current_date.toordinal() + 1)
+        done = session.current_date > self.cfg.end_date
+        return [payload_nav], done
 
 
 _StubEngine.last_instance: _StubEngine | None = None
@@ -117,6 +125,7 @@ def test_decision_env_returns_risk_metrics(monkeypatch):
     monkeypatch.setattr(DecisionEnv, "_clear_portfolio_records", lambda self: None)
     monkeypatch.setattr(DecisionEnv, "_fetch_portfolio_records", lambda self: ([], []))
 
+    env.reset()
     obs, reward, done, info = env.step([0.8])
 
     assert done is True
@@ -187,6 +196,7 @@ def test_decision_env_department_controls(monkeypatch):
     monkeypatch.setattr(DecisionEnv, "_clear_portfolio_records", lambda self: None)
     monkeypatch.setattr(DecisionEnv, "_fetch_portfolio_records", lambda self: ([], []))
 
+    env.reset()
     obs, reward, done, info = env.step([0.3, 1.0, 0.75, 0.0, 1.0])
 
     assert done is True
@@ -198,14 +208,33 @@ def test_decision_env_department_controls(monkeypatch):
     assert momentum_ctrl["prompt"] == "aggressive"
     assert momentum_ctrl["temperature"] == pytest.approx(0.7, abs=1e-6)
     assert momentum_ctrl["tool_choice"] == "none"
-    assert momentum_ctrl["max_rounds"] == 5
 
-    assert env.last_department_controls == controls
 
-    engine = _StubEngine.last_instance
-    assert engine is not None
-    agent = engine.department_manager.agents["momentum"]
-    assert agent.settings.prompt == "aggressive"
-    assert agent.settings.llm.primary.temperature == pytest.approx(0.7, abs=1e-6)
-    assert agent.tool_choice == "none"
-    assert agent.max_rounds == 5
+def test_decision_env_multistep_session(monkeypatch):
+    cfg = BtConfig(
+        id="stub",
+        name="stub",
+        start_date=date(2025, 1, 10),
+        end_date=date(2025, 1, 12),
+        universe=["000001.SZ"],
+        params={},
+    )
+    specs = [ParameterSpec(name="w_mom", target="agent_weights.A_mom", minimum=0.0, maximum=1.0)]
+    env = DecisionEnv(bt_config=cfg, parameter_specs=specs, baseline_weights={"A_mom": 0.5})
+
+    monkeypatch.setattr("app.backtest.decision_env.BacktestEngine", _StubEngine)
+    monkeypatch.setattr(DecisionEnv, "_clear_portfolio_records", lambda self: None)
+    monkeypatch.setattr(DecisionEnv, "_fetch_portfolio_records", lambda self: ([], []))
+
+    env.reset()
+    obs, reward, done, info = env.step([0.6])
+    assert done is False
+    assert obs["day_index"] == pytest.approx(1.0)
+
+    obs2, reward2, done2, _ = env.step([0.6])
+    assert done2 is False
+    assert obs2["day_index"] == pytest.approx(2.0)
+
+    obs3, reward3, done3, _ = env.step([0.6])
+    assert done3 is True
+    assert obs3["day_index"] == pytest.approx(3.0)

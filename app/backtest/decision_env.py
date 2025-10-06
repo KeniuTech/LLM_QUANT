@@ -7,8 +7,9 @@ import copy
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from .engine import BacktestEngine, BacktestResult, BtConfig
-from app.agents.game import Decision
+from datetime import date
+
+from .engine import BacktestEngine, BacktestResult, BacktestSession, BtConfig
 from app.agents.registry import weight_map
 from app.utils.db import db_session
 from app.utils.logging import get_logger
@@ -82,6 +83,10 @@ class DecisionEnv:
         self._last_department_controls: Optional[Dict[str, Dict[str, Any]]] = None
         self._episode = 0
         self._disable_departments = bool(disable_departments)
+        self._engine: Optional[BacktestEngine] = None
+        self._session: Optional[BacktestSession] = None
+        self._cumulative_reward = 0.0
+        self._day_index = 0
 
     @property
     def action_dim(self) -> int:
@@ -96,9 +101,30 @@ class DecisionEnv:
         self._last_metrics = None
         self._last_action = None
         self._last_department_controls = None
+        self._cumulative_reward = 0.0
+        self._day_index = 0
+
+        cfg = replace(self._template_cfg)
+        self._engine = BacktestEngine(cfg)
+        self._engine.weights = weight_map(self._baseline_weights)
+        if self._disable_departments:
+            self._engine.department_manager = None
+
+        self._clear_portfolio_records()
+
+        self._session = self._engine.start_session()
         return {
             "episode": float(self._episode),
-            "baseline_return": 0.0,
+            "day_index": 0.0,
+            "date_ord": float(self._template_cfg.start_date.toordinal()),
+            "nav": float(self._session.state.cash),
+            "total_return": 0.0,
+            "max_drawdown": 0.0,
+            "volatility": 0.0,
+            "turnover": 0.0,
+            "sharpe_like": 0.0,
+            "trade_count": 0.0,
+            "risk_count": 0.0,
         }
 
     def step(self, action: Sequence[float]) -> Tuple[Dict[str, float], float, bool, Dict[str, object]]:
@@ -117,55 +143,56 @@ class DecisionEnv:
             extra=LOG_EXTRA,
         )
 
-        cfg = replace(self._template_cfg)
-        engine = BacktestEngine(cfg)
+        engine = self._engine
+        session = self._session
+        if engine is None or session is None:
+            raise RuntimeError("environment not initialised; call reset() before step()")
+
         engine.weights = weight_map(weights)
         if self._disable_departments:
+            applied_controls = {}
             engine.department_manager = None
-            applied_controls: Dict[str, Dict[str, Any]] = {}
         else:
             applied_controls = self._apply_department_controls(engine, department_controls)
 
-        self._clear_portfolio_records()
-
         try:
-            result = engine.run()
+            records, done = engine.step_session(session)
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("backtest failed under action", extra={**LOG_EXTRA, "error": str(exc)})
             info = {"error": str(exc)}
             return {"failure": 1.0}, -1.0, True, info
 
+        records_list = list(records) if records is not None else []
+
         snapshots, trades_override = self._fetch_portfolio_records()
         metrics = self._compute_metrics(
-            result,
+            session.result,
             nav_override=snapshots if snapshots else None,
             trades_override=trades_override if trades_override else None,
         )
-        reward = float(self._reward_fn(metrics))
+
+        total_reward = float(self._reward_fn(metrics))
+        reward = total_reward - self._cumulative_reward
+        self._cumulative_reward = total_reward
         self._last_metrics = metrics
 
-        observation = {
-            "total_return": metrics.total_return,
-            "max_drawdown": metrics.max_drawdown,
-            "volatility": metrics.volatility,
-            "sharpe_like": metrics.sharpe_like,
-            "turnover": metrics.turnover,
-            "turnover_value": metrics.turnover_value,
-            "trade_count": float(metrics.trade_count),
-            "risk_count": float(metrics.risk_count),
-        }
+        observation = self._build_observation(metrics, records_list, done)
+        observation["turnover_value"] = metrics.turnover_value
         info = {
             "nav_series": metrics.nav_series,
             "trades": metrics.trades,
             "weights": weights,
             "risk_breakdown": metrics.risk_breakdown,
-            "risk_events": getattr(result, "risk_events", []),
+            "risk_events": getattr(session.result, "risk_events", []),
             "portfolio_snapshots": snapshots,
             "portfolio_trades": trades_override,
             "department_controls": applied_controls,
+            "session_done": done,
+            "raw_records": records_list,
         }
         self._last_department_controls = applied_controls
-        return observation, reward, True, info
+        self._day_index += 1
+        return observation, reward, done, info
 
     def _prepare_actions(
         self,
@@ -407,6 +434,51 @@ class DecisionEnv:
         turnover_penalty = 0.1 * metrics.turnover
         penalty = 0.5 * metrics.max_drawdown + risk_penalty + turnover_penalty
         return metrics.total_return - penalty
+
+    def _build_observation(
+        self,
+        metrics: EpisodeMetrics,
+        records: Sequence[Dict[str, Any]] | None,
+        done: bool,
+    ) -> Dict[str, float]:
+        observation: Dict[str, float] = {
+            "day_index": float(self._day_index + 1),
+            "total_return": metrics.total_return,
+            "max_drawdown": metrics.max_drawdown,
+            "volatility": metrics.volatility,
+            "sharpe_like": metrics.sharpe_like,
+            "turnover": metrics.turnover,
+            "trade_count": float(metrics.trade_count),
+            "risk_count": float(metrics.risk_count),
+            "done": 1.0 if done else 0.0,
+        }
+
+        latest_snapshot = metrics.nav_series[-1] if metrics.nav_series else None
+        if latest_snapshot:
+            observation["nav"] = float(latest_snapshot.get("nav", 0.0) or 0.0)
+            observation["cash"] = float(latest_snapshot.get("cash", 0.0) or 0.0)
+            observation["market_value"] = float(latest_snapshot.get("market_value", 0.0) or 0.0)
+            trade_date = latest_snapshot.get("trade_date")
+            if isinstance(trade_date, date):
+                observation["date_ord"] = float(trade_date.toordinal())
+            elif isinstance(trade_date, str):
+                try:
+                    parsed = date.fromisoformat(trade_date)
+                except ValueError:
+                    parsed = None
+                if parsed:
+                    observation["date_ord"] = float(parsed.toordinal())
+            if "turnover_ratio" in latest_snapshot and latest_snapshot["turnover_ratio"] is not None:
+                try:
+                    observation["turnover_ratio"] = float(latest_snapshot["turnover_ratio"])
+                except (TypeError, ValueError):
+                    observation["turnover_ratio"] = 0.0
+
+        # Include a simple proxy for action effect size when available
+        if records:
+            observation["record_count"] = float(len(records))
+
+        return observation
 
     @property
     def last_metrics(self) -> Optional[EpisodeMetrics]:

@@ -71,7 +71,14 @@ class EpsilonGreedyBandit:
         for episode in range(1, self.config.episodes + 1):
             action = self._select_action()
             self.env.reset()
-            obs, reward, done, info = self.env.step(action)
+            done = False
+            cumulative_reward = 0.0
+            obs = {}
+            info: Dict[str, Any] = {}
+            while not done:
+                obs, reward, done, info = self.env.step(action)
+                cumulative_reward += reward
+
             metrics = self.env.last_metrics
             if metrics is None:
                 raise RuntimeError("DecisionEnv did not populate last_metrics")
@@ -79,7 +86,7 @@ class EpsilonGreedyBandit:
             old_estimate = self._value_estimates.get(key, 0.0)
             count = self._counts.get(key, 0) + 1
             self._counts[key] = count
-            self._value_estimates[key] = old_estimate + (reward - old_estimate) / count
+            self._value_estimates[key] = old_estimate + (cumulative_reward - old_estimate) / count
 
             action_payload = self._raw_action_mapping(action)
             resolved_action = self._resolved_action_mapping(action)
@@ -93,7 +100,7 @@ class EpsilonGreedyBandit:
                     experiment_id=self.config.experiment_id,
                     strategy=self.config.strategy,
                     action=action_payload,
-                    reward=reward,
+                    reward=cumulative_reward,
                     metrics=metrics_payload,
                     weights=info.get("weights"),
                 )
@@ -103,7 +110,7 @@ class EpsilonGreedyBandit:
             episode_record = BanditEpisode(
                 action=action_payload,
                 resolved_action=resolved_action,
-                reward=reward,
+                reward=cumulative_reward,
                 metrics=metrics,
                 observation=obs,
                 weights=info.get("weights"),
@@ -113,7 +120,7 @@ class EpsilonGreedyBandit:
             LOGGER.info(
                 "Bandit episode=%s reward=%.4f action=%s",
                 episode,
-                reward,
+                cumulative_reward,
                 action_payload,
                 extra=LOG_EXTRA,
             )

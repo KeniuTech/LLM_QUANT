@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from app.agents.base import AgentAction, AgentContext
 from app.agents.departments import DepartmentManager
@@ -70,6 +70,15 @@ class BacktestResult:
     nav_series: List[Dict[str, float]] = field(default_factory=list)
     trades: List[Dict[str, str]] = field(default_factory=list)
     risk_events: List[Dict[str, object]] = field(default_factory=list)
+
+
+@dataclass
+class BacktestSession:
+    """Holds the mutable state for incremental backtest execution."""
+
+    state: PortfolioState
+    result: BacktestResult
+    current_date: date
 
 
 class BacktestEngine:
@@ -892,18 +901,48 @@ class BacktestEngine:
                     ],
                 )
 
+    def start_session(self) -> BacktestSession:
+        """Initialise a new incremental backtest session."""
+
+        return BacktestSession(
+            state=PortfolioState(),
+            result=BacktestResult(),
+            current_date=self.cfg.start_date,
+        )
+
+    def step_session(
+        self,
+        session: BacktestSession,
+        decision_callback: Optional[Callable[[str, date, AgentContext, Decision], None]] = None,
+    ) -> Tuple[Iterable[Dict[str, Any]], bool]:
+        """Advance the session by a single trade date.
+
+        Returns ``(records, done)`` where ``records`` is the raw output of
+        :meth:`simulate_day` and ``done`` indicates whether the session
+        reached the end date after this step.
+        """
+
+        if session.current_date > self.cfg.end_date:
+            return [], True
+
+        trade_date = session.current_date
+        records = self.simulate_day(trade_date, session.state, decision_callback)
+        self._apply_portfolio_updates(trade_date, session.state, records, session.result)
+        session.current_date = date.fromordinal(trade_date.toordinal() + 1)
+        done = session.current_date > self.cfg.end_date
+        return records, done
+
     def run(
         self,
         decision_callback: Optional[Callable[[str, date, AgentContext, Decision], None]] = None,
     ) -> BacktestResult:
-        state = PortfolioState()
-        result = BacktestResult()
-        current = self.cfg.start_date
-        while current <= self.cfg.end_date:
-            records = self.simulate_day(current, state, decision_callback)
-            self._apply_portfolio_updates(current, state, records, result)
-            current = date.fromordinal(current.toordinal() + 1)
-        return result
+        session = self.start_session()
+        if session.current_date > self.cfg.end_date:
+            return session.result
+
+        while session.current_date <= self.cfg.end_date:
+            self.step_session(session, decision_callback)
+        return session.result
 
 
 def run_backtest(
