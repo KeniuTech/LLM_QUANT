@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
 
 from app.backtest.decision_env import DecisionEnv, EpisodeMetrics
 from app.backtest.decision_env import ParameterSpec
@@ -28,9 +28,12 @@ class BanditConfig:
 @dataclass
 class BanditEpisode:
     action: Dict[str, float]
+    resolved_action: Dict[str, Any]
     reward: float
     metrics: EpisodeMetrics
     observation: Dict[str, float]
+    weights: Mapping[str, float] | None = None
+    department_controls: Mapping[str, Mapping[str, Any]] | None = None
 
 
 @dataclass
@@ -78,8 +81,13 @@ class EpsilonGreedyBandit:
             self._counts[key] = count
             self._value_estimates[key] = old_estimate + (reward - old_estimate) / count
 
-            action_payload = self._action_to_mapping(action)
+            action_payload = self._raw_action_mapping(action)
+            resolved_action = self._resolved_action_mapping(action)
             metrics_payload = _metrics_to_dict(metrics)
+            department_controls = info.get("department_controls")
+            if department_controls:
+                metrics_payload["department_controls"] = department_controls
+            metrics_payload["resolved_action"] = resolved_action
             try:
                 log_tuning_result(
                     experiment_id=self.config.experiment_id,
@@ -94,9 +102,12 @@ class EpsilonGreedyBandit:
 
             episode_record = BanditEpisode(
                 action=action_payload,
+                resolved_action=resolved_action,
                 reward=reward,
                 metrics=metrics,
                 observation=obs,
+                weights=info.get("weights"),
+                department_controls=department_controls,
             )
             self._history.episodes.append(episode_record)
             LOGGER.info(
@@ -112,16 +123,27 @@ class EpsilonGreedyBandit:
         if self._value_estimates and self._random.random() > self.config.epsilon:
             best = max(self._value_estimates.items(), key=lambda item: item[1])[0]
             return list(best)
-        return [
-            self._random.uniform(spec.minimum, spec.maximum)
-            for spec in self._specs
-        ]
+        return [self._sample_value(spec) for spec in self._specs]
 
-    def _action_to_mapping(self, action: Sequence[float]) -> Dict[str, float]:
+    def _raw_action_mapping(self, action: Sequence[float]) -> Dict[str, float]:
         return {
             spec.name: float(value)
             for spec, value in zip(self._specs, action, strict=True)
         }
+
+    def _resolved_action_mapping(self, action: Sequence[float]) -> Dict[str, Any]:
+        return {
+            spec.name: spec.resolve(value)
+            for spec, value in zip(self._specs, action, strict=True)
+        }
+
+    def _sample_value(self, spec: ParameterSpec) -> float:
+        if spec.values:
+            if len(spec.values) <= 1:
+                return 0.0
+            index = self._random.randrange(len(spec.values))
+            return index / (len(spec.values) - 1)
+        return self._random.random()
 
 
 def _metrics_to_dict(metrics: EpisodeMetrics) -> Dict[str, float | Dict[str, int]]:

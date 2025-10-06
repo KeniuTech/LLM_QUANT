@@ -60,6 +60,7 @@ class DummyEnv:
             "weights": {"A_mom": value},
             "risk_breakdown": metrics.risk_breakdown,
             "risk_events": [],
+            "department_controls": {"momentum": {"prompt": "baseline"}},
         }
         return obs, reward, True, info
 
@@ -92,3 +93,8 @@ def test_bandit_optimizer_runs_and_logs(patch_logging):
     payload = patch_logging[0]["metrics"]
     assert isinstance(payload, dict)
     assert "risk_breakdown" in payload
+    assert "department_controls" in payload
+
+    first_episode = summary.episodes[0]
+    assert first_episode.resolved_action
+    assert first_episode.department_controls == {"momentum": {"prompt": "baseline"}}
