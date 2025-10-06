@@ -268,8 +268,8 @@ class BacktestEngine:
                 "suspend",
                 ts_code,
                 trade_date,
-                "trade_date = ?",
-                [trade_date],
+                "ts_code = ?",
+                [ts_code],
                 auto_refresh=False,  # 避免在回测中触发自动补数
             )
 
