@@ -17,9 +17,17 @@ def render_log_viewer() -> None:
 
     col1, col2 = st.columns(2)
     with col1:
-        start_date = st.date_input("开始日期", value=date.today() - timedelta(days=7))
+        start_date = st.date_input(
+            "开始日期",
+            value=date.today() - timedelta(days=7),
+            key="log_view_start_date",
+        )
     with col2:
-        end_date = st.date_input("结束日期", value=date.today())
+        end_date = st.date_input(
+            "结束日期",
+            value=date.today(),
+            key="log_view_end_date",
+        )
 
     log_levels = ["ALL", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
     selected_level = st.selectbox("日志级别", log_levels, index=1)
@@ -108,9 +116,17 @@ def render_log_viewer() -> None:
 
     col3, col4 = st.columns(2)
     with col3:
-        compare_date1 = st.date_input("对比日期1", value=date.today() - timedelta(days=1))
+        compare_date1 = st.date_input(
+            "对比日期1",
+            value=date.today() - timedelta(days=1),
+            key="log_view_compare_date1",
+        )
     with col4:
-        compare_date2 = st.date_input("对比日期2", value=date.today())
+        compare_date2 = st.date_input(
+            "对比日期2",
+            value=date.today(),
+            key="log_view_compare_date2",
+        )
 
     comparison_stage = st.selectbox("对比阶段", stages, key="compare_stage")
     st.write("选择需要比较的日志数量。")

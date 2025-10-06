@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import asdict
-from datetime import date
+from datetime import date, datetime
 from typing import Dict, List, Optional
 
 import numpy as np
