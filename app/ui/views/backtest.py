@@ -484,7 +484,7 @@ def render_backtest_review() -> None:
                         disable_departments,
                         extra=LOG_EXTRA,
                     )
-                    baseline_weights = cfg.agent_weights.as_dict()
+                    baseline_weights = app_cfg.agent_weights.as_dict()
                     for agent in agent_objects:
                         baseline_weights.setdefault(agent.name, 1.0)
 
@@ -503,7 +503,7 @@ def render_backtest_review() -> None:
                                 "stop": stop,
                                 "hold_days": int(hold_days),
                             },
-                            method=cfg.decision_method,
+                            method=app_cfg.decision_method,
                         )
                         env = DecisionEnv(
                             bt_config=bt_cfg_env,
@@ -615,8 +615,8 @@ def render_backtest_review() -> None:
                     st.json(weights_dict)
                     if st.button("保存这些权重为默认配置", key="save_decision_env_weights_single"):
                         try:
-                            cfg.agent_weights.update_from_dict(weights_dict)
-                            save_config(cfg)
+                            app_cfg.agent_weights.update_from_dict(weights_dict)
+                            save_config(app_cfg)
                         except Exception as exc:  # noqa: BLE001
                             LOGGER.exception("保存权重失败", extra={**LOG_EXTRA, "error": str(exc)})
                             st.error(f"写入配置失败：{exc}")
@@ -719,7 +719,7 @@ def render_backtest_review() -> None:
                 elif not controls_valid:
                     st.error("请修正部门参数的取值范围。")
                 else:
-                    baseline_weights = cfg.agent_weights.as_dict()
+                    baseline_weights = app_cfg.agent_weights.as_dict()
                     for agent in agent_objects:
                         baseline_weights.setdefault(agent.name, 1.0)
 
@@ -738,7 +738,7 @@ def render_backtest_review() -> None:
                                 "stop": stop,
                                 "hold_days": int(hold_days),
                             },
-                            method=cfg.decision_method,
+                            method=app_cfg.decision_method,
                         )
                         env = DecisionEnv(
                             bt_config=bt_cfg_env,
@@ -817,8 +817,8 @@ def render_backtest_review() -> None:
                             key="save_decision_env_bandit_weights",
                         ):
                             try:
-                                cfg.agent_weights.update_from_dict(weights_payload)
-                                save_config(cfg)
+                                app_cfg.agent_weights.update_from_dict(weights_payload)
+                                save_config(app_cfg)
                             except Exception as exc:  # noqa: BLE001
                                 LOGGER.exception(
                                     "保存 bandit 权重失败",
@@ -894,7 +894,7 @@ def render_backtest_review() -> None:
                                 len(parsed_actions),
                                 extra=LOG_EXTRA,
                             )
-                            baseline_weights = cfg.agent_weights.as_dict()
+                            baseline_weights = app_cfg.agent_weights.as_dict()
                             for agent in agent_objects:
                                 baseline_weights.setdefault(agent.name, 1.0)
 
@@ -913,7 +913,7 @@ def render_backtest_review() -> None:
                                         "stop": stop,
                                         "hold_days": int(hold_days),
                                     },
-                                    method=cfg.decision_method,
+                                    method=app_cfg.decision_method,
                                 )
                                 env = DecisionEnv(
                                     bt_config=bt_cfg_env,
@@ -1046,8 +1046,8 @@ def render_backtest_review() -> None:
                             key="save_decision_env_weights_batch",
                         ):
                             try:
-                                cfg.agent_weights.update_from_dict(selected_row.get("权重", {}))
-                                save_config(cfg)
+                                app_cfg.agent_weights.update_from_dict(selected_row.get("权重", {}))
+                                save_config(app_cfg)
                             except Exception as exc:  # noqa: BLE001
                                 LOGGER.exception("批量保存权重失败", extra={**LOG_EXTRA, "error": str(exc)})
                                 st.error(f"写入配置失败：{exc}")
