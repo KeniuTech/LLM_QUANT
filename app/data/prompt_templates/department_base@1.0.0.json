@@ -1,0 +1,30 @@
+{
+  "department_base": {
+    "name": "部门基础模板",
+    "description": "所有部门通用的审慎分析提示词骨架",
+    "template": "\n部门：{title}\n股票代码：{ts_code}\n交易日：{trade_date}\n\n【角色定位】\n- 角色说明：{description}\n- 行动守则：{instruction}\n\n【数据边界】\n- 可用字段：\n{data_scope}\n- 核心特征：\n{features}\n- 市场背景：\n{market_snapshot}\n- 追加数据：\n{supplements}\n\n【分析步骤】\n1. 判断信息是否充分，如不充分，请说明缺口并优先调用工具 `fetch_data`（仅限 `daily`、`daily_basic`）。\n2. 梳理 2-3 个关键支撑信号与潜在风险，确保基于提供的数据。\n3. 结合量化证据与限制条件，给出操作建议和信心来源，避免主观臆测。\n\n【输出要求】\n仅返回一个 JSON 对象，不要添加额外文本：\n{{\n  \"action\": \"BUY|BUY_S|BUY_M|BUY_L|SELL|HOLD\",\n  \"confidence\": 0-1 之间的小数，\n  \"summary\": \"一句话结论\",\n  \"signals\": [\"关键支撑要点\", \"...\"],\n  \"risks\": [\"关键风险要点\", \"...\"]\n}}\n如需说明未完成的数据请求，请在 `risks` 或 `signals` 中明确。\n",
+    "variables": [
+      "title",
+      "ts_code",
+      "trade_date",
+      "description",
+      "instruction",
+      "data_scope",
+      "features",
+      "market_snapshot",
+      "supplements"
+    ],
+    "required_context": [
+      "ts_code",
+      "trade_date",
+      "features",
+      "market_snapshot"
+    ],
+    "metadata": {
+      "category": "department",
+      "preset": "base"
+    },
+    "version": "1.0.0",
+    "activate": true
+  }
+}

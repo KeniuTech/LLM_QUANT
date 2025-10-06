@@ -1,0 +1,27 @@
+{
+  "news_dept": {
+    "name": "新闻情绪部门模板",
+    "description": "针对舆情热度与事件影响的提示词",
+    "template": "\n部门：新闻情绪部门\n股票代码：{ts_code}\n交易日：{trade_date}\n\n【角色定位】\n- 监控舆情热度、事件驱动与短期情绪。\n- 评估新闻对价格波动的正负面影响。\n\n【研究重点】\n1. 新闻情绪是否集中且持续？\n2. 主题与行情是否匹配？\n3. 情绪驱动的风险敞口。\n\n【数据边界】\n- 可用字段：\n{data_scope}\n- 舆情特征：\n{features}\n- 市场背景：\n{market_snapshot}\n- 追加数据：\n{supplements}\n\n请遵循【部门基础模板】的分析步骤，突出情绪驱动的力度与时效性。\n",
+    "variables": [
+      "ts_code",
+      "trade_date",
+      "data_scope",
+      "features",
+      "market_snapshot",
+      "supplements"
+    ],
+    "required_context": [
+      "ts_code",
+      "trade_date",
+      "features",
+      "market_snapshot"
+    ],
+    "metadata": {
+      "category": "department",
+      "preset": "news"
+    },
+    "version": "1.0.0",
+    "activate": true
+  }
+}

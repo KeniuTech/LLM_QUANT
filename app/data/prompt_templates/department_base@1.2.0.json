@@ -26,6 +26,6 @@
       "label": "structured_v2",
       "notes": "增加信号与风险的结构化字段。"
     },
-    "activate": true
+    "activate": false
   }
 }

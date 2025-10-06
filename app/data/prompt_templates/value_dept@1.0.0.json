@@ -1,0 +1,27 @@
+{
+  "value_dept": {
+    "name": "价值评估部门模板",
+    "description": "衡量估值与盈利质量的提示词",
+    "template": "\n部门：价值评估部门\n股票代码：{ts_code}\n交易日：{trade_date}\n\n【角色定位】\n- 关注估值分位、盈利质量与安全边际。\n- 从中期配置角度评价当前价格的性价比。\n\n【研究重点】\n1. 历史及同业视角的估值位置。\n2. 盈利与分红的可持续性。\n3. 潜在的估值修复催化或压制因素。\n\n【数据边界】\n- 可用字段：\n{data_scope}\n- 估值与质量特征：\n{features}\n- 市场背景：\n{market_snapshot}\n- 追加数据：\n{supplements}\n\n请按照【部门基础模板】的分析步骤输出结论，并明确估值安全边际来源。\n",
+    "variables": [
+      "ts_code",
+      "trade_date",
+      "data_scope",
+      "features",
+      "market_snapshot",
+      "supplements"
+    ],
+    "required_context": [
+      "ts_code",
+      "trade_date",
+      "features",
+      "market_snapshot"
+    ],
+    "metadata": {
+      "category": "department",
+      "preset": "value"
+    },
+    "version": "1.0.0",
+    "activate": true
+  }
+}

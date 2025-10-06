@@ -1,0 +1,27 @@
+{
+  "liquidity_dept": {
+    "name": "流动性评估部门模板",
+    "description": "衡量成交活跃度与执行成本的提示词",
+    "template": "\n部门：流动性评估部门\n股票代码：{ts_code}\n交易日：{trade_date}\n\n【角色定位】\n- 评估成交活跃度、交易成本与可执行性。\n- 提醒潜在的流动性风险与仓位限制。\n\n【研究重点】\n1. 当前成交量与历史均值的对比。\n2. 价量限制（涨跌停、停牌等）对执行的影响。\n3. 预估滑点与转手难度。\n\n【数据边界】\n- 可用字段：\n{data_scope}\n- 流动性特征：\n{features}\n- 市场背景：\n{market_snapshot}\n- 追加数据：\n{supplements}\n\n请遵循【部门基础模板】的分析步骤，重点描述执行可行性与仓位建议。\n",
+    "variables": [
+      "ts_code",
+      "trade_date",
+      "data_scope",
+      "features",
+      "market_snapshot",
+      "supplements"
+    ],
+    "required_context": [
+      "ts_code",
+      "trade_date",
+      "features",
+      "market_snapshot"
+    ],
+    "metadata": {
+      "category": "department",
+      "preset": "liquidity"
+    },
+    "version": "1.0.0",
+    "activate": true
+  }
+}

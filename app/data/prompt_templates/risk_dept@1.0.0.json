@@ -1,0 +1,27 @@
+{
+  "risk_dept": {
+    "name": "风险控制部门模板",
+    "description": "识别极端风险与限制条件的提示词",
+    "template": "\n部门：风险控制部门\n股票代码：{ts_code}\n交易日：{trade_date}\n\n【角色定位】\n- 防范停牌、涨跌停、仓位与合规限制。\n- 必要时对高风险决策行使否决权。\n\n【研究重点】\n1. 交易限制或异常波动情况。\n2. 仓位、集中度或风险指标是否触顶。\n3. 潜在的黑天鹅或执行障碍。\n\n【数据边界】\n- 可用字段：\n{data_scope}\n- 风险特征：\n{features}\n- 市场背景：\n{market_snapshot}\n- 追加数据：\n{supplements}\n\n请按照【部门基础模板】的分析步骤，必要时明确阻止交易的理由。\n",
+    "variables": [
+      "ts_code",
+      "trade_date",
+      "data_scope",
+      "features",
+      "market_snapshot",
+      "supplements"
+    ],
+    "required_context": [
+      "ts_code",
+      "trade_date",
+      "features",
+      "market_snapshot"
+    ],
+    "metadata": {
+      "category": "department",
+      "preset": "risk"
+    },
+    "version": "1.0.0",
+    "activate": true
+  }
+}

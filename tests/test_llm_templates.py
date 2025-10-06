@@ -155,7 +155,6 @@ def test_template_registry():
 def test_default_templates():
     """Test default template registration."""
     TemplateRegistry.clear(reload_defaults=True)
-    from app.llm.templates import DEFAULT_TEMPLATES
 
     # Verify default templates are loaded
     assert len(TemplateRegistry.list()) > 0

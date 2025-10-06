@@ -2,7 +2,7 @@
   "momentum_dept": {
     "name": "动量研究部门模板",
     "description": "多层级动量评估版本",
-    "template": "部门：动量研究部门\n股票代码：{ts_code}\n交易日：{trade_date}\n\n【角色定位】\n- 追踪价格与成交量动量的共振与切换。\n- 识别趋势衰减与阶段性反转信号。\n\n【分层动量视角】\n1. 超短线（1-3 日）动量：\n{features}\n2. 短线（5-10 日）趋势斜率：\n{market_snapshot}\n3. 中线（20+ 日）位置与乖离：\n{data_scope}\n\n【执行指引】\n- 对每个时间层给出强度评级（strong/weak/neutral）。\n- 若评级存在冲突，需在 `risks` 说明优先采信的层级。\n- 必须评估量价背离与成交密集区。\n\n【输出要求】\n仅输出 JSON：\n{\n  \"action\": \"BUY|BUY_S|BUY_M|BUY_L|SELL|HOLD\",\n  \"confidence\": 小数,\n  \"summary\": \"一句话\",\n  \"signals\": [\"层级+观察\", \"...\"],\n  \"risks\": [\"层级+风险\", \"...\"]\n}\n若需进一步数据，请在 `risks` 中注明具体字段。",
+    "template": "部门：动量研究部门\n股票代码：{ts_code}\n交易日：{trade_date}\n\n【角色定位】\n- 追踪价格与成交量动量的共振与切换。\n- 识别趋势衰减与阶段性反转信号。\n\n【分层动量视角】\n1. 超短线（1-3 日）动量：\n{features}\n2. 短线（5-10 日）趋势斜率：\n{market_snapshot}\n3. 中线（20+ 日）位置与乖离：\n{data_scope}\n\n【执行指引】\n- 对每个时间层给出强度评级（strong/weak/neutral）。\n- 若评级存在冲突，需在 `risks` 说明优先采信的层级。\n- 必须评估量价背离与成交密集区。\n\n【追加数据】\n{supplements}\n\n【输出要求】\n仅输出 JSON：\n{{\n  \"action\": \"BUY|BUY_S|BUY_M|BUY_L|SELL|HOLD\",\n  \"confidence\": 小数,\n  \"summary\": \"一句话\",\n  \"signals\": [\"层级+观察\", \"...\"],\n  \"risks\": [\"层级+风险\", \"...\"]\n}}\n若需进一步数据，请在 `risks` 中注明具体字段。",
     "variables": [
       "ts_code",
       "trade_date",

@@ -1,0 +1,27 @@
+{
+  "macro_dept": {
+    "name": "宏观研究部门模板",
+    "description": "宏观与行业景气度分析提示词",
+    "template": "\n部门：宏观研究部门\n股票代码：{ts_code}\n交易日：{trade_date}\n\n【角色定位】\n- 追踪宏观周期、行业景气与相对强弱。\n- 评估宏观事件对该标的的方向性影响。\n\n【研究重点】\n1. 行业相对大盘的表现与热点程度。\n2. 宏观/政策事件对行业或标的的指引。\n3. 需警惕的宏观风险与流动性环境。\n\n【数据边界】\n- 可用字段：\n{data_scope}\n- 宏观特征：\n{features}\n- 市场背景：\n{market_snapshot}\n- 追加数据：\n{supplements}\n\n请执行【部门基础模板】的分析步骤，并输出宏观驱动的信号与风险。\n",
+    "variables": [
+      "ts_code",
+      "trade_date",
+      "data_scope",
+      "features",
+      "market_snapshot",
+      "supplements"
+    ],
+    "required_context": [
+      "ts_code",
+      "trade_date",
+      "features",
+      "market_snapshot"
+    ],
+    "metadata": {
+      "category": "department",
+      "preset": "macro"
+    },
+    "version": "1.0.0",
+    "activate": true
+  }
+}

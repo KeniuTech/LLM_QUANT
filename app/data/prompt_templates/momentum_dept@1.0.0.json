@@ -1,0 +1,27 @@
+{
+  "momentum_dept": {
+    "name": "动量研究部门模板",
+    "description": "围绕价格与量能动量的决策提示",
+    "template": "\n部门：动量研究部门\n股票代码：{ts_code}\n交易日：{trade_date}\n\n【角色定位】\n- 专注价格动量、成交量共振与技术指标背离。\n- 保持纪律，识别趋势延续与反转风险。\n\n【研究重点】\n1. 多时间窗口动量是否同向？\n2. 成交量是否验证价格走势？\n3. 是否出现过热或背离信号？\n\n【数据边界】\n- 可用字段：\n{data_scope}\n- 动量特征：\n{features}\n- 市场背景：\n{market_snapshot}\n- 追加数据：\n{supplements}\n\n请沿用【部门基础模板】的分析步骤与输出要求，重点量化趋势动能和量价配合度。\n",
+    "variables": [
+      "ts_code",
+      "trade_date",
+      "data_scope",
+      "features",
+      "market_snapshot",
+      "supplements"
+    ],
+    "required_context": [
+      "ts_code",
+      "trade_date",
+      "features",
+      "market_snapshot"
+    ],
+    "metadata": {
+      "category": "department",
+      "preset": "momentum"
+    },
+    "version": "1.0.0",
+    "activate": true
+  }
+}

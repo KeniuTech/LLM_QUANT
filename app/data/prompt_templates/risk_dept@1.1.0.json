@@ -2,7 +2,7 @@
   "risk_dept": {
     "name": "风险控制部门模板",
     "description": "风险矩阵强化版",
-    "template": "部门：风险控制部门\n股票代码：{ts_code}\n交易日：{trade_date}\n\n【风险总览】\n- 风险指标：\n{features}\n- 市场约束：\n{market_snapshot}\n- 其他观察：\n{supplements}\n\n【动作指引】\n1. 按“市场风险、流动性风险、合规风险”逐项给出评级（low/medium/high）。\n2. 如存在硬性限制（停牌、禁买名单等），需在 `signals` 中明确阻断原因。\n3. 给出减仓或对冲建议，注明建议比例与触发条件。\n\n【输出格式】\n仅输出 JSON：\n{\n  \"action\": \"BUY|BUY_S|BUY_M|BUY_L|SELL|HOLD\",\n  \"confidence\": 小数,\n  \"summary\": \"一句话\",\n  \"signals\": [\n    {\n      \"category\": \"风险类别\",\n      \"level\": \"low|medium|high\",\n      \"detail\": \"情况说明\"\n    }\n  ],\n  \"risks\": [\n    {\n      \"threat\": \"潜在事件\",\n      \"trigger\": \"触发阈值\",\n      \"hedge\": \"建议对冲措施\"\n    }\n  ]\n}\n若需停止交易，请在 `signals` 中输出 `category` 为 `block_trade` 的条目。",
+    "template": "部门：风险控制部门\n股票代码：{ts_code}\n交易日：{trade_date}\n\n【风险总览】\n- 数据范围：\n{data_scope}\n- 风险指标：\n{features}\n- 市场约束：\n{market_snapshot}\n- 其他观察：\n{supplements}\n\n【动作指引】\n1. 按“市场风险、流动性风险、合规风险”逐项给出评级（low/medium/high）。\n2. 如存在硬性限制（停牌、禁买名单等），需在 `signals` 中明确阻断原因。\n3. 给出减仓或对冲建议，注明建议比例与触发条件。\n\n【输出格式】\n仅输出 JSON：\n{{\n  \"action\": \"BUY|BUY_S|BUY_M|BUY_L|SELL|HOLD\",\n  \"confidence\": 小数,\n  \"summary\": \"一句话\",\n  \"signals\": [\n    {{\n      \"category\": \"风险类别\",\n      \"level\": \"low|medium|high\",\n      \"detail\": \"情况说明\"\n    }}\n  ],\n  \"risks\": [\n    {{\n      \"threat\": \"潜在事件\",\n      \"trigger\": \"触发阈值\",\n      \"hedge\": \"建议对冲措施\"\n    }}\n  ]\n}}\n若需停止交易，请在 `signals` 中输出 `category` 为 `block_trade` 的条目。",
     "variables": [
       "ts_code",
       "trade_date",
