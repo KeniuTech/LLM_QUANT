@@ -8,6 +8,15 @@ from typing import Dict, Iterable, List, Mapping, Optional, Tuple
 from .base import Agent, AgentAction, AgentContext, UtilityMatrix
 from .departments import DepartmentContext, DepartmentDecision, DepartmentManager
 from .registry import weight_map
+from .risk import RiskAgent, RiskRecommendation
+from .protocols import (
+    DialogueMessage,
+    DialogueRole,
+    GameStructure,
+    MessageType,
+    ProtocolHost,
+    RoundSummary,
+)
 
 
 ACTIONS: Tuple[AgentAction, ...] = (
@@ -24,6 +33,30 @@ def _clamp(value: float) -> float:
 
 
 @dataclass
+class BeliefUpdate:
+    belief: Dict[str, object]
+    rationale: Optional[str] = None
+
+
+@dataclass
+class RiskAssessment:
+    status: str
+    reason: str
+    recommended_action: Optional[AgentAction] = None
+    notes: Dict[str, object] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, object]:
+        payload: Dict[str, object] = {
+            "status": self.status,
+            "reason": self.reason,
+            "notes": dict(self.notes),
+        }
+        if self.recommended_action is not None:
+            payload["recommended_action"] = self.recommended_action.value
+        return payload
+
+
+@dataclass
 class Decision:
     action: AgentAction
     confidence: float
@@ -33,6 +66,9 @@ class Decision:
     department_decisions: Dict[str, DepartmentDecision] = field(default_factory=dict)
     department_votes: Dict[str, float] = field(default_factory=dict)
     requires_review: bool = False
+    rounds: List[RoundSummary] = field(default_factory=list)
+    risk_assessment: Optional[RiskAssessment] = None
+    belief_updates: Dict[str, BeliefUpdate] = field(default_factory=dict)
 
 
 def compute_utilities(agents: Iterable[Agent], context: AgentContext) -> UtilityMatrix:
@@ -132,6 +168,16 @@ def decide(
     raw_weights = dict(weights)
     department_decisions: Dict[str, DepartmentDecision] = {}
     department_votes: Dict[str, float] = {}
+    host = ProtocolHost()
+    host_trace = host.bootstrap_trace(
+        session_id=f"{context.ts_code}:{context.trade_date}",
+        ts_code=context.ts_code,
+        trade_date=context.trade_date,
+    )
+    department_round: Optional[RoundSummary] = None
+    risk_round: Optional[RoundSummary] = None
+    execution_round: Optional[RoundSummary] = None
+    belief_updates: Dict[str, BeliefUpdate] = {}
 
     if department_manager:
         dept_context = department_context
@@ -144,6 +190,12 @@ def decide(
                 raw=dict(getattr(context, "raw", {}) or {}),
             )
         department_decisions = department_manager.evaluate(dept_context)
+        if department_decisions:
+            department_round = host.start_round(
+                host_trace,
+                agenda="department_consensus",
+                structure=GameStructure.REPEATED,
+            )
         for code, decision in department_decisions.items():
             agent_key = f"dept_{code}"
             dept_agent = department_manager.agents.get(code)
@@ -155,6 +207,17 @@ def decide(
             bucket = _department_vote_bucket(decision.action)
             if bucket:
                 department_votes[bucket] = department_votes.get(bucket, 0.0) + weight * decision.confidence
+            if department_round:
+                message = _department_message(code, decision)
+                host.handle_message(department_round, message)
+                belief_updates[code] = BeliefUpdate(
+                    belief={
+                        "action": decision.action.value,
+                        "confidence": decision.confidence,
+                        "signals": decision.signals,
+                    },
+                    rationale=decision.summary,
+                )
 
     filtered_utilities = {action: utilities[action] for action in feas_actions}
     hold_scores = utilities.get(AgentAction.HOLD, {})
@@ -168,7 +231,111 @@ def decide(
             action, confidence = vote(filtered_utilities, norm_weights)
 
     weight = target_weight_for_action(action)
-    requires_review = _department_conflict_flag(department_votes)
+    conflict_flag = _department_conflict_flag(department_votes)
+
+    risk_agent = _find_risk_agent(agent_list)
+    risk_assessment = _evaluate_risk(
+        context,
+        action,
+        department_votes,
+        conflict_flag,
+        risk_agent,
+    )
+    requires_review = risk_assessment.status != "ok"
+
+    if department_round:
+        department_round.notes.setdefault("department_votes", dict(department_votes))
+        department_round.outcome = action.value
+        host.finalize_round(department_round)
+
+    if requires_review:
+        risk_round = host.ensure_round(
+            host_trace,
+            agenda="risk_review",
+            structure=GameStructure.CUSTOM,
+        )
+        review_message = DialogueMessage(
+            sender="risk_guard",
+            role=DialogueRole.RISK,
+            message_type=MessageType.COUNTER,
+            content=_risk_review_message(risk_assessment.reason),
+            confidence=1.0,
+            references=list(department_votes.keys()),
+            annotations={
+                "department_votes": dict(department_votes),
+                "risk_reason": risk_assessment.reason,
+                "recommended_action": (
+                    risk_assessment.recommended_action.value
+                    if risk_assessment.recommended_action
+                    else None
+                ),
+                "notes": dict(risk_assessment.notes),
+            },
+        )
+        host.handle_message(risk_round, review_message)
+        risk_round.notes.setdefault("status", risk_assessment.status)
+        risk_round.notes.setdefault("reason", risk_assessment.reason)
+        if risk_assessment.recommended_action:
+            risk_round.notes.setdefault(
+                "recommended_action",
+                risk_assessment.recommended_action.value,
+            )
+        risk_round.outcome = "REVIEW"
+        host.finalize_round(risk_round)
+        belief_updates["risk_guard"] = BeliefUpdate(
+            belief={
+                "status": risk_assessment.status,
+                "reason": risk_assessment.reason,
+                "recommended_action": (
+                    risk_assessment.recommended_action.value
+                    if risk_assessment.recommended_action
+                    else None
+                ),
+            },
+        )
+    execution_round = host.ensure_round(
+        host_trace,
+        agenda="execution_summary",
+        structure=GameStructure.REPEATED,
+    )
+    exec_action = action
+    exec_weight = weight
+    exec_status = "normal"
+    if requires_review and risk_assessment.recommended_action:
+        exec_action = risk_assessment.recommended_action
+        exec_status = "risk_adjusted"
+        exec_weight = target_weight_for_action(exec_action)
+    execution_message = DialogueMessage(
+        sender="execution_engine",
+        role=DialogueRole.EXECUTION,
+        message_type=MessageType.DIRECTIVE,
+        content=f"执行操作 {exec_action.value}",
+        confidence=1.0,
+        annotations={
+            "target_weight": exec_weight,
+            "requires_review": requires_review,
+            "execution_status": exec_status,
+        },
+    )
+    host.handle_message(execution_round, execution_message)
+    execution_round.outcome = exec_action.value
+    execution_round.notes.setdefault("execution_status", exec_status)
+    if exec_action is not action:
+        execution_round.notes.setdefault("original_action", action.value)
+    belief_updates["execution"] = BeliefUpdate(
+        belief={
+            "execution_status": exec_status,
+            "action": exec_action.value,
+            "target_weight": exec_weight,
+        },
+    )
+    host.finalize_round(execution_round)
+    host.close(host_trace)
+    rounds = host_trace.rounds if host_trace.rounds else _build_round_summaries(
+        department_decisions,
+        action,
+        department_votes,
+    )
     return Decision(
         action=action,
         confidence=confidence,
@@ -178,6 +345,9 @@ def decide(
         department_decisions=department_decisions,
         department_votes=department_votes,
         requires_review=requires_review,
+        rounds=rounds,
+        risk_assessment=risk_assessment,
+        belief_updates=belief_updates,
     )
 
 
@@ -231,3 +401,145 @@ def _department_conflict_flag(votes: Mapping[str, float]) -> bool:
         if len(sorted_votes) >= 2 and (sorted_votes[0] - sorted_votes[1]) < total * 0.1:
             return True
     return False
+
+
+def _department_message(code: str, decision: DepartmentDecision) -> DialogueMessage:
+    content = decision.summary or decision.raw_response or decision.action.value
+    references = decision.signals or []
+    annotations: Dict[str, object] = {
+        "risks": decision.risks,
+        "supplements": decision.supplements,
+    }
+    if decision.dialogue:
+        annotations["dialogue"] = decision.dialogue
+    if decision.telemetry:
+        annotations["telemetry"] = decision.telemetry
+    return DialogueMessage(
+        sender=code,
+        role=DialogueRole.PREDICTION,
+        message_type=MessageType.DECISION,
+        content=content,
+        confidence=decision.confidence,
+        references=references,
+        annotations=annotations,
+    )
+
+
+def _evaluate_risk(
+    context: AgentContext,
+    action: AgentAction,
+    department_votes: Mapping[str, float],
+    conflict_flag: bool,
+    risk_agent: Optional[RiskAgent],
+) -> RiskAssessment:
+    external_alerts = []
+    if getattr(context, "raw", None):
+        alerts = context.raw.get("risk_alerts", [])
+        if alerts:
+            external_alerts = list(alerts)
+
+    if risk_agent:
+        recommendation = risk_agent.assess(context, action, conflict_flag)
+        notes = dict(recommendation.notes)
+        notes.setdefault("department_votes", dict(department_votes))
+        if external_alerts:
+            notes.setdefault("external_alerts", external_alerts)
+            if recommendation.status == "ok":
+                recommendation = RiskRecommendation(
+                    status="pending_review",
+                    reason="external_alert",
+                    recommended_action=recommendation.recommended_action or AgentAction.HOLD,
+                    notes=notes,
+                )
+            else:
+                recommendation.notes = notes
+        return RiskAssessment(
+            status=recommendation.status,
+            reason=recommendation.reason,
+            recommended_action=recommendation.recommended_action,
+            notes=recommendation.notes,
+        )
+
+    notes: Dict[str, object] = {
+        "conflict": conflict_flag,
+        "department_votes": dict(department_votes),
+    }
+    if external_alerts:
+        notes["external_alerts"] = external_alerts
+        return RiskAssessment(
+            status="pending_review",
+            reason="external_alert",
+            recommended_action=AgentAction.HOLD,
+            notes=notes,
+        )
+    if conflict_flag:
+        return RiskAssessment(
+            status="pending_review",
+            reason="conflict_threshold",
+            notes=notes,
+        )
+    return RiskAssessment(status="ok", reason="clear", notes=notes)
+
+
+def _find_risk_agent(agents: Iterable[Agent]) -> Optional[RiskAgent]:
+    for agent in agents:
+        if isinstance(agent, RiskAgent):
+            return agent
+    return None
+
+
+def _risk_review_message(reason: str) -> str:
+    mapping = {
+        "conflict_threshold": "部门意见分歧，触发风险复核",
+        "suspended": "标的停牌，需冻结执行",
+        "limit_up": "标的涨停，执行需调整",
+        "position_limit": "仓位限制已触发，需调整目标",
+        "risk_penalty_extreme": "风险评分极高，建议暂停加仓",
+        "risk_penalty_high": "风险评分偏高，建议复核",
+        "external_alert": "外部风险告警触发复核",
+    }
+    return mapping.get(reason, "触发风险复核，需人工确认")
+
+
+def _build_round_summaries(
+    department_decisions: Mapping[str, DepartmentDecision],
+    final_action: AgentAction,
+    department_votes: Mapping[str, float],
+) -> List[RoundSummary]:
+    if not department_decisions:
+        return []
+    messages: List[DialogueMessage] = []
+    for code, decision in department_decisions.items():
+        content = decision.summary or decision.raw_response or decision.action.value
+        references = decision.signals or []
+        annotations: Dict[str, object] = {
+            "risks": decision.risks,
+            "supplements": decision.supplements,
+        }
+        if decision.dialogue:
+            annotations["dialogue"] = decision.dialogue
+        if decision.telemetry:
+            annotations["telemetry"] = decision.telemetry
+        message = DialogueMessage(
+            sender=code,
+            role=DialogueRole.PREDICTION,
+            message_type=MessageType.DECISION,
+            content=content,
+            confidence=decision.confidence,
+            references=references,
+            annotations=annotations,
+        )
+        messages.append(message)
+    notes: Dict[str, object] = {
+        "department_votes": dict(department_votes),
+    }
+    summary = RoundSummary(
+        index=0,
+        agenda="department_consensus",
+        structure=GameStructure.REPEATED,
+        resolved=True,
+        outcome=final_action.value,
+        messages=messages,
+        notes=notes,
+    )
+    return [summary]

@@ -201,6 +201,7 @@ def render_backtest_review() -> None:
         selected_ids = [label.split(" | ")[0].strip() for label in selected_labels]
         nav_df = pd.DataFrame()
         rpt_df = pd.DataFrame()
+        risk_df = pd.DataFrame()
         if selected_ids:
             try:
                 with db_session(read_only=True) as conn:
@@ -214,11 +215,20 @@ def render_backtest_review() -> None:
                         conn,
                         params=tuple(selected_ids),
                     )
+                    risk_df = pd.read_sql_query(
+                        "SELECT cfg_id, trade_date, ts_code, reason, action, target_weight, confidence, metadata "
+                        "FROM bt_risk_events WHERE cfg_id IN (%s)" % (",".join(["?"]*len(selected_ids))),
+                        conn,
+                        params=tuple(selected_ids),
+                    )
             except Exception:  # noqa: BLE001
                 LOGGER.exception("读取回测结果失败", extra=LOG_EXTRA)
                 st.error("读取回测结果失败")
                 nav_df = pd.DataFrame()
                 rpt_df = pd.DataFrame()
+                risk_df = pd.DataFrame()
+            start_filter: Optional[date] = None
+            end_filter: Optional[date] = None
             if not nav_df.empty:
                 try:
                     nav_df["trade_date"] = pd.to_datetime(nav_df["trade_date"], errors="coerce")
@@ -274,6 +284,9 @@ def render_backtest_review() -> None:
                             "交易数": summary.get("trade_count"),
                             "平均换手": summary.get("avg_turnover"),
                             "风险事件": summary.get("risk_events"),
+                            "风险分布": json.dumps(summary.get("risk_breakdown"), ensure_ascii=False)
+                            if summary.get("risk_breakdown")
+                            else None,
                         }
                         metrics_rows.append({k: v for k, v in record.items() if (k == "cfg_id" or k in selected_metrics)})
                     if metrics_rows:
@@ -291,6 +304,70 @@ def render_backtest_review() -> None:
                             pass
                 except Exception:  # noqa: BLE001
                     LOGGER.debug("渲染指标表失败", extra=LOG_EXTRA)
+            if not risk_df.empty:
+                try:
+                    risk_df["trade_date"] = pd.to_datetime(risk_df["trade_date"], errors="coerce")
+                    risk_df = risk_df.dropna(subset=["trade_date"])
+                    if start_filter is None or end_filter is None:
+                        start_filter = pd.to_datetime(risk_df["trade_date"].min()).date()
+                        end_filter = pd.to_datetime(risk_df["trade_date"].max()).date()
+                    risk_df = risk_df[
+                        (risk_df["trade_date"].dt.date >= start_filter)
+                        & (risk_df["trade_date"].dt.date <= end_filter)
+                    ]
+                    parsed_cols: List[Dict[str, object]] = []
+                    for _, row in risk_df.iterrows():
+                        try:
+                            metadata = json.loads(row["metadata"]) if isinstance(row["metadata"], str) else (row["metadata"] or {})
+                        except json.JSONDecodeError:
+                            metadata = {}
+                        assessment = metadata.get("risk_assessment") or {}
+                        parsed_cols.append(
+                            {
+                                "cfg_id": row["cfg_id"],
+                                "trade_date": row["trade_date"].date().isoformat(),
+                                "ts_code": row["ts_code"],
+                                "reason": row["reason"],
+                                "action": row["action"],
+                                "target_weight": row["target_weight"],
+                                "confidence": row["confidence"],
+                                "risk_status": assessment.get("status"),
+                                "recommended_action": assessment.get("recommended_action"),
+                                "execution_status": metadata.get("execution_status"),
+                                "metadata": metadata,
+                            }
+                        )
+                    risk_detail_df = pd.DataFrame(parsed_cols)
+                    with st.expander("风险事件明细", expanded=False):
+                        st.dataframe(risk_detail_df.drop(columns=["metadata"], errors="ignore"), hide_index=True, width='stretch')
+                        try:
+                            st.download_button(
+                                "下载风险事件(CSV)",
+                                data=risk_detail_df.to_csv(index=False),
+                                file_name="bt_risk_events.csv",
+                                mime="text/csv",
+                                key="dl_risk_events",
+                            )
+                        except Exception:
+                            pass
+                        agg = risk_detail_df.groupby(["cfg_id", "reason", "risk_status"], dropna=False).size().reset_index(name="count")
+                        st.dataframe(agg, hide_index=True, width='stretch')
+                        try:
+                            if not agg.empty:
+                                agg_fig = px.bar(
+                                    agg,
+                                    x="reason",
+                                    y="count",
+                                    color="risk_status",
+                                    facet_col="cfg_id",
+                                    title="风险事件分布",
+                                )
+                                agg_fig.update_layout(height=320, margin=dict(l=10, r=10, t=40, b=20))
+                                st.plotly_chart(agg_fig, use_container_width=True)
+                        except Exception:  # noqa: BLE001
+                            LOGGER.debug("绘制风险事件分布失败", extra=LOG_EXTRA)
+                except Exception:  # noqa: BLE001
+                    LOGGER.debug("渲染风险事件失败", extra=LOG_EXTRA)
         else:
             st.info("请选择至少一个配置进行对比。")
 

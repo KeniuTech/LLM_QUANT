@@ -8,7 +8,8 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from app.agents.base import AgentAction, AgentContext
 from app.agents.departments import DepartmentManager
-from app.agents.game import Decision, decide
+from app.agents.game import Decision, decide, target_weight_for_action
+from app.agents.protocols import round_to_dict
 from app.llm.metrics import record_decision as metrics_record_decision
 from app.agents.registry import default_agents
 from app.data.schema import initialize_database
@@ -16,6 +17,7 @@ from app.utils.data_access import DataBroker
 from app.utils.config import get_config
 from app.utils.db import db_session
 from app.utils.logging import get_logger
+from app.utils import alerts
 from app.core.indicators import momentum, normalize, rolling_mean, volatility
 
 
@@ -436,6 +438,7 @@ class BacktestEngine:
                 )
             )
 
+        round_payload = [round_to_dict(summary) for summary in decision.rounds]
         global_payload = {
             "_confidence": decision.confidence,
             "_target_weight": decision.target_weight,
@@ -459,6 +462,12 @@ class BacktestEngine:
                 for code, dept in decision.department_decisions.items()
                 if dept.telemetry
             },
+            "_rounds": round_payload,
+            "_risk_assessment": (
+                decision.risk_assessment.to_dict()
+                if decision.risk_assessment
+                else None
+            ),
         }
         rows.append(
             (
@@ -543,18 +552,42 @@ class BacktestEngine:
         executed_trades: List[Dict[str, Any]] = []
         risk_events: List[Dict[str, Any]] = []
 
-        def _record_risk(ts_code: str, reason: str, decision: Decision, extra: Optional[Dict[str, Any]] = None) -> None:
+        def _record_risk(
+            ts_code: str,
+            reason: str,
+            decision: Decision,
+            extra: Optional[Dict[str, Any]] = None,
+            action_override: Optional[AgentAction] = None,
+            target_weight_override: Optional[float] = None,
+        ) -> None:
             payload = {
                 "trade_date": trade_date_str,
                 "ts_code": ts_code,
-                "action": decision.action.value,
-                "target_weight": decision.target_weight,
+                "action": (action_override or decision.action).value,
+                "target_weight": (
+                    target_weight_override
+                    if target_weight_override is not None
+                    else decision.target_weight
+                ),
                 "confidence": decision.confidence,
                 "reason": reason,
             }
             if extra:
                 payload.update(extra)
             risk_events.append(payload)
+            risk_meta = payload.get("risk_assessment") if isinstance(payload.get("risk_assessment"), dict) else extra.get("risk_assessment") if extra else None
+            status = None
+            if isinstance(risk_meta, dict):
+                status = risk_meta.get("status")
+            if status == "blocked":
+                try:
+                    alerts.add_warning(
+                        "backtest_risk",
+                        f"{ts_code} 风险阻断: {reason}",
+                        detail=json.dumps(payload, ensure_ascii=False),
+                    )
+                except Exception:  # noqa: BLE001
+                    LOGGER.debug("记录风险告警失败", extra=LOG_EXTRA)
 
         for ts_code, decision in decisions_map.items():
             price = price_map.get(ts_code)
@@ -569,35 +602,54 @@ class BacktestEngine:
             limit_down = bool(features.get("limit_down"))
             position_limit = bool(features.get("position_limit"))
 
+            risk = decision.risk_assessment
+            effective_action = decision.action
+            effective_weight = decision.target_weight
+            if risk:
+                risk_payload = risk.to_dict()
+                risk_payload.setdefault("applied_action", effective_action.value)
+                if risk.recommended_action:
+                    effective_action = risk.recommended_action
+                    risk_payload["applied_action"] = effective_action.value
+                    effective_weight = target_weight_for_action(effective_action)
+                if risk.status != "ok":
+                    _record_risk(
+                        ts_code,
+                        risk.reason,
+                        decision,
+                        extra={"risk_assessment": risk_payload},
+                        action_override=effective_action,
+                        target_weight_override=effective_weight,
+                    )
+                    if risk.status == "blocked":
+                        continue
+
             if is_suspended:
                 _record_risk(ts_code, "suspended", decision)
                 continue
-            if decision.action in self._buy_actions:
+            if effective_action in self._buy_actions:
                 if limit_up:
-                    _record_risk(ts_code, "limit_up", decision)
+                    _record_risk(ts_code, "limit_up", decision, action_override=effective_action)
                     continue
                 if position_limit:
-                    _record_risk(ts_code, "position_limit", decision)
+                    _record_risk(ts_code, "position_limit", decision, action_override=effective_action)
                     continue
-                if risk_penalty >= 0.95:
-                    _record_risk(ts_code, "risk_penalty", decision, {"risk_penalty": risk_penalty})
-                    continue
-            if decision.action in self._sell_actions and limit_down:
-                _record_risk(ts_code, "limit_down", decision)
+            if effective_action in self._sell_actions and limit_down:
+                _record_risk(ts_code, "limit_down", decision, action_override=effective_action)
                 continue
 
-            effective_weight = max(decision.target_weight, 0.0)
-            if decision.action in self._buy_actions:
+            effective_weight_value = max(effective_weight, 0.0)
+            if effective_action in self._buy_actions:
                 capped_weight = min(effective_weight, self.risk_params["max_position_weight"])
-                effective_weight = capped_weight * max(0.0, 1.0 - risk_penalty)
-            elif decision.action in self._sell_actions:
-                effective_weight = 0.0
+                effective_weight_value = capped_weight * max(0.0, 1.0 - risk_penalty)
+            elif effective_action in self._sell_actions:
+                effective_weight_value = 0.0
 
             desired_qty = current_qty
-            if decision.action in self._sell_actions:
+            if effective_action in self._sell_actions:
                 desired_qty = 0.0
-            elif decision.action in self._buy_actions or effective_weight >= 0.0:
-                desired_value = max(effective_weight, 0.0) * portfolio_value_before
+            elif effective_action in self._buy_actions or effective_weight_value > 0.0:
+                desired_value = max(effective_weight_value, 0.0) * portfolio_value_before
                 desired_qty = desired_value / price if price > 0 else current_qty
 
             delta = desired_qty - current_qty
@@ -654,7 +706,8 @@ class BacktestEngine:
                         "slippage": trade_price - price,
                         "confidence": decision.confidence,
                         "target_weight": decision.target_weight,
-                        "effective_weight": effective_weight,
+                        "effective_weight": effective_weight_value,
+                        "effective_action": effective_action.value,
                         "risk_penalty": risk_penalty,
                         "liquidity_score": liquidity_score,
                         "status": "executed",
@@ -694,7 +747,8 @@ class BacktestEngine:
                         "slippage": price - trade_price,
                         "confidence": decision.confidence,
                         "target_weight": decision.target_weight,
-                        "effective_weight": effective_weight,
+                        "effective_weight": effective_weight_value,
+                        "effective_action": effective_action.value,
                         "risk_penalty": risk_penalty,
                         "liquidity_score": liquidity_score,
                         "realized_pnl": realized,

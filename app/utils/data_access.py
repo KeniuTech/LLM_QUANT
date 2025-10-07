@@ -14,6 +14,7 @@ from .config import get_config
 from .db import db_session
 from .logging import get_logger
 from app.core.indicators import momentum, normalize, rolling_mean, volatility
+from app.utils.db_query import BrokerQueryEngine
 
 # 延迟导入，避免循环依赖
 collect_data_coverage = None
@@ -60,6 +61,39 @@ def _safe_split(path: str) -> Tuple[str, str] | None:
     return table, column
 
 
+@dataclass
+class _RefreshCoordinator:
+    """Orchestrates background refresh requests for the broker."""
+
+    broker: "DataBroker"
+
+    def ensure_for_latest(self, trade_date: str, fields: Iterable[str]) -> None:
+        parsed_date = _parse_trade_date(trade_date)
+        if not parsed_date:
+            return
+        normalized = parsed_date.strftime("%Y%m%d")
+        tables = self._collect_tables(fields)
+        if tables and self.broker.check_data_availability(normalized, tables):
+            self.broker._trigger_background_refresh(normalized)
+
+    def ensure_for_series(self, end_date: str, table: str) -> None:
+        parsed_date = _parse_trade_date(end_date)
+        if not parsed_date:
+            return
+        normalized = parsed_date.strftime("%Y%m%d")
+        if self.broker.check_data_availability(normalized, {table}):
+            self.broker._trigger_background_refresh(normalized)
+
+    def _collect_tables(self, fields: Iterable[str]) -> Set[str]:
+        tables: Set[str] = set()
+        for field_name in fields:
+            resolved = self.broker.resolve_field(field_name)
+            if resolved:
+                table, _ = resolved
+                tables.add(table)
+        return tables
+
+
 def parse_field_path(path: str) -> Tuple[str, str] | None:
     """Validate and split a `table.column` field expression."""
 
@@ -85,6 +119,17 @@ def _start_of_day(dt: datetime) -> str:
 
 def _end_of_day(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%d 23:59:59")
+
+
+def _coerce_date(value: object) -> Optional[date]:
+    if value is None:
+        return None
+    if isinstance(value, date):
+        return value
+    parsed = _parse_trade_date(value)
+    if parsed:
+        return parsed.date()
+    return None
 
 
 @dataclass
@@ -130,6 +175,8 @@ class DataBroker:
     _refresh_in_progress: Dict[str, bool] = field(init=False, repr=False)
     _refresh_callbacks: Dict[str, List[Callable]] = field(init=False, repr=False)
     _coverage_cache: Dict[str, Dict] = field(init=False, repr=False)
+    _refresh: _RefreshCoordinator = field(init=False, repr=False)
+    _query_engine: BrokerQueryEngine = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._latest_cache = OrderedDict()
@@ -139,6 +186,8 @@ class DataBroker:
         self._refresh_in_progress = {}
         self._refresh_callbacks = {}
         self._coverage_cache = {}
+        self._refresh = _RefreshCoordinator(self)
+        self._query_engine = BrokerQueryEngine(db_session)
         if initialize_database is not None:
             initialize_database()  # 确保数据库已初始化
         else:
@@ -169,22 +218,7 @@ class DataBroker:
 
         # 检查是否需要自动补数
         if auto_refresh:
-            # 解析交易日以确定是否需要补数
-            parsed_date = _parse_trade_date(trade_date)
-            if parsed_date:
-                # 检查最近交易日的数据是否存在
-                recent_trade_date = parsed_date.strftime('%Y%m%d')
-                # 对涉及的表进行数据可用性检查
-                tables = set()
-                for field_name in field_list:
-                    resolved = self.resolve_field(field_name)
-                    if resolved:
-                        table, _ = resolved
-                        tables.add(table)
-                
-                if tables and self.check_data_availability(recent_trade_date, tables):
-                    # 数据不足，触发后台补数
-                    self._trigger_background_refresh(recent_trade_date)
+            self._refresh.ensure_for_latest(trade_date, field_list)
 
         grouped: Dict[str, List[str]] = {}
         field_map: Dict[Tuple[str, str], List[str]] = {}
@@ -208,59 +242,41 @@ class DataBroker:
                 grouped[table].append(column)
             field_map.setdefault((table, column), []).append(field_name)
 
-        if not grouped:
-            if cache_key is not None and results:
-                self._cache_store(
-                    self._latest_cache,
-                    cache_key,
-                    deepcopy(results),
-                    self.latest_cache_size,
-                )
-            return results
-
-        try:
-            with db_session(read_only=True) as conn:
-                for table, columns in grouped.items():
-                    joined_cols = ", ".join(columns)
-                    query = (
-                        f"SELECT trade_date, {joined_cols} FROM {table} "
-                        "WHERE ts_code = ? AND trade_date <= ? "
-                        "ORDER BY trade_date DESC LIMIT 1"
-                    )
-                    try:
-                        row = conn.execute(query, (ts_code, trade_date)).fetchone()
-                    except Exception as exc:  # noqa: BLE001
-                        LOGGER.debug(
-                            "查询失败 table=%s fields=%s err=%s",
-                            table,
-                            columns,
-                            exc,
-                            extra=LOG_EXTRA,
-                        )
-                        continue
-                    if not row:
-                        continue
-                    for column in columns:
-                        value = row[column]
-                        if value is None:
-                            continue
-                        for original in field_map.get((table, column), [f"{table}.{column}"]):
-                            try:
-                                results[original] = float(value)
-                            except (TypeError, ValueError):
-                                results[original] = value
-        except sqlite3.OperationalError as exc:
-            LOGGER.debug("数据库只读连接失败：%s", exc, extra=LOG_EXTRA)
-            if cache_key is not None:
-                cached = self._cache_lookup(self._latest_cache, cache_key)
-                if cached is not None:
+        if grouped:
+            for table, columns in grouped.items():
+                try:
+                    row = self._query_engine.fetch_latest(table, ts_code, trade_date, columns)
+                except Exception as exc:  # noqa: BLE001
                     LOGGER.debug(
-                        "使用缓存结果 ts_code=%s trade_date=%s",
-                        ts_code,
-                        trade_date,
+                        "查询失败 table=%s fields=%s err=%s",
+                        table,
+                        columns,
+                        exc,
                         extra=LOG_EXTRA,
                     )
-                    return deepcopy(cached)
+                    continue
+                if not row:
+                    continue
+                for column in columns:
+                    value = row[column]
+                    if value is None:
+                        continue
+                    for original in field_map.get((table, column), [f"{table}.{column}"]):
+                        try:
+                            results[original] = float(value)
+                        except (TypeError, ValueError):
+                            results[original] = value
+
+        if cache_key is not None and not results:
+            cached = self._cache_lookup(self._latest_cache, cache_key)
+            if cached is not None:
+                LOGGER.debug(
+                    "使用缓存结果 ts_code=%s trade_date=%s",
+                    ts_code,
+                    trade_date,
+                    extra=LOG_EXTRA,
+                )
+                return deepcopy(cached)
         if cache_key is not None and results:
             self._cache_store(
                 self._latest_cache,
@@ -306,9 +322,7 @@ class DataBroker:
 
         # 检查是否需要自动补数
         if auto_refresh:
-            parsed_date = _parse_trade_date(end_date)
-            if parsed_date and self.check_data_availability(end_date, {table}):
-                self._trigger_background_refresh(end_date)
+            self._refresh.ensure_for_series(end_date, table)
 
         cache_key: Optional[Tuple[Any, ...]] = None
         if self.enable_cache:
@@ -323,21 +337,10 @@ class DataBroker:
             "ORDER BY trade_date DESC LIMIT ?"
         )
         try:
-            with db_session(read_only=True) as conn:
-                try:
-                    rows = conn.execute(query, (ts_code, end_date, window)).fetchall()
-                except Exception as exc:  # noqa: BLE001
-                    LOGGER.debug(
-                        "时间序列查询失败 table=%s column=%s err=%s",
-                        table,
-                        column,
-                        exc,
-                        extra=LOG_EXTRA,
-                    )
-                    return []
-        except sqlite3.OperationalError as exc:
+            rows = self._query_engine.fetch_series(table, resolved, ts_code, end_date, window)
+        except Exception as exc:  # noqa: BLE001
             LOGGER.debug(
-                "时间序列连接失败 table=%s column=%s err=%s",
+                "时间序列查询失败 table=%s column=%s err=%s",
                 table,
                 column,
                 exc,
@@ -358,9 +361,13 @@ class DataBroker:
         series: List[Tuple[str, float]] = []
         for row in rows:
             value = row[resolved]
-            if value is None:
+            trade_dt = row["trade_date"]
+            if value is None or trade_dt is None:
                 continue
-            series.append((row["trade_date"], float(value)))
+            try:
+                series.append((trade_dt, float(value)))
+            except (TypeError, ValueError):
+                continue
         if cache_key is not None and series:
             self._cache_store(
                 self._series_cache,
@@ -369,6 +376,32 @@ class DataBroker:
                 self.series_cache_size,
             )
         return series
+
+    def register_refresh_callback(
+        self,
+        start: date | str,
+        end: date | str,
+        callback: Callable[[], None],
+    ) -> None:
+        """Register a hook invoked after background refresh completes for the window."""
+
+        if callback is None:
+            return
+        start_date = _coerce_date(start)
+        end_date = _coerce_date(end)
+        if not start_date or not end_date:
+            LOGGER.debug(
+                "忽略无效补数回调窗口 start=%s end=%s",
+                start,
+                end,
+                extra=LOG_EXTRA,
+            )
+            return
+        key = f"{start_date}_{end_date}"
+        with self._refresh_lock:
+            bucket = self._refresh_callbacks.setdefault(key, [])
+            if callback not in bucket:
+                bucket.append(callback)
 
     def fetch_flags(
         self,
@@ -436,48 +469,19 @@ class DataBroker:
             LOGGER.debug("表不存在或无字段 table=%s", table, extra=LOG_EXTRA)
             return []
 
-        column_list = ", ".join(columns)
-        has_trade_date = "trade_date" in columns
-        if has_trade_date:
-            query = (
-                f"SELECT {column_list} FROM {table} "
-                "WHERE ts_code = ? AND trade_date <= ? "
-                "ORDER BY trade_date DESC LIMIT ?"
-            )
-            params: Tuple[object, ...] = (ts_code, trade_date, window)
-        else:
-            query = (
-                f"SELECT {column_list} FROM {table} "
-                "WHERE ts_code = ? ORDER BY rowid DESC LIMIT ?"
-            )
-            params = (ts_code, window)
-
-        results: List[Dict[str, object]] = []
         try:
-            with db_session(read_only=True) as conn:
-                try:
-                    rows = conn.execute(query, params).fetchall()
-                except Exception as exc:  # noqa: BLE001
-                    LOGGER.debug(
-                        "表查询失败 table=%s err=%s",
-                        table,
-                        exc,
-                        extra=LOG_EXTRA,
-                    )
-                    return []
-        except sqlite3.OperationalError as exc:
-            LOGGER.debug(
-                "表连接失败 table=%s err=%s",
+            rows = self._query_engine.fetch_table(
                 table,
-                exc,
-                extra=LOG_EXTRA,
+                columns,
+                ts_code,
+                trade_date if "trade_date" in columns else None,
+                window,
             )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.debug("表查询失败 table=%s err=%s", table, exc, extra=LOG_EXTRA)
             return []
 
-        for row in rows:
-            record = {col: row[col] for col in columns}
-            results.append(record)
-        return results
+        return [{col: row[col] for col in columns} for row in rows]
 
     def _resolve_derived_field(
         self,
@@ -924,13 +928,20 @@ class DataBroker:
                 with self._refresh_lock:
                     callbacks = self._refresh_callbacks.pop(refresh_key, [])
                     self._refresh_in_progress[refresh_key] = False
-                
+
+                if callbacks:
+                    LOGGER.info(
+                        "执行补数回调 count=%s key=%s",
+                        len(callbacks),
+                        refresh_key,
+                        extra=LOG_EXTRA,
+                    )
                 for callback in callbacks:
                     try:
                         callback()
                     except Exception as exc:
                         LOGGER.exception("补数回调执行失败: %s", exc, extra=LOG_EXTRA)
-                
+
             except Exception as exc:
                 LOGGER.exception("后台数据补数失败: %s", exc, extra=LOG_EXTRA)
                 with self._refresh_lock:
