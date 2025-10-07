@@ -91,7 +91,8 @@ def department_prompt(
         "data_scope": scope_lines or "- 使用系统提供的全部上下文，必要时指出仍需的额外数据。",
         "features": feature_lines or "- (无)",
         "market_snapshot": market_lines or "- (无)",
-        "supplements": supplements.strip() or "- 当前无追加数据"
+        "supplements": supplements.strip() or "- 当前无追加数据",
+        "action": ""  # 添加 action 变量以避免模板格式化错误
     }
     
     # Get template and format prompt
