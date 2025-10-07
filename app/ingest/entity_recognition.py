@@ -9,6 +9,8 @@ from app.utils.logging import get_logger
 
 LOGGER = get_logger(__name__)
 
+_COMPANY_MAPPING_INITIALIZED = False
+
 # 股票代码正则表达式
 A_SH_CODE_PATTERN = re.compile(r"\b(\d{6})(\.(?:SH|SZ))?\b", re.IGNORECASE)
 HK_CODE_PATTERN = re.compile(r"\b(\d{4})\.HK\b", re.IGNORECASE)
@@ -136,6 +138,11 @@ def initialize_company_mapping(db_connection) -> None:
     Args:
         db_connection: SQLite数据库连接
     """
+    global _COMPANY_MAPPING_INITIALIZED
+    if _COMPANY_MAPPING_INITIALIZED:
+        return
+    _COMPANY_MAPPING_INITIALIZED = True
+
     cursor = db_connection.cursor()
     try:
         cursor.execute(
