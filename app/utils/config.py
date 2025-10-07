@@ -404,12 +404,71 @@ def _normalize_data_scope(raw: object) -> List[str]:
     return []
 
 
+def _default_rss_sources() -> Dict[str, object]:
+    return {
+        "cls_depth_headline": {
+            "url": "https://rsshub.app/cls/depth/1000",
+            "source": "财联社·深度头条",
+            "enabled": True,
+            "hours_back": 48,
+            "max_items": 80,
+            "ts_codes": [],
+            "keywords": [],
+        },
+        "cls_depth_stock": {
+            "url": "https://rsshub.app/cls/depth/1003",
+            "source": "财联社·深度股市",
+            "enabled": True,
+            "hours_back": 48,
+            "max_items": 80,
+            "ts_codes": [],
+            "keywords": [],
+        },
+        "cls_depth_hk": {
+            "url": "https://rsshub.app/cls/depth/1135",
+            "source": "财联社·深度港股",
+            "enabled": True,
+            "hours_back": 48,
+            "max_items": 80,
+            "ts_codes": [],
+            "keywords": [],
+        },
+        "cls_depth_global": {
+            "url": "https://rsshub.app/cls/depth/1007",
+            "source": "财联社·深度环球",
+            "enabled": True,
+            "hours_back": 48,
+            "max_items": 80,
+            "ts_codes": [],
+            "keywords": [],
+        },
+        "cls_telegraph_all": {
+            "url": "https://rsshub.app/cls/telegraph",
+            "source": "财联社·电报",
+            "enabled": True,
+            "hours_back": 48,
+            "max_items": 80,
+            "ts_codes": [],
+            "keywords": [],
+        },
+        "cls_telegraph_red": {
+            "url": "https://rsshub.app/cls/telegraph/red",
+            "source": "财联社·电报加红",
+            "enabled": True,
+            "hours_back": 48,
+            "max_items": 80,
+            "ts_codes": [],
+            "keywords": [],
+        },
+    }
+
+
 @dataclass
 class AppConfig:
     """User configurable settings persisted in a simple structure."""
 
     tushare_token: Optional[str] = None
-    rss_sources: Dict[str, object] = field(default_factory=dict)
+    rss_sources: Dict[str, object] = field(default_factory=_default_rss_sources)
     decision_method: str = "nash"
     data_paths: DataPaths = field(default_factory=DataPaths)
     agent_weights: AgentWeights = field(default_factory=AgentWeights)
@@ -484,12 +543,12 @@ def _load_from_file(cfg: AppConfig) -> None:
         cfg.decision_method = str(payload.get("decision_method") or cfg.decision_method)
 
     rss_payload = payload.get("rss_sources")
+    default_rss = _default_rss_sources()
     if isinstance(rss_payload, dict):
-        resolved_rss: Dict[str, object] = {}
         for key, value in rss_payload.items():
-            if isinstance(value, (bool, dict)):
-                resolved_rss[str(key)] = value
-        cfg.rss_sources = resolved_rss
+            if isinstance(value, dict):
+                default_rss[str(key)] = value
+    cfg.rss_sources = default_rss
 
     weights_payload = payload.get("agent_weights")
     if isinstance(weights_payload, dict):
