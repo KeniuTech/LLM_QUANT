@@ -2,7 +2,12 @@
 from __future__ import annotations
 
 import re
+import sqlite3
 from typing import Dict, List, Optional, Set, Tuple
+
+from app.utils.logging import get_logger
+
+LOGGER = get_logger(__name__)
 
 # 股票代码正则表达式
 A_SH_CODE_PATTERN = re.compile(r"\b(\d{6})(\.(?:SH|SZ))?\b", re.IGNORECASE)
@@ -132,14 +137,25 @@ def initialize_company_mapping(db_connection) -> None:
         db_connection: SQLite数据库连接
     """
     cursor = db_connection.cursor()
-    cursor.execute("""
-        SELECT ts_code, name, short_name 
-        FROM stock_company
-        WHERE name IS NOT NULL
-    """)
-    
+    try:
+        cursor.execute(
+            """
+            SELECT ts_code, name, short_name
+            FROM stock_company
+            WHERE name IS NOT NULL
+            """
+        )
+    except sqlite3.OperationalError as exc:  # pragma: no cover - defensive
+        LOGGER.debug(
+            "stock_company 表不存在，跳过公司映射初始化 err=%s",
+            exc,
+            extra={"stage": "entity_recognition"},
+        )
+        cursor.close()
+        return
+
     for ts_code, name, short_name in cursor.fetchall():
         if name and short_name:
             company_mapper.add_company(ts_code, name, short_name)
-            
+
     cursor.close()
