@@ -24,6 +24,7 @@ _CONVERSATION_LOGGER_NAME = "app.conversation"
 _CONVERSATION_HANDLER: Optional[Handler] = None
 _CONVERSATION_LOGFILE: Optional[Path] = None
 
+logging.getLogger("watchdog").setLevel(logging.WARNING)
 
 class DatabaseLogHandler(Handler):
     """将日志写入 SQLite `run_log` 表的自定义 Handler。"""
