@@ -526,32 +526,48 @@ def _missing_tables() -> List[str]:
     return [name for name in REQUIRED_TABLES if name not in existing]
 
 
-def initialize_database() -> None:
-    """Initialize the SQLite database with all required tables."""
-    with db_session() as session:
-        cursor = session.cursor()
-        
-        # 创建表
-        for statement in SCHEMA_STATEMENTS:
-            try:
-                cursor.execute(statement)
-            except Exception as e:  # noqa: BLE001
-                print(f"初始化数据库时出错: {e}")
-                raise
-                
-        # 添加触发器以自动更新 updated_at 字段
-        try:
-            cursor.execute("""
-                CREATE TRIGGER IF NOT EXISTS update_fetch_jobs_timestamp
-                AFTER UPDATE ON fetch_jobs
-                BEGIN
-                    UPDATE fetch_jobs
-                    SET updated_at = CURRENT_TIMESTAMP
-                    WHERE id = NEW.id;
-                END;
-            """)
-        except Exception as e:  # noqa: BLE001
-            print(f"创建触发器时出错: {e}")
-            raise
-            
-        session.commit()
+def initialize_database() -> MigrationResult:
+  """Initialize the SQLite database with all required tables.
+
+  Returns a MigrationResult describing how many statements were executed
+  and whether the migration was skipped because the schema already exists.
+  """
+  # 如果所有表已存在，则视为跳过
+  missing = _missing_tables()
+  if not missing:
+    return MigrationResult(executed=0, skipped=True, missing_tables=list(missing))
+
+  executed = 0
+  with db_session() as session:
+    cursor = session.cursor()
+
+    # 创建表
+    for statement in SCHEMA_STATEMENTS:
+      try:
+        cursor.execute(statement)
+        executed += 1
+      except Exception as e:  # noqa: BLE001
+        print(f"初始化数据库时出错: {e}")
+        raise
+
+    # 添加触发器以自动更新 updated_at 字段
+    try:
+      cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS update_fetch_jobs_timestamp
+        AFTER UPDATE ON fetch_jobs
+        BEGIN
+          UPDATE fetch_jobs
+          SET updated_at = CURRENT_TIMESTAMP
+          WHERE id = NEW.id;
+        END;
+      """)
+      executed += 1
+    except Exception as e:  # noqa: BLE001
+      print(f"创建触发器时出错: {e}")
+      raise
+
+    session.commit()
+
+  # 返回执行摘要（创建后再次检查缺失表以报告）
+  remaining = _missing_tables()
+  return MigrationResult(executed=executed, skipped=False, missing_tables=remaining)
