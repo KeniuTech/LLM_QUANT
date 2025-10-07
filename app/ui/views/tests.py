@@ -24,12 +24,22 @@ def render_tests() -> None:
         LOGGER.info("点击测试数据库初始化按钮", extra=LOG_EXTRA)
         with st.spinner("正在检查数据库..."):
             result = initialize_database()
-            if result.skipped:
-                LOGGER.info("数据库已存在，无需初始化", extra=LOG_EXTRA)
-                st.success("数据库已存在，检查通过。")
+            # Defensive: some environments may provide a stub or return None.
+            if result is None:
+                LOGGER.warning("initialize_database 返回 None（可能为 stub），无法读取执行详情", extra=LOG_EXTRA)
+                st.warning("数据库初始化返回空结果，已跳过详细检查。")
             else:
-                LOGGER.info("数据库初始化完成，执行语句数=%s", result.executed, extra=LOG_EXTRA)
-                st.success(f"数据库初始化完成，共执行 {result.executed} 条语句。")
+                skipped = getattr(result, "skipped", False)
+                executed = getattr(result, "executed", None)
+                if skipped:
+                    LOGGER.info("数据库已存在，无需初始化", extra=LOG_EXTRA)
+                    st.success("数据库已存在，检查通过。")
+                else:
+                    LOGGER.info("数据库初始化完成，执行语句数=%s", executed, extra=LOG_EXTRA)
+                    if executed is None:
+                        st.success("数据库初始化完成。")
+                    else:
+                        st.success(f"数据库初始化完成，共执行 {executed} 条语句。")
 
     st.divider()
 

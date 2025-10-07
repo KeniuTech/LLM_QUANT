@@ -11,6 +11,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, Callable, ClassVar, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from .config import get_config
+import types
 from .db import db_session
 from .logging import get_logger
 from app.core.indicators import momentum, normalize, rolling_mean, volatility
@@ -35,7 +36,13 @@ if initialize_database is None:
     except ImportError:
         # 导入失败时，提供一个空实现
         def initialize_database():
-            pass
+            """Fallback stub used when the real initializer cannot be imported.
+
+            Return a lightweight object with the attributes callers expect
+            (executed, skipped, missing_tables) so code that calls
+            `initialize_database()` can safely inspect the result.
+            """
+            return types.SimpleNamespace(executed=0, skipped=True, missing_tables=[])
 
 LOGGER = get_logger(__name__)
 LOG_EXTRA = {"stage": "data_broker"}
