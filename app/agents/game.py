@@ -8,6 +8,7 @@ from typing import Dict, Iterable, List, Mapping, Optional, Tuple
 from .base import Agent, AgentAction, AgentContext, UtilityMatrix
 from .departments import DepartmentContext, DepartmentDecision, DepartmentManager
 from .registry import weight_map
+from .beliefs import BeliefRevisionResult, revise_beliefs
 from .risk import RiskAgent, RiskRecommendation
 from .protocols import (
     DialogueMessage,
@@ -69,6 +70,7 @@ class Decision:
     rounds: List[RoundSummary] = field(default_factory=list)
     risk_assessment: Optional[RiskAssessment] = None
     belief_updates: Dict[str, BeliefUpdate] = field(default_factory=dict)
+    belief_revision: Optional[BeliefRevisionResult] = None
 
 
 def compute_utilities(agents: Iterable[Agent], context: AgentContext) -> UtilityMatrix:
@@ -336,6 +338,13 @@ def decide(
         action,
         department_votes,
     )
+    belief_revision = revise_beliefs(belief_updates, exec_action)
+    execution_round.notes.setdefault("consensus_action", belief_revision.consensus_action.value)
+    execution_round.notes.setdefault("consensus_confidence", belief_revision.consensus_confidence)
+    if belief_revision.conflicts:
+        execution_round.notes.setdefault("conflicts", belief_revision.conflicts)
+    if belief_revision.notes:
+        execution_round.notes.setdefault("belief_notes", belief_revision.notes)
     return Decision(
         action=action,
         confidence=confidence,
@@ -348,6 +357,7 @@ def decide(
         rounds=rounds,
         risk_assessment=risk_assessment,
         belief_updates=belief_updates,
+        belief_revision=belief_revision,
     )
 
 

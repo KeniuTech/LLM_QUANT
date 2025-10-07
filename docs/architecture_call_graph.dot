@@ -1,0 +1,24 @@
+digraph LLMQuantCallGraph {
+    rankdir=LR;
+    node [shape=box, style=rounded];
+
+    BacktestEngine -> LoadMarketData;
+    LoadMarketData -> DataBrokerFetch;
+    DataBrokerFetch -> BrokerQuery [label="db_session"];
+    LoadMarketData -> FeatureAssembly;
+
+    BacktestEngine -> Decide;
+    Decide -> ProtocolHost;
+    ProtocolHost -> DepartmentRound;
+    ProtocolHost -> RiskReview;
+    ProtocolHost -> ExecutionSummary;
+    Decide -> BeliefRevision;
+
+    ExecutionSummary -> ApplyPortfolio;
+    ApplyPortfolio -> RiskEvents;
+    ApplyPortfolio -> Alerts;
+    ApplyPortfolio -> PersistResults;
+
+    PersistResults -> Reports;
+    PersistResults -> UI;
+}

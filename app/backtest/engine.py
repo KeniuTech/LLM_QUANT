@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
@@ -9,7 +10,8 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 from app.agents.base import AgentAction, AgentContext
 from app.agents.departments import DepartmentManager
 from app.agents.game import Decision, decide, target_weight_for_action
-from app.agents.protocols import round_to_dict
+from app.agents.protocols import GameStructure, round_to_dict
+from app.agents.scopes import scope_for_structures
 from app.llm.metrics import record_decision as metrics_record_decision
 from app.agents.registry import default_agents
 from app.data.schema import initialize_database
@@ -56,6 +58,7 @@ class BtConfig:
     universe: List[str]
     params: Dict[str, float]
     method: str = "nash"
+    game_structures: Optional[List[GameStructure]] = None
 
 
 @dataclass
@@ -72,6 +75,7 @@ class BacktestResult:
     nav_series: List[Dict[str, float]] = field(default_factory=list)
     trades: List[Dict[str, str]] = field(default_factory=list)
     risk_events: List[Dict[str, object]] = field(default_factory=list)
+    data_gaps: List[Dict[str, object]] = field(default_factory=list)
 
 
 @dataclass
@@ -137,7 +141,19 @@ class BacktestEngine:
             "factors.volat_20",
             "factors.turn_20",
         }
-        self.required_fields = sorted(base_scope | department_scope)
+        selected_structures = (
+            cfg.game_structures
+            if cfg.game_structures
+            else [
+                GameStructure.REPEATED,
+                GameStructure.SIGNALING,
+                GameStructure.BAYESIAN,
+                GameStructure.CUSTOM,
+            ]
+        )
+        self.game_structures = list(dict.fromkeys(selected_structures))
+        structure_scope = scope_for_structures(self.game_structures)
+        self.required_fields = sorted(base_scope | department_scope | structure_scope)
 
     def load_market_data(self, trade_date: date) -> Mapping[str, Dict[str, Any]]:
         """Load per-stock feature vectors and context slices for the trade date."""
@@ -152,6 +168,19 @@ class BacktestEngine:
                 self.required_fields,
                 auto_refresh=False  # 避免回测时触发自动补数
             )
+            missing_fields = [
+                field
+                for field in self.required_fields
+                if scope_values.get(field) is None
+            ]
+            derived_fields: List[str] = []
+            if missing_fields:
+                LOGGER.debug(
+                    "字段缺失，使用回退或派生数据 ts_code=%s fields=%s",
+                    ts_code,
+                    missing_fields,
+                    extra=LOG_EXTRA,
+                )
 
             closes = self.data_broker.fetch_series(
                 "daily",
@@ -166,17 +195,21 @@ class BacktestEngine:
             mom5 = scope_values.get("factors.mom_5")
             if mom5 is None and len(close_values) >= 5:
                 mom5 = momentum(close_values, 5)
+                derived_fields.append("factors.mom_5")
             mom20 = scope_values.get("factors.mom_20")
             if mom20 is None and len(close_values) >= 20:
                 mom20 = momentum(close_values, 20)
+                derived_fields.append("factors.mom_20")
 
             mom60 = scope_values.get("factors.mom_60")
             if mom60 is None and len(close_values) >= 60:
                 mom60 = momentum(close_values, 60)
+                derived_fields.append("factors.mom_60")
 
             volat20 = scope_values.get("factors.volat_20")
             if volat20 is None and len(close_values) >= 2:
                 volat20 = volatility(close_values, 20)
+                derived_fields.append("factors.volat_20")
 
             turnover_series = self.data_broker.fetch_series(
                 "daily_basic",
@@ -191,9 +224,11 @@ class BacktestEngine:
             turn20 = scope_values.get("factors.turn_20")
             if turn20 is None and turnover_values:
                 turn20 = rolling_mean(turnover_values, 20)
+                derived_fields.append("factors.turn_20")
             turn5 = scope_values.get("factors.turn_5")
             if turn5 is None and len(turnover_values) >= 5:
                 turn5 = rolling_mean(turnover_values, 5)
+                derived_fields.append("factors.turn_5")
 
             if mom20 is None:
                 mom20 = 0.0
@@ -217,14 +252,24 @@ class BacktestEngine:
             val_pe = scope_values.get("factors.val_pe_score")
             if val_pe is None:
                 val_pe = _valuation_score(scope_values.get("daily_basic.pe"), scale=12.0)
+                derived_fields.append("factors.val_pe_score")
 
             val_pb = scope_values.get("factors.val_pb_score")
             if val_pb is None:
                 val_pb = _valuation_score(scope_values.get("daily_basic.pb"), scale=2.5)
+                derived_fields.append("factors.val_pb_score")
 
             volume_ratio_score = scope_values.get("factors.volume_ratio_score")
             if volume_ratio_score is None:
                 volume_ratio_score = _volume_ratio_score(scope_values.get("daily_basic.volume_ratio"))
+                derived_fields.append("factors.volume_ratio_score")
+            if derived_fields:
+                LOGGER.debug(
+                    "字段派生完成 ts_code=%s derived=%s",
+                    ts_code,
+                    derived_fields,
+                    extra=LOG_EXTRA,
+                )
 
             sentiment_index = scope_values.get("news.sentiment_index", 0.0)
             heat_score = scope_values.get("news.heat_score", 0.0)
@@ -316,6 +361,8 @@ class BacktestEngine:
                 "close_series": closes,
                 "turnover_series": turnover_series,
                 "required_fields": self.required_fields,
+                "missing_fields": missing_fields,
+                "derived_fields": derived_fields,
             }
 
             feature_map[ts_code] = {
@@ -512,6 +559,8 @@ class BacktestEngine:
         price_map: Dict[str, float] = {}
         decisions_map: Dict[str, Decision] = {}
         feature_cache: Dict[str, Mapping[str, Any]] = {}
+        missing_counts: Dict[str, int] = defaultdict(int)
+        derived_counts: Dict[str, int] = defaultdict(int)
         for ts_code, context, decision in records:
             features = context.features or {}
             if not isinstance(features, Mapping):
@@ -520,6 +569,12 @@ class BacktestEngine:
             scope_values = context.raw.get("scope_values") if context.raw else {}
             if not isinstance(scope_values, Mapping):
                 scope_values = {}
+            raw_missing = context.raw.get("missing_fields") if context.raw else []
+            raw_derived = context.raw.get("derived_fields") if context.raw else []
+            for field in raw_missing or []:
+                missing_counts[field] += 1
+            for field in raw_derived or []:
+                derived_counts[field] += 1
             price = scope_values.get("daily.close") or scope_values.get("close")
             if price is None:
                 continue
@@ -755,6 +810,15 @@ class BacktestEngine:
                         "status": "executed",
                     }
                 )
+
+        if missing_counts or derived_counts:
+            result.data_gaps.append(
+                {
+                    "trade_date": trade_date_str,
+                    "missing_fields": dict(sorted(missing_counts.items())),
+                    "derived_fields": dict(sorted(derived_counts.items())),
+                }
+            )
 
         market_value = 0.0
         unrealized_pnl = 0.0
@@ -1128,6 +1192,19 @@ def _persist_backtest_results(cfg: BtConfig, result: BacktestResult) -> None:
                 )
             )
         summary_payload["risk_breakdown"] = breakdown
+
+    if getattr(result, "data_gaps", None):
+        missing_total: Dict[str, int] = defaultdict(int)
+        derived_total: Dict[str, int] = defaultdict(int)
+        for gap in result.data_gaps:
+            for field, count in (gap.get("missing_fields") or {}).items():
+                missing_total[field] += int(count)
+            for field, count in (gap.get("derived_fields") or {}).items():
+                derived_total[field] += int(count)
+        if missing_total:
+            summary_payload["missing_field_counts"] = dict(missing_total)
+        if derived_total:
+            summary_payload["derived_field_counts"] = dict(derived_total)
 
     cfg_payload = {
         "id": cfg.id,

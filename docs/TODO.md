@@ -55,7 +55,7 @@
 
 ### 3.3 代码改造计划（多轮博弈适配）
 1. 架构基线评估
-   - ⏳ 绘制代理/部门/回测调用图，补充日志字段（缺数告警、补数来源、议程标识）并形成诊断报告。
+   - ✅ 绘制代理/部门/回测调用图并补充日志字段（见 docs/architecture_call_graph.md）。
    - ✅ 定义多轮博弈上下文结构（消息历史、信念状态、引用证据），输出数据类与通信协议草稿。
    - ✅ 在 `app/agents/protocols.py` 基础上补充主持/执行状态管理，实现 `DialogueTrace` 与部门上下文的对接路径。
    - ✅ 扩展 `Decision.rounds` 与 `RoundSummary` 采集策略，用于串联部门结论与多轮议程结果。
@@ -67,15 +67,16 @@
    - ✅ 将风险建议与执行回合对齐，执行阶段识别 `risk_adjusted` 并记录原始动作。
 2. 数据与因子重构
    - ✅ 拆分 `DataBroker` 查询层（`BrokerQueryEngine`），补数逻辑独立于查询管道。
-   - ⏳ 按主题拆分因子模块，存储缺口/异常标签，改写 `load_market_data()` 为“缺失即说明”。
-   - ⏳ 维护博弈结构 → 数据 scope 映射，支持角色按结构加载差异化字段。
+   - ⏳ 按主题拆分因子模块，存储缺口/异常标签。
+   - ✅ `load_market_data()` 标注缺失字段并写入原始日志（`missing_fields`、`derived_fields`）。
+   - ✅ 维护博弈结构 → 数据 scope 映射（`app/agents/scopes.py`，`BacktestEngine.required_fields`）。
    - ✅ 基于 `_RefreshCoordinator` 落地刷新队列与监控事件，拆分查询与补数路径。
    - ✅ 暴露 `DataBroker.register_refresh_callback()` 钩子，结合监控系统记录补数进度与失败重试。
    - ⏳ 统一补数回调日志格式（`LOG_EXTRA.stage=data_broker`），为后续指标预留数据源。
 3. 多轮博弈框架
    - ✅ 在 `app/agents/game.py` 抽象 `GameProtocol` 接口，扩展 `Decision` 记录多轮对话。
    - ✅ 实现主持调度器驱动议程（信息→陈述→反驳→共识→执行），挂载风险复核机制。
-   - ⏳ 引入信念修正规则与论证框架，支持证据引用和冲突裁决。
+   - ✅ 引入基础信念修正规则（`app/agents/beliefs.py`），汇总信念并记录冲突。
 4. 执行与回测集成
    - ✅ 将回测循环改造成“每日多轮→执行摘要”，完成风控校验与冲突重议流程。
    - ⏳ 擦合订单映射层，明确多轮结果对应目标仓位、执行节奏、异常回滚策略。

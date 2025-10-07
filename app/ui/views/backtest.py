@@ -17,6 +17,7 @@ import streamlit as st
 from app.agents.base import AgentContext
 from app.agents.game import Decision
 from app.agents.registry import default_agents
+from app.agents.protocols import GameStructure
 from app.backtest.decision_env import DecisionEnv, ParameterSpec
 from app.backtest.optimizer import BanditConfig, EpsilonGreedyBandit
 from app.rl import TORCH_AVAILABLE, DecisionEnvAdapter, PPOConfig, train_ppo
@@ -67,6 +68,16 @@ def render_backtest_review() -> None:
     target = col_target.number_input("目标收益（例：0.035 表示 3.5%）", value=0.035, step=0.005, format="%.3f", key="bt_target")
     stop = col_stop.number_input("止损收益（例：-0.015 表示 -1.5%）", value=-0.015, step=0.005, format="%.3f", key="bt_stop")
     hold_days = col_hold.number_input("持有期（交易日）", value=10, step=1, key="bt_hold_days")
+    structure_options = [item.value for item in GameStructure]
+    selected_structure_values = st.multiselect(
+        "选择博弈框架",
+        structure_options,
+        default=structure_options,
+        key="bt_game_structures",
+    )
+    if not selected_structure_values:
+        selected_structure_values = [GameStructure.REPEATED.value]
+    selected_structures = [GameStructure(value) for value in selected_structure_values]
     LOGGER.debug(
         "当前回测表单输入：start=%s end=%s universe_text=%s target=%.3f stop=%.3f hold_days=%s",
         start_date,
@@ -148,6 +159,7 @@ def render_backtest_review() -> None:
                         "stop": stop,
                         "hold_days": int(hold_days),
                     },
+                    game_structures=selected_structures,
                 )
                 result = run_backtest(backtest_cfg, decision_callback=_decision_callback)
                 LOGGER.info(
@@ -286,6 +298,12 @@ def render_backtest_review() -> None:
                             "风险事件": summary.get("risk_events"),
                             "风险分布": json.dumps(summary.get("risk_breakdown"), ensure_ascii=False)
                             if summary.get("risk_breakdown")
+                            else None,
+                            "缺失字段": json.dumps(summary.get("missing_field_counts"), ensure_ascii=False)
+                            if summary.get("missing_field_counts")
+                            else None,
+                            "派生字段": json.dumps(summary.get("derived_field_counts"), ensure_ascii=False)
+                            if summary.get("derived_field_counts")
                             else None,
                         }
                         metrics_rows.append({k: v for k, v in record.items() if (k == "cfg_id" or k in selected_metrics)})
@@ -658,6 +676,7 @@ def render_backtest_review() -> None:
                                 "hold_days": int(hold_days),
                             },
                             method=app_cfg.decision_method,
+                            game_structures=selected_structures,
                         )
                         env = DecisionEnv(
                             bt_config=bt_cfg_env,
@@ -934,6 +953,7 @@ def render_backtest_review() -> None:
                                     "hold_days": int(hold_days),
                                 },
                                 method=app_cfg.decision_method,
+                                game_structures=selected_structures,
                             )
                             env = DecisionEnv(
                                 bt_config=bt_cfg_env,

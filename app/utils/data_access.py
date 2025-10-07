@@ -74,6 +74,12 @@ class _RefreshCoordinator:
         normalized = parsed_date.strftime("%Y%m%d")
         tables = self._collect_tables(fields)
         if tables and self.broker.check_data_availability(normalized, tables):
+            LOGGER.debug(
+                "触发近端数据刷新 trade_date=%s tables=%s",
+                normalized,
+                sorted(tables),
+                extra=LOG_EXTRA,
+            )
             self.broker._trigger_background_refresh(normalized)
 
     def ensure_for_series(self, end_date: str, table: str) -> None:
@@ -82,6 +88,12 @@ class _RefreshCoordinator:
             return
         normalized = parsed_date.strftime("%Y%m%d")
         if self.broker.check_data_availability(normalized, {table}):
+            LOGGER.debug(
+                "触发序列刷新 trade_date=%s table=%s",
+                normalized,
+                table,
+                extra=LOG_EXTRA,
+            )
             self.broker._trigger_background_refresh(normalized)
 
     def _collect_tables(self, fields: Iterable[str]) -> Set[str]:
