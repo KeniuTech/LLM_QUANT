@@ -24,6 +24,7 @@ from app.ui.views import (
     render_log_viewer,
     render_market_visualization,
     render_pool_overview,
+    render_stock_evaluation,
     render_tests,
     render_today_plan,
 )
@@ -77,7 +78,11 @@ def main() -> None:
     with tabs[1]:
         render_pool_overview()
     with tabs[2]:
-        render_backtest_review()
+        backtest_tabs = st.tabs(["回测复盘", "股票评估"])
+        with backtest_tabs[0]:
+            render_backtest_review()
+        with backtest_tabs[1]:
+            render_stock_evaluation()
     with tabs[3]:
         render_market_visualization()
     with tabs[4]:
