@@ -14,6 +14,7 @@ from app.data.schema import initialize_database
 from app.ingest.checker import run_boot_check
 from app.ingest.rss import ingest_configured_rss
 from app.ui.portfolio_config import render_portfolio_config
+from app.ui.progress_state import render_factor_progress
 from app.ui.shared import LOGGER, LOG_EXTRA
 from app.ui.views import (
     render_backtest_review,
@@ -65,6 +66,9 @@ def main() -> None:
             st.error(f"❌ 自动数据更新失败：{exc}")
 
     render_global_dashboard()
+    
+    # 显示因子计算进度
+    render_factor_progress()
 
     tabs = st.tabs(["今日计划", "投资池/仓位", "回测与复盘", "行情可视化", "日志钻取", "数据与设置", "自检测试"])
     LOGGER.debug(

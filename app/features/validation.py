@@ -8,28 +8,55 @@ from app.utils.logging import get_logger
 LOGGER = get_logger(__name__)
 LOG_EXTRA = {"stage": "factor_validation"}
 
-# 因子值范围限制配置
+# 因子值范围限制配置 - 基于物理规律和实际数据特征
 FACTOR_LIMITS = {
-    # 动量类因子限制在 ±100%
-    "mom_": (-1.0, 1.0),
-    # 波动率类因子限制在 0-50%
-    "volat_": (0, 0.5),
-    # 换手率类因子限制在 0-1000% (实际换手率可能很高)
-    "turn_": (0, 10.0),
-    # 估值评分类因子限制在 -1到1
-    "val_": (-1.0, 1.0),
-    # 量价类因子
+    # 动量类因子：收益率相关，限制在 ±50% (实际收益率很少超过这个范围)
+    "mom_": (-0.5, 0.5),
+    "momentum_": (-0.5, 0.5),
+    
+    # 波动率类因子：年化波动率，限制在 0-200% (考虑极端市场情况)
+    "volat_": (0, 2.0),
+    "vol_": (0, 2.0),
+    
+    # 换手率类因子：日换手率，限制在 0-100% (实际换手率通常在这个范围内)
+    "turn_": (0, 1.0),
+    
+    # 估值评分类因子：标准化评分，限制在 -3到3 (Z-score标准化范围)
+    "val_": (-3.0, 3.0),
+    
+    # 量价类因子：成交量比率，限制在 0-10倍
     "volume_": (0, 10.0),
-    # 市场状态类因子
-    "market_": (-1.0, 1.0),
-    # 技术指标类因子（放宽范围，允许原始技术指标值）
-    "tech_": (-100.0, 100.0),
-    # 趋势类因子（放宽范围，允许原始趋势指标值）
-    "trend_": (-10.0, 10.0),
-    # 微观结构类因子
+    "volume_ratio": (0, 10.0),
+    
+    # 市场状态类因子：标准化状态指标，限制在 -3到3
+    "market_": (-3.0, 3.0),
+    
+    # 技术指标类因子：具体技术指标的范围限制
+    "tech_rsi": (0, 100.0),           # RSI指标范围 0-100
+    "tech_macd": (-0.5, 0.5),         # MACD信号范围
+    "tech_bb": (-3.0, 3.0),            # 布林带位置，标准差倍数
+    "tech_obv": (-10.0, 10.0),         # OBV动量标准化
+    "tech_pv": (-1.0, 1.0),            # 量价趋势相关性
+    
+    # 趋势类因子：趋势强度指标
+    "trend_": (-3.0, 3.0),
+    "trend_ma": (-0.5, 0.5),           # 均线交叉
+    "trend_adx": (0, 100.0),           # ADX趋势强度 0-100
+    
+    # 微观结构类因子：标准化微观指标
     "micro_": (-1.0, 1.0),
-    # 情绪类因子
+    
+    # 情绪类因子：情绪指标标准化
     "sent_": (-1.0, 1.0),
+    
+    # 风险类因子：风险惩罚因子
+    "risk_": (0, 1.0),
+    
+    # 价格比率类因子：价格与均线比率，限制在 0.5-2.0 (50%-200%)
+    "price_ma_": (0.5, 2.0),
+    
+    # 成交量比率类因子：成交量与均线比率，限制在 0.1-10.0
+    "volume_ma_": (0.1, 10.0),
 }
 
 def validate_factor_value(
@@ -61,19 +88,76 @@ def validate_factor_value(
         )
         return None
         
-    # 根据因子类型应用不同的限制
+    # 优先检查精确匹配的因子名称
+    exact_matches = {
+        # 技术指标精确范围
+        "tech_rsi_14": (0, 100.0),           # RSI指标范围 0-100
+        "tech_macd_signal": (-0.5, 0.5),     # MACD信号范围
+        "tech_bb_position": (-3.0, 3.0),     # 布林带位置，标准差倍数
+        "tech_obv_momentum": (-10.0, 10.0),  # OBV动量标准化
+        "tech_pv_trend": (-1.0, 1.0),       # 量价趋势相关性
+        
+        # 趋势指标精确范围
+        "trend_adx": (0, 100.0),             # ADX趋势强度 0-100
+        "trend_ma_cross": (-1.0, 1.0),       # 均线交叉
+        "trend_price_channel": (0, 1.0),     # 价格通道位置
+        
+        # 波动率指标精确范围
+        "vol_garch": (0, 0.5),               # GARCH波动率预测，限制在50%以内
+        "vol_range_pred": (0, 0.2),          # 波动率范围预测，限制在20%以内
+        "vol_regime": (0, 1.0),              # 波动率状态，0-1之间
+        
+        # 微观结构精确范围
+        "micro_tick_direction": (0, 1.0),    # 买卖方向比例
+        "micro_trade_imbalance": (-1.0, 1.0), # 交易不平衡度
+        
+        # 情绪指标精确范围
+        "sent_impact": (0, 1.0),             # 情绪影响度
+        "sent_divergence": (-1.0, 1.0),      # 情绪分歧度
+    }
+    
+    # 检查精确匹配
+    if name in exact_matches:
+        min_val, max_val = exact_matches[name]
+        if min_val <= value <= max_val:
+            return value
+        else:
+            LOGGER.warning(
+                "因子值超出精确范围 factor=%s value=%f range=[%f,%f] ts_code=%s date=%s",
+                name, value, min_val, max_val, ts_code, trade_date,
+                extra=LOG_EXTRA
+            )
+            return None
+    
+    # 检查前缀模式匹配
     for prefix, (min_val, max_val) in FACTOR_LIMITS.items():
         if name.startswith(prefix):
-            if value < min_val or value > max_val:
+            if min_val <= value <= max_val:
+                return value
+            else:
                 LOGGER.warning(
-                    "因子值超出范围 factor=%s value=%f range=[%f,%f] ts_code=%s date=%s",
+                    "因子值超出前缀范围 factor=%s value=%f range=[%f,%f] ts_code=%s date=%s",
                     name, value, min_val, max_val, ts_code, trade_date,
                     extra=LOG_EXTRA
                 )
                 return None
-            break
-            
-    return value
+    
+    # 如果没有匹配，使用更严格的默认范围
+    default_min, default_max = -5.0, 5.0
+    if default_min <= value <= default_max:
+        LOGGER.debug(
+            "因子使用默认范围验证通过 factor=%s value=%f ts_code=%s date=%s",
+            name, value, ts_code, trade_date,
+            extra=LOG_EXTRA
+        )
+        return value
+    else:
+        LOGGER.warning(
+            "因子值超出默认范围 factor=%s value=%f range=[%f,%f] ts_code=%s date=%s",
+            name, value, default_min, default_max, ts_code, trade_date,
+            extra=LOG_EXTRA
+        )
+        return None
 
 def detect_outliers(
     values: Dict[str, float],

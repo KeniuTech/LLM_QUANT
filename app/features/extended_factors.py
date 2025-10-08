@@ -61,6 +61,7 @@ from app.core.volatility import (
     volatility, garch_volatility, volatility_regime,
     volume_price_correlation
 )
+from app.features.validation import validate_factor_value
 
 
 @dataclass
@@ -159,11 +160,12 @@ class ExtendedFactors:
     def __init__(self):
         """初始化因子计算器，构建因子规格映射"""
         self.factor_specs = {spec.name: spec for spec in EXTENDED_FACTORS}
-        LOGGER.info(
-            "初始化因子计算器，加载因子数量: %d",
-            len(self.factor_specs),
-            extra=LOG_EXTRA
-        )
+        # 关闭初始化日志打印
+        # LOGGER.info(
+        #     "初始化因子计算器，加载因子数量: %d",
+        #     len(self.factor_specs),
+        #     extra=LOG_EXTRA
+        # )
         
     @handle_factor_errors
     def compute_factor(self, 
@@ -490,16 +492,28 @@ class ExtendedFactors:
         for factor_name in self.factor_specs:
             value = self.compute_factor(factor_name, close_series, volume_series)
             if value is not None:
-                results[factor_name] = value
-                success_count += 1
+                # 验证因子值是否在合理范围内
+                validated_value = validate_factor_value(
+                    factor_name, value, "unknown", "unknown"
+                )
+                if validated_value is not None:
+                    results[factor_name] = validated_value
+                    success_count += 1
+                else:
+                    LOGGER.debug(
+                        "因子值验证失败 factor=%s value=%f",
+                        factor_name, value,
+                        extra=LOG_EXTRA
+                    )
                 
-        LOGGER.info(
-            "因子计算完成 total=%d success=%d failed=%d",
-            total_count,
-            success_count,
-            total_count - success_count,
-            extra=LOG_EXTRA
-        )
+        # 关闭因子计算完成日志打印
+        # LOGGER.info(
+        #     "因子计算完成 total=%d success=%d failed=%d",
+        #     total_count,
+        #     success_count,
+        #     total_count - success_count,
+        #     extra=LOG_EXTRA
+        # )
         
         return results
         

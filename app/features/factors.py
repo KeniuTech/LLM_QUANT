@@ -18,6 +18,8 @@ from app.features.sentiment_factors import SentimentFactors
 from app.features.value_risk_factors import ValueRiskFactors
 # 导入因子验证功能
 from app.features.validation import check_data_sufficiency, detect_outliers
+# 导入UI进度状态管理
+from app.ui.progress_state import factor_progress
 
 
 LOGGER = get_logger(__name__)
@@ -162,42 +164,71 @@ def compute_factors(
     results: List[FactorResult] = []
     rows_to_persist: List[tuple[str, Dict[str, float | None]]] = []
     
-    # 分批处理以优化性能
-    for i in range(0, len(universe), batch_size):
-        batch = universe[i:i+batch_size]
-        batch_results = _compute_batch_factors(broker, batch, trade_date_str, specs, validation_stats)
+    try:
+        # 启动UI进度状态
+        factor_progress.start_calculation(
+            total_securities=len(universe),
+            total_batches=(len(universe) + batch_size - 1) // batch_size
+        )
         
-        for ts_code, values in batch_results:
-            if values:
-                results.append(FactorResult(ts_code=ts_code, trade_date=trade_date, values=values))
-                rows_to_persist.append((ts_code, values))
-        
-        # 显示进度
-        processed = min(i + batch_size, len(universe))
-        if processed % (batch_size * 5) == 0 or processed == len(universe):
-            LOGGER.info(
-                "因子计算进度: %s/%s (%.1f%%) 成功:%s 跳过:%s 数据缺失:%s 异常值:%s",
-                processed, len(universe), 
-                (processed / len(universe)) * 100,
-                validation_stats["success"],
-                validation_stats["skipped"],
-                validation_stats["data_missing"],
-                validation_stats["outliers"],
-                extra=LOG_EXTRA,
+        # 分批处理以优化性能
+        for i in range(0, len(universe), batch_size):
+            batch = universe[i:i+batch_size]
+            batch_results = _compute_batch_factors(
+                broker, 
+                batch, 
+                trade_date_str, 
+                specs, 
+                validation_stats,
+                batch_index=i // batch_size,
+                total_batches=(len(universe) + batch_size - 1) // batch_size,
+                processed_securities=i,
+                total_securities=len(universe)
             )
+            
+            for ts_code, values in batch_results:
+                if values:
+                    results.append(FactorResult(ts_code=ts_code, trade_date=trade_date, values=values))
+                    rows_to_persist.append((ts_code, values))
+            
+            # 显示进度
+            processed = min(i + batch_size, len(universe))
+            if processed % (batch_size * 5) == 0 or processed == len(universe):
+                LOGGER.info(
+                    "因子计算进度: %s/%s (%.1f%%) 成功:%s 跳过:%s 数据缺失:%s 异常值:%s",
+                    processed, len(universe), 
+                    (processed / len(universe)) * 100,
+                    validation_stats["success"],
+                    validation_stats["skipped"],
+                    validation_stats["data_missing"],
+                    validation_stats["outliers"],
+                    extra=LOG_EXTRA,
+                )
 
-    if rows_to_persist:
-        _persist_factor_rows(trade_date_str, rows_to_persist, specs)
+        if rows_to_persist:
+            _persist_factor_rows(trade_date_str, rows_to_persist, specs)
         
-    LOGGER.info(
-        "因子计算完成 总数量:%s 成功:%s 失败:%s",
-        len(universe), 
-        validation_stats["success"],
-        validation_stats["total"] - validation_stats["success"],
-        extra=LOG_EXTRA,
-    )
-    
-    return results
+        # 更新UI进度状态为完成
+        factor_progress.complete_calculation(
+            message=f"因子计算完成: 总数量={len(universe)}, 成功={validation_stats['success']}, 失败={len(universe) - validation_stats['success']}"
+        )
+            
+        LOGGER.info(
+            "因子计算完成 总数量:%s 成功:%s 失败:%s",
+            len(universe), 
+            validation_stats["success"],
+            validation_stats["total"] - validation_stats["success"],
+            extra=LOG_EXTRA,
+        )
+        
+        return results
+        
+    except Exception as exc:
+        # 发生错误时更新UI状态
+        error_message = f"因子计算过程中发生错误: {exc}"
+        factor_progress.error_occurred(error_message)
+        LOGGER.error(error_message, extra=LOG_EXTRA)
+        raise
 
 
 def compute_factor_range(
@@ -290,6 +321,10 @@ def _compute_batch_factors(
     trade_date: str,
     specs: Sequence[FactorSpec],
     validation_stats: Dict[str, int],
+    batch_index: int = 0,
+    total_batches: int = 1,
+    processed_securities: int = 0,
+    total_securities: int = 0,
 ) -> List[tuple[str, Dict[str, float | None]]]:
     """批量计算多个证券的因子值，提高计算效率"""
     batch_results = []
@@ -297,7 +332,17 @@ def _compute_batch_factors(
     # 批次化数据可用性检查
     available_codes = _check_batch_data_availability(broker, ts_codes, trade_date, specs)
     
-    for ts_code in ts_codes:
+    # 更新UI进度状态
+    if total_securities > 0:
+        current_progress = processed_securities + len(available_codes)
+        progress_percentage = (current_progress / total_securities) * 100
+        factor_progress.update_progress(
+            current_securities=current_progress,
+            current_batch=batch_index + 1,
+            message=f"处理批次 {batch_index + 1}/{total_batches} - 证券 {current_progress}/{total_securities} ({progress_percentage:.1f}%)"
+        )
+    
+    for i, ts_code in enumerate(ts_codes):
         try:
             # 检查数据可用性（使用批次化结果）
             if ts_code not in available_codes:
@@ -313,10 +358,36 @@ def _compute_batch_factors(
                 if cleaned_values:
                     batch_results.append((ts_code, cleaned_values))
                     validation_stats["success"] += 1
+                    
+                    # 记录验证统计信息
+                    original_count = len(values)
+                    cleaned_count = len(cleaned_values)
+                    if cleaned_count < original_count:
+                        validation_stats["outliers"] += (original_count - cleaned_count)
+                        LOGGER.debug(
+                            "因子值验证结果 ts_code=%s date=%s original=%d cleaned=%d",
+                            ts_code, trade_date, original_count, cleaned_count,
+                            extra=LOG_EXTRA
+                        )
                 else:
-                    validation_stats["outliers"] += 1
+                    validation_stats["outliers"] += len(values)
+                    LOGGER.warning(
+                        "所有因子值均被标记为异常值 ts_code=%s date=%s",
+                        ts_code, trade_date,
+                        extra=LOG_EXTRA
+                    )
             else:
                 validation_stats["skipped"] += 1
+                
+            # 每处理10个证券更新一次进度
+            if (i + 1) % 10 == 0 and total_securities > 0:
+                current_progress = processed_securities + i + 1
+                progress_percentage = (current_progress / total_securities) * 100
+                factor_progress.update_progress(
+                    current_securities=current_progress,
+                    current_batch=batch_index + 1,
+                    message=f"处理批次 {batch_index + 1}/{total_batches} - 证券 {current_progress}/{total_securities} ({progress_percentage:.1f}%)"
+                )
         except Exception as e:
             LOGGER.error(
                 "计算因子失败 ts_code=%s err=%s",
