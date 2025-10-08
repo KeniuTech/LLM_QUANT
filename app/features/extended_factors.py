@@ -116,6 +116,18 @@ EXTENDED_FACTORS: List[FactorSpec] = [
     # 成交量均线比率因子 
     FactorSpec("volume_ma_5_ratio", 5),      # 当前成交量与5日均线比率
     FactorSpec("volume_ma_20_ratio", 20),    # 当前成交量与20日均线比率
+    
+    # 估值因子
+    FactorSpec("val_ps_score", 0),           # PS估值分数
+    FactorSpec("val_multiscore", 0),         # 多维估值分数
+    FactorSpec("val_dividend_score", 0),     # 股息评分
+    
+    # 市场状态因子
+    FactorSpec("market_regime", 20),         # 市场状态
+    FactorSpec("trend_strength", 20),        # 趋势强度
+    
+    # 风险因子
+    FactorSpec("risk_penalty", 20),          # 风险惩罚因子
 ]
 
 
@@ -336,6 +348,121 @@ class ExtendedFactors:
                 window = int(factor_name.split("_")[2])
                 ma = rolling_mean(volume_series, window) 
                 return volume_series[0] / ma if ma > 0 else None
+        
+        # 估值因子
+        elif factor_name == "val_ps_score":
+            # PS估值分数：基于PS比率的估值指标
+            # 假设PS比率越低，估值越有吸引力
+            if len(close_series) < 10:
+                return None
+            
+            # 简化的PS估值：基于价格与历史均值的比较
+            current_price = close_series[0]
+            avg_price = np.mean(close_series[:10])
+            
+            if avg_price > 0:
+                # 当前价格相对于历史均值的偏离程度
+                ps_ratio = current_price / avg_price
+                # 标准化到[-1, 1]区间
+                return np.clip((1.0 - ps_ratio) / 2.0, -1, 1)
+            return None
+            
+        elif factor_name == "val_multiscore":
+            # 多维估值分数：综合多个估值维度的评分
+            if len(close_series) < 20:
+                return None
+                
+            # 使用价格动量、波动率和相对强度作为估值代理
+            momentum_5 = momentum(close_series, 5)
+            momentum_20 = momentum(close_series, 20)
+            
+            # 计算波动率（手动实现，避免依赖外部函数）
+            if len(close_series) >= 20:
+                returns = [close_series[i] / close_series[i+1] - 1 for i in range(19)]  # 修正索引范围
+                volatility_20 = np.std(returns) if returns else 0
+            else:
+                volatility_20 = 0
+            
+            # 综合评分：动量正向，波动率负向
+            if volatility_20 > 0:
+                score = (momentum_5 + momentum_20) / (2 * volatility_20)
+                return np.clip(score, -1, 1)
+            return None
+            
+        elif factor_name == "val_dividend_score":
+            # 股息评分：基于价格稳定性和趋势的股息吸引力评分
+            if len(close_series) < 20:
+                return None
+                
+            # 计算价格稳定性（低波动率）
+            if len(close_series) >= 20:
+                returns = [close_series[i] / close_series[i+1] - 1 for i in range(19)]  # 修正索引范围
+                vol = np.std(returns) if returns else 0
+            else:
+                vol = 0
+            
+            # 计算趋势强度
+            trend = momentum(close_series, 20)
+            
+            # 股息吸引力：稳定性正向，趋势正向
+            stability_score = 1.0 - np.clip(vol, 0, 1)
+            trend_score = np.clip(trend, -1, 1)
+            
+            return (stability_score + trend_score) / 2.0
+        
+        # 市场状态因子
+        elif factor_name == "market_regime":
+            # 市场状态：基于价格和成交量的市场状态判断
+            if len(close_series) < 20 or len(volume_series) < 20:
+                return None
+                
+            # 价格趋势
+            price_trend = momentum(close_series, 20)
+            # 成交量趋势
+            volume_trend = momentum(volume_series, 20)
+            
+            # 市场状态：牛市（价格↑成交量↑）、熊市（价格↓成交量↓）、
+            # 震荡市（价格平稳成交量平稳）、背离市（价格成交量反向）
+            regime_score = price_trend * volume_trend
+            return np.clip(regime_score, -1, 1)
+            
+        elif factor_name == "trend_strength":
+            # 趋势强度：基于价格变动的趋势强度度量
+            if len(close_series) < 20:
+                return None
+                
+            # 计算不同时间窗口的动量
+            momentum_5 = momentum(close_series, 5)
+            momentum_10 = momentum(close_series, 10)
+            momentum_20 = momentum(close_series, 20)
+            
+            # 趋势强度：短期、中期、长期动量的一致性
+            trend_strength = (momentum_5 + momentum_10 + momentum_20) / 3.0
+            return np.clip(trend_strength, -1, 1)
+        
+        # 风险因子
+        elif factor_name == "risk_penalty":
+            # 风险惩罚因子：基于波动率和异常价格的综合风险度量
+            if len(close_series) < 20:
+                return None
+                
+            # 波动率风险
+            if len(close_series) >= 20:
+                returns = [close_series[i] / close_series[i+1] - 1 for i in range(19)]  # 修正索引范围
+                vol_risk = np.std(returns) if returns else 0
+            else:
+                vol_risk = 0
+            
+            # 价格异常风险（相对于均值的偏离）
+            avg_price = np.mean(close_series[:20])
+            if avg_price > 0:
+                price_deviation = abs(close_series[0] / avg_price - 1.0)
+            else:
+                price_deviation = 0
+            
+            # 综合风险评分
+            risk_score = (vol_risk + price_deviation) / 2.0
+            return np.clip(risk_score, 0, 1)  # 风险因子范围为[0, 1]
         
         raise ValueError(f"因子 {factor_name} 没有对应的计算实现")
 

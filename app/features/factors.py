@@ -585,7 +585,7 @@ def _compute_security_factors(
             volume_ratio = latest_fields.get("daily_basic.volume_ratio")
             results[spec.name] = _volume_ratio_score(volume_ratio)
         else:
-            LOGGER.debug(
+            LOGGER.info(
                 "忽略未识别的因子 name=%s ts_code=%s",
                 spec.name,
                 ts_code,
