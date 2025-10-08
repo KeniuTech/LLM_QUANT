@@ -111,11 +111,13 @@ def check_data_sufficiency(
     broker = DataBroker()
     
     # 检查历史收盘价数据
-    close_values = broker.fetch_series("daily", "close", ts_code, trade_date, min_days)
-    if len(close_values) < min_days:
+    close_series = broker.fetch_series("daily", "close", ts_code, trade_date, min_days)
+    # 计算有效值的数量
+    valid_values = [val for _, val in close_series if val is not None and isinstance(val, (int, float))]
+    if len(valid_values) < min_days:
         LOGGER.warning(
             "历史数据不足 ts_code=%s date=%s min_days=%d actual=%d", 
-            ts_code, trade_date, min_days, len(close_values),
+            ts_code, trade_date, min_days, len(valid_values),
             extra=LOG_EXTRA
         )
         return False
