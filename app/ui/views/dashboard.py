@@ -139,6 +139,9 @@ def render_global_dashboard() -> None:
     badge = f" ({len(warnings)})" if warnings else ""
     st.sidebar.header(f"系统监控{badge}")
 
+    # 因子计算进度显示区域
+    factor_progress_container = st.sidebar.container()
+    
     metrics_container = st.sidebar.container()
     decisions_container = st.sidebar.container()
     st.sidebar.container()  # legacy placeholder for layout spacing
@@ -147,6 +150,11 @@ def render_global_dashboard() -> None:
     _DASHBOARD_CONTAINERS = (metrics_container, decisions_container)
     _DASHBOARD_ELEMENTS = _ensure_dashboard_elements(metrics_container, decisions_container)
     _WARNINGS_PLACEHOLDER = warn_placeholder
+
+    # 在侧边栏中显示因子计算进度
+    with factor_progress_container:
+        from app.ui.progress_state import render_factor_progress
+        render_factor_progress()
 
     if not _SIDEBAR_LISTENER_ATTACHED:
         register_llm_metrics_listener(_sidebar_metrics_listener)

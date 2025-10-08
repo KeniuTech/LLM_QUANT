@@ -124,12 +124,14 @@ def render_factor_progress() -> None:
     """渲染因子计算进度组件"""
     progress_info = factor_progress.get_progress_info()
     
-    if progress_info['status'] == 'idle':
-        return
-    
     # 创建进度显示区域
     with st.container():
         st.subheader("📊 因子计算进度")
+        
+        # 空闲状态显示提示信息
+        if progress_info['status'] == 'idle':
+            st.info("当前没有因子计算任务。执行因子计算时，进度将在此显示。")
+            return
         
         # 进度条
         if progress_info['status'] == 'running':
