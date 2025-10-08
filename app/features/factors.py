@@ -15,6 +15,7 @@ from app.utils.logging import get_logger
 # 导入扩展因子模块
 from app.features.extended_factors import ExtendedFactors
 from app.features.sentiment_factors import SentimentFactors
+from app.features.value_risk_factors import ValueRiskFactors
 # 导入因子验证功能
 from app.features.validation import check_data_sufficiency, detect_outliers
 
@@ -82,7 +83,9 @@ DEFAULT_FACTORS: List[FactorSpec] = [
     FactorSpec("sent_momentum", 20),  # 新闻情感动量
     FactorSpec("sent_impact", 0),    # 新闻影响力
     FactorSpec("sent_market", 20),   # 市场情绪指数
-    FactorSpec("sent_divergence", 0), # 行业情绪背离度
+    FactorSpec("sent_divergence", 0),  # 行业情绪背离度
+    # 风险和估值因子
+    FactorSpec("risk_penalty", 0),  # 风险惩罚因子
 ]
 
 
@@ -524,6 +527,40 @@ def _compute_security_factors(
     calculator = ExtendedFactors()
     extended_factors = calculator.compute_all_factors(close_series, volume_series)
     results.update(extended_factors)
+    
+    # 计算情感因子
+    sentiment_calculator = SentimentFactors()
+    sentiment_factors = sentiment_calculator.compute_stock_factors(broker, ts_code, trade_date)
+    if sentiment_factors:
+        results.update(sentiment_factors)
+    
+    # 计算风险和估值因子
+    value_risk_calculator = ValueRiskFactors()
+    
+    # 计算val_multiscore
+    val_multiscore = value_risk_calculator.compute_val_multiscore(
+        pe=latest_fields.get("daily_basic.pe"),
+        pb=latest_fields.get("daily_basic.pb"),
+        ps=latest_fields.get("daily_basic.ps"),
+        dv=latest_fields.get("daily_basic.dv_ratio")
+    )
+    if val_multiscore is not None:
+        results["val_multiscore"] = val_multiscore
+        
+    # 计算risk_penalty
+    volat_20 = results.get("volat_20")
+    turnover = latest_fields.get("daily_basic.turnover_rate")
+    current_price = latest_fields.get("daily.close")
+    avg_price = rolling_mean(close_series, 20) if len(close_series) >= 20 else None
+    
+    risk_penalty = value_risk_calculator.compute_risk_penalty(
+        volatility=volat_20,
+        turnover=turnover,
+        price=current_price,
+        avg_price=avg_price
+    )
+    if risk_penalty is not None:
+        results["risk_penalty"] = risk_penalty
     
     # 确保返回结果不为空
     if not any(v is not None for v in results.values()):
