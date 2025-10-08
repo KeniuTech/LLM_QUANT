@@ -10,7 +10,12 @@ class FactorProgressState:
     
     def __init__(self):
         """初始化进度状态"""
-        if 'factor_progress' not in st.session_state:
+        # 确保session_state中有factor_progress属性
+        self._ensure_initialized()
+    
+    def _ensure_initialized(self) -> None:
+        """确保进度状态已初始化"""
+        if not hasattr(st.session_state, 'factor_progress'):
             st.session_state.factor_progress = {
                 'current': 0,
                 'total': 0,
@@ -99,6 +104,7 @@ class FactorProgressState:
         Returns:
             进度信息字典
         """
+        self._ensure_initialized()
         return st.session_state.factor_progress.copy()
     
     def reset(self) -> None:

@@ -1,6 +1,8 @@
 """股票筛选与评估视图。"""
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
+import threading
+import time
 
 import numpy as np
 import pandas as pd
@@ -136,10 +138,32 @@ def render_stock_evaluation() -> None:
             )
             
     # 4. 评估结果
-    if st.button("开始评估", disabled=not selected_factors):
-        with st.spinner("正在评估因子表现..."):
+    
+    # 初始化会话状态
+    if 'evaluation_thread' not in st.session_state:
+        st.session_state.evaluation_thread = None
+    if 'evaluation_results' not in st.session_state:
+        st.session_state.evaluation_results = None
+    if 'evaluation_status' not in st.session_state:
+        st.session_state.evaluation_status = 'idle'  # idle, running, completed, error
+    if 'current_factor' not in st.session_state:
+        st.session_state.current_factor = ''
+    if 'progress' not in st.session_state:
+        st.session_state.progress = 0
+    
+    # 异步评估函数
+    def run_evaluation_async():
+        try:
+            st.session_state.evaluation_status = 'running'
             results = []
-            for factor_name in selected_factors:
+            
+            for i, factor_name in enumerate(selected_factors):
+                st.session_state.current_factor = factor_name
+                st.session_state.progress = (i / len(selected_factors)) * 100
+                
+                # 模拟进度更新（实际计算中进度会在evaluate_factor内部更新）
+                time.sleep(0.1)  # 让UI有机会更新
+                
                 performance = evaluate_factor(
                     factor_name,
                     start_date,
@@ -154,52 +178,88 @@ def render_stock_evaluation() -> None:
                     "夏普比率": f"{performance.sharpe_ratio:.4f}" if performance.sharpe_ratio else "N/A",
                     "换手率": f"{performance.turnover_rate*100:.1f}%" if performance.turnover_rate else "N/A"
                 })
-                
-            if results:
-                st.markdown("##### 因子评估结果")
-                result_df = pd.DataFrame(results)
+            
+            st.session_state.evaluation_results = results
+            st.session_state.evaluation_status = 'completed'
+            st.session_state.progress = 100
+            
+        except Exception as e:
+            st.session_state.evaluation_status = 'error'
+            st.session_state.evaluation_error = str(e)
+    
+    # 显示进度
+    if st.session_state.evaluation_status == 'running':
+        st.info(f"正在评估因子: {st.session_state.current_factor}")
+        st.progress(st.session_state.progress / 100)
+    elif st.session_state.evaluation_status == 'completed':
+        st.success("因子评估完成！")
+    elif st.session_state.evaluation_status == 'error':
+        st.error(f"评估失败: {st.session_state.evaluation_error}")
+    
+    # 开始评估按钮
+    if st.button("开始评估", disabled=not selected_factors or st.session_state.evaluation_status == 'running'):
+        # 重置状态
+        st.session_state.evaluation_results = None
+        st.session_state.evaluation_status = 'running'
+        st.session_state.progress = 0
+        
+        # 启动异步线程
+        thread = threading.Thread(target=run_evaluation_async)
+        thread.daemon = True
+        thread.start()
+        st.session_state.evaluation_thread = thread
+        
+        # 强制重新运行以显示进度
+        st.rerun()
+    
+    # 显示结果
+    if st.session_state.evaluation_results:
+        results = st.session_state.evaluation_results
+        
+        st.markdown("##### 因子评估结果")
+        result_df = pd.DataFrame(results)
+        st.dataframe(
+            result_df,
+            hide_index=True,
+            use_container_width=True
+        )
+        
+        # 绘制IC均值分布
+        ic_means = [float(r["IC均值"]) for r in results]
+        chart_df = pd.DataFrame({
+            "因子": [r["因子"] for r in results],
+            "IC均值": ic_means
+        })
+        st.bar_chart(chart_df.set_index("因子"))
+        
+        # 生成股票评分
+        with st.spinner("正在生成股票评分..."):
+            scores = _calculate_stock_scores(
+                universe,
+                selected_factors,
+                end_date,
+                ic_means
+            )
+            
+            if scores:
+                st.markdown("##### 股票综合评分 (Top 20)")
+                score_df = pd.DataFrame(scores).sort_values(
+                    "综合评分",
+                    ascending=False
+                ).head(20)
                 st.dataframe(
-                    result_df,
+                    score_df,
                     hide_index=True,
                     use_container_width=True
                 )
                 
-                # 绘制IC均值分布
-                ic_means = [float(r["IC均值"]) for r in results]
-                chart_df = pd.DataFrame({
-                    "因子": [r["因子"] for r in results],
-                    "IC均值": ic_means
-                })
-                st.bar_chart(chart_df.set_index("因子"))
-                
-                # 生成股票评分
-                with st.spinner("正在生成股票评分..."):
-                    scores = _calculate_stock_scores(
-                        universe,
-                        selected_factors,
-                        end_date,
-                        ic_means
+                # 添加入池功能
+                if st.button("将Top 20股票加入股票池"):
+                    _add_to_stock_pool(
+                        score_df["股票代码"].tolist(),
+                        end_date
                     )
-                    
-                    if scores:
-                        st.markdown("##### 股票综合评分 (Top 20)")
-                        score_df = pd.DataFrame(scores).sort_values(
-                            "综合评分",
-                            ascending=False
-                        ).head(20)
-                        st.dataframe(
-                            score_df,
-                            hide_index=True,
-                            use_container_width=True
-                        )
-                        
-                        # 添加入池功能
-                        if st.button("将Top 20股票加入股票池"):
-                            _add_to_stock_pool(
-                                score_df["股票代码"].tolist(),
-                                end_date
-                            )
-                            st.success("已成功将选中股票加入股票池！")
+                    st.success("已成功将选中股票加入股票池！")
 
 
 def _calculate_stock_scores(

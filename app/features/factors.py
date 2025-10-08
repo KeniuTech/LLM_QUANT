@@ -332,14 +332,12 @@ def _compute_batch_factors(
     # 批次化数据可用性检查
     available_codes = _check_batch_data_availability(broker, ts_codes, trade_date, specs)
     
-    # 更新UI进度状态
+    # 更新UI进度状态 - 开始处理批次
     if total_securities > 0:
-        current_progress = processed_securities + len(available_codes)
-        progress_percentage = (current_progress / total_securities) * 100
         factor_progress.update_progress(
-            current_securities=current_progress,
+            current_securities=processed_securities,
             current_batch=batch_index + 1,
-            message=f"处理批次 {batch_index + 1}/{total_batches} - 证券 {current_progress}/{total_securities} ({progress_percentage:.1f}%)"
+            message=f"开始处理批次 {batch_index + 1}/{total_batches}"
         )
     
     for i, ts_code in enumerate(ts_codes):
@@ -379,8 +377,8 @@ def _compute_batch_factors(
             else:
                 validation_stats["skipped"] += 1
                 
-            # 每处理10个证券更新一次进度
-            if (i + 1) % 10 == 0 and total_securities > 0:
+            # 每处理1个证券更新一次进度，确保实时性
+            if total_securities > 0:
                 current_progress = processed_securities + i + 1
                 progress_percentage = (current_progress / total_securities) * 100
                 factor_progress.update_progress(
@@ -396,6 +394,16 @@ def _compute_batch_factors(
                 extra=LOG_EXTRA,
             )
             validation_stats["skipped"] += 1
+    
+    # 批次处理完成，更新最终进度
+    if total_securities > 0:
+        final_progress = processed_securities + len(ts_codes)
+        progress_percentage = (final_progress / total_securities) * 100
+        factor_progress.update_progress(
+            current_securities=final_progress,
+            current_batch=batch_index + 1,
+            message=f"批次 {batch_index + 1}/{total_batches} 处理完成 - 证券 {final_progress}/{total_securities} ({progress_percentage:.1f}%)"
+        )
     
     return batch_results
 
@@ -676,7 +684,7 @@ def _compute_security_factors(
     
     # 计算扩展因子值
     calculator = ExtendedFactors()
-    extended_factors = calculator.compute_all_factors(close_series, volume_series)
+    extended_factors = calculator.compute_all_factors(close_series, volume_series, ts_code, trade_date)
     results.update(extended_factors)
     
     # 计算情感因子

@@ -469,51 +469,45 @@ class ExtendedFactors:
         raise ValueError(f"因子 {factor_name} 没有对应的计算实现")
 
     def compute_all_factors(self,
-                          close_series: Sequence[float],
-                          volume_series: Sequence[float]) -> Dict[str, float]:
-        """计算所有已注册的扩展因子值
+                          close_series: List[float],
+                          volume_series: List[float],
+                          ts_code: str,
+                          trade_date: str) -> Dict[str, float | None]:
+        """计算所有扩展因子
         
         Args:
-            close_series: 收盘价序列，从新到旧排序
-            volume_series: 成交量序列，从新到旧排序
+            close_series: 收盘价序列
+            volume_series: 成交量序列
+            ts_code: 股票代码
+            trade_date: 交易日期
             
         Returns:
-            Dict[str, float]: 因子名称到因子值的映射字典，
-            只包含成功计算的因子值
-            
-        Note:
-            该方法会尝试计算所有已注册的因子，失败的因子将被忽略。
-            如果所有因子计算都失败，将返回空字典。
+            因子名称到因子值的映射
         """
         results = {}
-        success_count = 0
-        total_count = len(self.factor_specs)
         
-        for factor_name in self.factor_specs:
-            value = self.compute_factor(factor_name, close_series, volume_series)
-            if value is not None:
-                # 验证因子值是否在合理范围内
-                validated_value = validate_factor_value(
-                    factor_name, value, "unknown", "unknown"
-                )
-                if validated_value is not None:
-                    results[factor_name] = validated_value
-                    success_count += 1
-                else:
-                    LOGGER.debug(
-                        "因子值验证失败 factor=%s value=%f",
-                        factor_name, value,
-                        extra=LOG_EXTRA
-                    )
+        for factor_spec in EXTENDED_FACTORS:
+            try:
+                factor_name = factor_spec.name
+                factor_value = self.compute_factor(factor_name, close_series, volume_series)
                 
-        # 关闭因子计算完成日志打印
-        # LOGGER.info(
-        #     "因子计算完成 total=%d success=%d failed=%d",
-        #     total_count,
-        #     success_count,
-        #     total_count - success_count,
-        #     extra=LOG_EXTRA
-        # )
+                # 验证因子值
+                if factor_value is not None:
+                    # 使用真实的 ts_code 和 trade_date 进行验证
+                    validate_factor_value(factor_name, factor_value, ts_code, trade_date)
+                
+                results[factor_name] = factor_value
+                
+            except Exception as e:
+                LOGGER.debug(
+                    "因子计算失败 factor=%s ts_code=%s date=%s err=%s",
+                    factor_spec.name,
+                    ts_code,
+                    trade_date,
+                    str(e),
+                    extra=LOG_EXTRA,
+                )
+                results[factor_spec.name] = None
         
         return results
         

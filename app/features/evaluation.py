@@ -80,13 +80,36 @@ def evaluate_factor(
     """
     performance = FactorPerformance(factor_name)
     
-    # 计算因子值
-    factor_results = compute_factor_range(
-        start_date,
-        end_date,
-        factors=[FactorSpec(factor_name, 0)],
-        ts_codes=universe
+    # 导入进度状态模块
+    from app.ui.progress_state import factor_progress
+    
+    # 开始因子计算进度
+    factor_progress.start_calculation(
+        total_securities=len(universe) if universe else 0,
+        message=f"开始评估因子 {factor_name}"
     )
+    
+    try:
+        # 计算因子值
+        factor_results = compute_factor_range(
+            start_date,
+            end_date,
+            factors=[FactorSpec(factor_name, 0)],
+            ts_codes=universe
+        )
+        
+        # 因子计算完成
+        factor_progress.complete_calculation(
+            message=f"因子 {factor_name} 评估完成"
+        )
+        
+    except Exception as e:
+        # 因子计算失败
+        factor_progress.complete_calculation(
+            message=f"因子 {factor_name} 评估失败: {str(e)}",
+            success=False
+        )
+        raise
     
     # 按日期分组
     date_groups: Dict[date, List[FactorResult]] = {}
