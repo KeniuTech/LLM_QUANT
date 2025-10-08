@@ -108,18 +108,20 @@ def check_data_sufficiency(
     """
     from app.utils.data_access import DataBroker
     
+    broker = DataBroker()
+    
     # 检查历史收盘价数据
-    close_series = DataBroker.get_daily_price(ts_code, end_date=trade_date)
-    if len(close_series) < min_days:
+    close_values = broker.fetch_series("daily", "close", ts_code, trade_date, min_days)
+    if len(close_values) < min_days:
         LOGGER.warning(
             "历史数据不足 ts_code=%s date=%s min_days=%d actual=%d", 
-            ts_code, trade_date, min_days, len(close_series),
+            ts_code, trade_date, min_days, len(close_values),
             extra=LOG_EXTRA
         )
         return False
 
     # 检查日期点数据完整性
-    latest_fields = DataBroker.get_latest_fields(
+    latest_fields = broker.fetch_latest(
         ts_code,
         trade_date,
         ["daily.close", "daily_basic.turnover_rate", "daily_basic.pe", "daily_basic.pb"]
