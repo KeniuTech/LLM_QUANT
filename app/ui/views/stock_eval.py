@@ -48,6 +48,20 @@ def render_stock_evaluation() -> None:
         "市场类因子": [f for f in DEFAULT_FACTORS if f.name.startswith("market_")]
     }
     
+    # 定义默认选中的关键常用因子
+    DEFAULT_SELECTED_FACTORS = {
+        "mom_5",   # 5日动量
+        "mom_20",  # 20日动量
+        "mom_60",  # 60日动量
+        "volat_20",  # 20日波动率
+        "turn_5",   # 5日换手率
+        "turn_20",  # 20日换手率
+        "val_pe_score",  # PE评分
+        "val_pb_score",  # PB评分
+        "volume_ratio_score",  # 量比评分
+        "risk_penalty"  # 风险惩罚项
+    }
+    
     selected_factors = []
     for group_name, factors in factor_groups.items():
         if factors:
@@ -56,7 +70,7 @@ def render_stock_evaluation() -> None:
             for i, factor in enumerate(factors):
                 if cols[i % 3].checkbox(
                     factor.name,
-                    value=factor.name in selected_factors,
+                    value=factor.name in DEFAULT_SELECTED_FACTORS,
                     help=factor.description if hasattr(factor, 'description') else None
                 ):
                     selected_factors.append(factor.name)

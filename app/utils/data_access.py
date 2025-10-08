@@ -1100,6 +1100,53 @@ class DataBroker:
             LOGGER.exception("强制刷新数据失败: %s", exc, extra=LOG_EXTRA)
             return False
 
+    def get_index_stocks(
+        self,
+        index_code: str,
+        trade_date: str,
+        min_weight: float = 0.0
+    ) -> List[str]:
+        """获取指数成分股列表。
+        
+        Args:
+            index_code: 指数代码(如 000300.SH)
+            trade_date: 交易日期
+            min_weight: 最小权重筛选
+            
+        Returns:
+            成分股代码列表
+        """
+        try:
+            with db_session(read_only=True) as conn:
+                # 获取小于等于给定日期的最新一期成分股
+                rows = conn.execute(
+                    """
+                    SELECT DISTINCT ts_code
+                    FROM index_weight
+                    WHERE index_code = ?
+                    AND trade_date = (
+                        SELECT MAX(trade_date)
+                        FROM index_weight
+                        WHERE index_code = ?
+                        AND trade_date <= ?
+                    )
+                    AND weight >= ?
+                    ORDER BY weight DESC
+                    """,
+                    (index_code, index_code, trade_date, min_weight)
+                ).fetchall()
+                
+                return [row["ts_code"] for row in rows if row and row["ts_code"]]
+        except Exception as exc:
+            LOGGER.exception(
+                "获取指数成分股失败 index=%s date=%s err=%s",
+                index_code,
+                trade_date,
+                exc,
+                extra=LOG_EXTRA
+            )
+            return []
+            
     def get_refresh_status(self) -> Dict[str, Dict[str, Any]]:
         """获取当前所有补数任务的状态。
         

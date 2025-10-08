@@ -5,6 +5,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from typing import Iterable, List
 
+from app.data.schema_index import initialize_index_membership_tables, add_default_indices
 from app.utils.db import db_session
 
 
@@ -565,6 +566,10 @@ def initialize_database() -> MigrationResult:
   with db_session() as session:
     cursor = session.cursor()
 
+    # 初始化指数相关表
+    initialize_index_membership_tables(session)
+    add_default_indices()
+    
     # 创建表
     for statement in SCHEMA_STATEMENTS:
       try:
