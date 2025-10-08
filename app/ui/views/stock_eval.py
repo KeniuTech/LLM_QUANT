@@ -14,6 +14,26 @@ from app.utils.data_access import DataBroker
 from app.utils.db import db_session
 
 
+def _get_latest_trading_date() -> datetime.date:
+    """获取数据库中的最新交易日期"""
+    with db_session() as session:
+        # 获取当前日期的上一个有效交易日
+        result = session.execute(
+            """
+            SELECT trade_date 
+            FROM daily_basic 
+            WHERE trade_date <= :today
+            GROUP BY trade_date 
+            ORDER BY trade_date DESC 
+            LIMIT 1
+            """,
+            {"today": datetime.now().strftime("%Y%m%d")}
+        ).fetchone()
+        
+        if result and result[0]:
+            return datetime.strptime(str(result[0]), "%Y%m%d").date()
+        return datetime.now().date() - timedelta(days=1)  # 如果查询失败才返回昨天
+
 def render_stock_evaluation() -> None:
     """渲染股票筛选与评估页面。"""
     st.subheader("股票筛选与评估")
@@ -21,9 +41,10 @@ def render_stock_evaluation() -> None:
     # 1. 时间范围选择
     col1, col2 = st.columns(2)
     with col1:
+        latest_date = _get_latest_trading_date()
         end_date = st.date_input(
             "评估截止日期",
-            value=datetime.now().date() - timedelta(days=1),
+            value=latest_date,
             help="选择评估的截止日期"
         )
     with col2:
