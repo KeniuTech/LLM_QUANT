@@ -332,13 +332,14 @@ def _compute_batch_factors(
     # 批次化数据可用性检查
     available_codes = _check_batch_data_availability(broker, ts_codes, trade_date, specs)
     
-    # 更新UI进度状态 - 开始处理批次（在异步线程中不直接访问factor_progress）
-    # if total_securities > 0:
-    #     factor_progress.update_progress(
-    #         current_securities=processed_securities,
-    #         current_batch=batch_index + 1,
-    #         message=f"开始处理批次 {batch_index + 1}/{total_batches}"
-    #     )
+    # 更新UI进度状态 - 开始处理批次
+    if total_securities > 0:
+        from app.ui.progress_state import factor_progress
+        factor_progress.update_progress(
+            current_securities=processed_securities,
+            current_batch=batch_index + 1,
+            message=f"开始处理批次 {batch_index + 1}/{total_batches}"
+        )
     
     for i, ts_code in enumerate(ts_codes):
         try:
@@ -381,6 +382,7 @@ def _compute_batch_factors(
             if total_securities > 0:
                 current_progress = processed_securities + i + 1
                 progress_percentage = (current_progress / total_securities) * 100
+                from app.ui.progress_state import factor_progress
                 factor_progress.update_progress(
                     current_securities=current_progress,
                     current_batch=batch_index + 1,
@@ -399,6 +401,7 @@ def _compute_batch_factors(
     if total_securities > 0:
         final_progress = processed_securities + len(ts_codes)
         progress_percentage = (final_progress / total_securities) * 100
+        from app.ui.progress_state import factor_progress
         factor_progress.update_progress(
             current_securities=final_progress,
             current_batch=batch_index + 1,

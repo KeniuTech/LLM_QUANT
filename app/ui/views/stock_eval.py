@@ -1,8 +1,6 @@
 """股票筛选与评估视图。"""
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
-import threading
-import time
 
 import numpy as np
 import pandas as pd
@@ -140,8 +138,6 @@ def render_stock_evaluation() -> None:
     # 4. 评估结果
     
     # 初始化会话状态
-    if 'evaluation_thread' not in st.session_state:
-        st.session_state.evaluation_thread = None
     if 'evaluation_results' not in st.session_state:
         st.session_state.evaluation_results = None
     if 'evaluation_status' not in st.session_state:
@@ -151,8 +147,8 @@ def render_stock_evaluation() -> None:
     if 'progress' not in st.session_state:
         st.session_state.progress = 0
     
-    # 异步评估函数
-    def run_evaluation_async():
+    # 同步评估函数
+    def run_evaluation_sync():
         try:
             st.session_state.evaluation_status = 'running'
             results = []
@@ -160,9 +156,6 @@ def render_stock_evaluation() -> None:
             for i, factor_name in enumerate(selected_factors):
                 st.session_state.current_factor = factor_name
                 st.session_state.progress = (i / len(selected_factors)) * 100
-                
-                # 模拟进度更新（实际计算中进度会在evaluate_factor内部更新）
-                time.sleep(0.1)  # 让UI有机会更新
                 
                 performance = evaluate_factor(
                     factor_name,
@@ -203,14 +196,8 @@ def render_stock_evaluation() -> None:
         st.session_state.evaluation_status = 'running'
         st.session_state.progress = 0
         
-        # 启动异步线程
-        thread = threading.Thread(target=run_evaluation_async)
-        thread.daemon = True
-        thread.start()
-        st.session_state.evaluation_thread = thread
-        
-        # 强制重新运行以显示进度
-        st.rerun()
+        # 直接调用同步评估函数
+        run_evaluation_sync()
     
     # 显示结果
     if st.session_state.evaluation_results:
