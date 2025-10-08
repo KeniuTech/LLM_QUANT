@@ -43,23 +43,32 @@ def run_boot_check(
     progress_hook: Callable[[str, float], None] | None = None,
     force_refresh: bool | None = None,
 ) -> CoverageReport:
-    """执行开机自检，必要时自动补数据。"""
+    """执行开机自检，必要时自动补数据并计算因子。"""
 
     initialize_database()
     start, end = _default_window(days)
     LOGGER.info("开机检查覆盖窗口：%s 至 %s", start, end)
+    
+    from app.ingest.tushare import FetchJob, run_ingestion
+    
+    # 创建数据拉取任务，这样会自动触发因子计算
+    job = FetchJob(
+        name="ui_auto_update",
+        start=start,
+        end=end,
+        granularity="daily",  # 使用日线数据以触发因子计算
+    )
 
     refresh = force_refresh
     if refresh is None:
         refresh = get_config().force_refresh
 
     if auto_fetch:
-        ensure_data_coverage(
-            start,
-            end,
-            force=refresh,
-            progress_hook=progress_hook,
-        )
+        # 使用 run_ingestion 来确保数据和因子都被更新
+        if progress_hook:
+            progress_hook("开始更新数据和计算因子...", 0.0)
+        
+        run_ingestion(job, include_limits=True)
 
     coverage = collect_data_coverage(start, end)
 
