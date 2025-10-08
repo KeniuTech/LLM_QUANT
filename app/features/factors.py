@@ -370,10 +370,17 @@ def _check_data_availability(
             )
             return False
     
-    return (
-        bool(basic_data.get("daily.close")) and 
-        len(close_check) >= min_days
-    )
+    # 获取收盘价数据并做最终检查
+    close_price = latest_fields.get("daily.close")
+    if close_price is None or float(close_price) <= 0:
+        LOGGER.debug(
+            "收盘价数据无效 ts_code=%s date=%s price=%s",
+            ts_code, trade_date, close_price,
+            extra=LOG_EXTRA
+        )
+        return False
+        
+    return True  # 所有检查都通过
 
 
 def _detect_and_handle_outliers(

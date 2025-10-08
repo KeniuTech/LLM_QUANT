@@ -83,7 +83,8 @@ def render_stock_evaluation() -> None:
     st.markdown("##### 股票池范围")
     pool_type = st.radio(
         "选择股票池",
-        ["全部A股", "沪深300", "中证500", "中证1000", "自定义"],
+        ["沪深300", "中证500", "中证1000", "全部A股", "自定义"],
+        index=0,  # 默认选择沪深300
         horizontal=True
     )
     
