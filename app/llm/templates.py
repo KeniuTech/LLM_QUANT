@@ -62,13 +62,12 @@ class PromptTemplate:
             raise ValueError(f"Missing template variable: {e}")
 
         # Truncate if needed, preserving exact number of characters
-        if len(result) > self.max_length:
-            target = self.max_length - 3  # Reserve space for "..."
-            if target > 0:  # Only truncate if we have space for content
-                result = result[:target] + "..."
+        if self.max_length > 0 and len(result) > self.max_length:
+            if self.max_length >= 3:
+                result = result[: self.max_length - 3] + "..."
             else:
-                result = "..."  # If max_length <= 3, just return "..."
-        
+                result = result[: self.max_length]
+
         return result
 
 

@@ -60,13 +60,32 @@ class CostController:
     def __init__(self, limits: Optional[CostLimits] = None):
         """Initialize cost controller."""
         self.limits = limits or CostLimits.default()
+        # Maintain model-specific pricing in lowercase so lookups remain case-insensitive.
         self._costs: Dict[str, ModelCosts] = {
             "gpt-4": ModelCosts(0.03, 0.06),
             "gpt-4-32k": ModelCosts(0.06, 0.12),
+            "gpt-4o": ModelCosts(0.005, 0.015),
+            "gpt-4o-mini": ModelCosts(0.0006, 0.0018),
+            "gpt-4.1-mini": ModelCosts(0.0008, 0.002),
             "gpt-3.5-turbo": ModelCosts(0.0015, 0.002),
             "gpt-3.5-turbo-16k": ModelCosts(0.003, 0.004),
+            "gpt-3.5": ModelCosts(0.0015, 0.002),
             "llama2": ModelCosts(0.0, 0.0),
+            "llama3": ModelCosts(0.0, 0.0),
+            "phi3": ModelCosts(0.0, 0.0),
+            "qwen2": ModelCosts(0.0, 0.0),
             "codellama": ModelCosts(0.0, 0.0)
+        }
+        # Family-level fallbacks ensure close variants (e.g. gpt-4o-mini-2024) are charged.
+        self._cost_prefixes: Dict[str, ModelCosts] = {
+            "gpt-4o": self._costs["gpt-4o"],
+            "gpt-4.1": self._costs["gpt-4.1-mini"],
+            "gpt-4": self._costs["gpt-4"],
+            "gpt-3.5": self._costs["gpt-3.5"],
+            "llama3": self._costs["llama3"],
+            "llama2": self._costs["llama2"],
+            "phi3": self._costs["phi3"],
+            "qwen2": self._costs["qwen2"],
         }
         self._usage_lock = threading.Lock()
         self._usage: Dict[str, List[Dict[str, Any]]] = {
@@ -186,10 +205,28 @@ class CostController:
     def _calculate_cost(self, model: str, prompt_tokens: int,
                        completion_tokens: int) -> float:
         """计算使用成本."""
-        model_costs = self._costs.get(model)
+        model_costs = self._resolve_model_cost(model)
         if not model_costs:
+            LOGGER.debug(
+                "Unknown model cost configuration: %s, using zero cost",
+                model,
+                extra=LOG_EXTRA,
+            )
             return 0.0
         return model_costs.calculate(prompt_tokens, completion_tokens)
+
+    def _resolve_model_cost(self, model: str) -> Optional[ModelCosts]:
+        """Resolve the pricing rule for a model, considering family prefixes."""
+
+        if not model:
+            return None
+        key = model.lower().strip()
+        if key in self._costs:
+            return self._costs[key]
+        for prefix, costs in self._cost_prefixes.items():
+            if key.startswith(prefix):
+                return costs
+        return None
 
     def _check_budget_limits(self, model: str, prompt_tokens: int,
                            completion_tokens: int) -> bool:
