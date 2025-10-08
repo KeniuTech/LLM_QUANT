@@ -28,6 +28,7 @@ from app.ui.views import (
     render_stock_evaluation,
     render_tests,
     render_today_plan,
+    render_factor_calculation,
 )
 from app.utils.config import get_config
 
@@ -79,11 +80,13 @@ def main() -> None:
     with tabs[1]:
         render_pool_overview()
     with tabs[2]:
-        backtest_tabs = st.tabs(["回测复盘", "股票评估"])
+        backtest_tabs = st.tabs(["回测复盘", "股票评估", "因子计算"])
         with backtest_tabs[0]:
             render_backtest_review()
         with backtest_tabs[1]:
             render_stock_evaluation()
+        with backtest_tabs[2]:
+            render_factor_calculation()
     with tabs[3]:
         render_market_visualization()
     with tabs[4]:

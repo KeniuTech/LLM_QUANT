@@ -9,6 +9,7 @@ from .settings import render_config_overview, render_llm_settings, render_data_s
 from .tests import render_tests
 from .dashboard import render_global_dashboard, update_dashboard_sidebar
 from .stock_eval import render_stock_evaluation
+from .factor_calculation import render_factor_calculation
 
 __all__ = [
     "render_today_plan",
@@ -23,4 +24,5 @@ __all__ = [
     "render_global_dashboard",
     "update_dashboard_sidebar",
     "render_stock_evaluation",
+    "render_factor_calculation",
 ]
