@@ -333,25 +333,8 @@ def _check_data_availability(
     specs: Sequence[FactorSpec],
 ) -> bool:
     """检查证券数据是否足够计算所有请求的因子"""
-    # 检查所需的最大窗口
-    close_windows = [spec.window for spec in specs if spec.name.startswith(("mom_", "volat_"))]
-    turnover_windows = [spec.window for spec in specs if spec.name.startswith("turn_")]
-    max_close_window = max(close_windows) if close_windows else 0
-    max_turn_window = max(turnover_windows) if turnover_windows else 0
-    
-    # 获取时间序列数据
-    close_series = _fetch_series_values(broker, "daily", "close", ts_code, trade_date, max_close_window)
-    if max_close_window > 0 and not check_data_sufficiency(
-        close_series, max_close_window, "close", ts_code, trade_date
-    ):
-        return False
-        
-    turnover_series = _fetch_series_values(
-        broker, "daily_basic", "turnover_rate", ts_code, trade_date, max_turn_window
-    )
-    if max_turn_window > 0 and not check_data_sufficiency(
-        turnover_series, max_turn_window, "turnover_rate", ts_code, trade_date
-    ):
+    # 检查数据是否满足基本要求
+    if not check_data_sufficiency(ts_code, trade_date):
         return False
     
     # 检查快照数据
@@ -456,21 +439,12 @@ def _compute_security_factors(
     )
     
     # 数据有效性检查
-    if not close_series:
-        # 如果是因为数据库中没有数据，就用debug级别记录
-        if not _check_stock_exists(broker, ts_code, trade_date):
-            LOGGER.debug(
-                "股票当日无交易 ts_code=%s date=%s",
-                ts_code, trade_date,
-                extra=LOG_EXTRA
-            )
-        else:
-            # 如果股票存在但缺少收盘价，用warning级别记录
-            LOGGER.warning(
-                "股票数据缺失 ts_code=%s date=%s",
-                ts_code, trade_date,
-                extra=LOG_EXTRA
-            )
+    if not check_data_sufficiency(ts_code, trade_date):
+        LOGGER.debug(
+            "数据不满足计算条件 ts_code=%s date=%s",
+            ts_code, trade_date,
+            extra=LOG_EXTRA
+        )
         return {}
         
     turnover_series = _fetch_series_values(

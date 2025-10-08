@@ -136,6 +136,15 @@ def check_data_sufficiency(
             return False
             
     return True
+
+
+def check_series_sufficiency(
+    data: Sequence,
+    required_length: int,
+    field_name: str,
+    ts_code: str,
+    trade_date: str
+) -> bool:
     """检查数据序列是否满足计算要求。
     
     Args:
