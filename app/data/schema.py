@@ -77,10 +77,20 @@ SCHEMA_STATEMENTS: Iterable[str] = (
     CREATE TABLE IF NOT EXISTS factors (
       ts_code TEXT,
       trade_date TEXT,
+      mom_5 REAL,
       mom_20 REAL,
       mom_60 REAL,
       volat_20 REAL,
+      turn_5 REAL,
       turn_20 REAL,
+      risk_penalty REAL,
+      sent_divergence REAL,
+      sent_market REAL,
+      sent_momentum REAL,
+      val_multiscore REAL,
+      val_pe_score REAL,
+      val_pb_score REAL,
+      volume_ratio_score REAL,
       updated_at TEXT,
       PRIMARY KEY (ts_code, trade_date)
     );
@@ -97,6 +107,7 @@ SCHEMA_STATEMENTS: Iterable[str] = (
     CREATE TABLE IF NOT EXISTS suspend (
       ts_code TEXT,
       suspend_date TEXT,
+      trade_date TEXT,
       resume_date TEXT,
       suspend_type TEXT,
       ann_date TEXT,
@@ -139,6 +150,17 @@ SCHEMA_STATEMENTS: Iterable[str] = (
       weight_rule TEXT,
       desc TEXT,
       exp_date TEXT
+    );
+    """,
+    # note: no physical `index` table is created here; derived fields
+    # such as `index.performance_peers` are produced at runtime.
+    """
+    CREATE TABLE IF NOT EXISTS macro (
+      ts_code TEXT,
+      trade_date TEXT,
+      industry_heat REAL,
+      relative_strength REAL,
+      PRIMARY KEY (ts_code, trade_date)
     );
     """,
     """
@@ -296,7 +318,9 @@ SCHEMA_STATEMENTS: Iterable[str] = (
       url TEXT,
       entities TEXT,
       sentiment REAL,
-      heat REAL
+      heat REAL,
+      sentiment_index REAL,
+      heat_score REAL
     );
     """,
     """
@@ -568,6 +592,78 @@ def initialize_database() -> MigrationResult:
 
     session.commit()
 
+  # Ensure missing columns are added to existing tables when possible.
+  try:
+    _ensure_columns()
+  except Exception as e:  # noqa: BLE001
+    # Non-fatal: log and continue; runtime code already derives many fields.
+    print(f"列迁移失败: {e}")
+
   # 返回执行摘要（创建后再次检查缺失表以报告）
   remaining = _missing_tables()
   return MigrationResult(executed=executed, skipped=False, missing_tables=remaining)
+
+
+def _ensure_columns() -> None:
+  """Attempt to add known missing columns to existing tables.
+
+  This helper is conservative: it queries PRAGMA table_info and issues
+  ALTER TABLE ... ADD COLUMN only for columns that don't exist. It
+  ignores failures so initialization is non-blocking on older DB files.
+  """
+  try:
+    with db_session() as conn:
+      cursor = conn.cursor()
+
+      def table_columns(name: str) -> set:
+        try:
+          rows = conn.execute(f"PRAGMA table_info({name})").fetchall()
+        except Exception:
+          return set()
+        return {row[1] if isinstance(row, tuple) else row["name"] for row in rows}
+
+      desired_columns = {
+        "factors": {
+          "mom_5": "REAL",
+          "mom_20": "REAL",
+          "mom_60": "REAL",
+          "volat_20": "REAL",
+          "turn_5": "REAL",
+          "turn_20": "REAL",
+          "risk_penalty": "REAL",
+          "sent_divergence": "REAL",
+          "sent_market": "REAL",
+          "sent_momentum": "REAL",
+          "val_multiscore": "REAL",
+          "val_pe_score": "REAL",
+          "val_pb_score": "REAL",
+          "volume_ratio_score": "REAL",
+          "updated_at": "TEXT",
+        },
+        "news": {
+          "sentiment_index": "REAL",
+          "heat_score": "REAL",
+        },
+        "macro": {
+          "industry_heat": "REAL",
+          "relative_strength": "REAL",
+        },
+      }
+
+      for table, cols in desired_columns.items():
+        existing = table_columns(table)
+        if not existing:
+          # table may not exist; skip
+          continue
+        for col, coltype in cols.items():
+          if col in existing:
+            continue
+          try:
+            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {col} {coltype}")
+          except Exception:
+            # best-effort: ignore failures (e.g., invalid table names)
+            continue
+      conn.commit()
+  except Exception:
+    # swallow to avoid failing initialization
+    return

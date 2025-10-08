@@ -765,6 +765,18 @@ class DataBroker:
         table, column = normalized
         resolved = self._resolve_column(table, column)
         if not resolved:
+            # Certain fields are derived at runtime and intentionally
+            # do not require physical columns. Suppress noisy debug logs
+            # for those known derived fields so startup isn't spammy.
+            derived_fields = {
+                "macro.industry_heat",
+                "macro.relative_strength",
+                "index.performance_peers",
+                "news.heat_score",
+                "news.sentiment_index",
+            }
+            if f"{table}.{column}" in derived_fields:
+                return None
             LOGGER.debug(
                 "字段不存在 table=%s column=%s",
                 table,
