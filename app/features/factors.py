@@ -457,7 +457,20 @@ def _compute_security_factors(
     
     # 数据有效性检查
     if not close_series:
-        LOGGER.debug("缺少收盘价数据 ts_code=%s", ts_code, extra=LOG_EXTRA)
+        # 如果是因为数据库中没有数据，就用debug级别记录
+        if not _check_stock_exists(broker, ts_code, trade_date):
+            LOGGER.debug(
+                "股票当日无交易 ts_code=%s date=%s",
+                ts_code, trade_date,
+                extra=LOG_EXTRA
+            )
+        else:
+            # 如果股票存在但缺少收盘价，用warning级别记录
+            LOGGER.warning(
+                "股票数据缺失 ts_code=%s date=%s",
+                ts_code, trade_date,
+                extra=LOG_EXTRA
+            )
         return {}
         
     turnover_series = _fetch_series_values(
@@ -706,6 +719,20 @@ def _valuation_score(value: object, *, scale: float) -> float:
     score = scale / (scale + numeric)
     return max(0.0, min(1.0, score))
 
+
+def _check_stock_exists(broker: DataBroker, ts_code: str, trade_date: str) -> bool:
+    """检查指定日期股票是否存在交易数据"""
+    with db_session(read_only=True) as session:
+        result = session.execute(
+            """
+            SELECT 1 FROM daily 
+            WHERE ts_code = :ts_code 
+            AND trade_date = :trade_date
+            LIMIT 1
+            """,
+            {"ts_code": ts_code, "trade_date": trade_date}
+        ).fetchone()
+        return bool(result)
 
 def _volume_ratio_score(value: object) -> float:
     """计算量比指标的标准化分数"""
