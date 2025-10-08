@@ -231,14 +231,20 @@ def call_endpoint_with_messages(
     )
 
     if mode == "ollama":
-        if tools:
-            raise LLMError("当前 provider 不支持函数调用/工具模式")
+        # Ollama supports function/tool calling via the /api/chat endpoint.
+        # Include `tools` and optional `tool_choice` in the payload when provided.
         payload = {
             "model": model,
             "messages": messages,
             "stream": False,
             "options": {"temperature": temperature},
         }
+        if tools:
+            # Ollama expects `tools` at the top level similar to OpenAI-compatible API
+            payload["tools"] = tools
+            if tool_choice is not None:
+                payload["tool_choice"] = tool_choice
+
         start_time = time.perf_counter()
         response = requests.post(
             f"{base_url.rstrip('/')}/api/chat",
@@ -252,6 +258,9 @@ def call_endpoint_with_messages(
         record_call(provider_key, model, duration=duration)
         if enforce_cost and cost_controller:
             cost_controller.record_usage(model or provider_key, 0, 0)
+        # Ollama may return `tool_calls` under message.tool_calls when tools are used.
+        # Return the raw response so callers can handle either OpenAI-like responses or
+        # Ollama's message structure with `tool_calls`.
         return data
 
     if not api_key:

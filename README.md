@@ -89,6 +89,8 @@ export TUSHARE_TOKEN="<your-token>"
 
 - 通过 Provider 管理供应商连接参数（Base URL、API Key、默认温度/超时/Prompt 模板），并支持在界面内一键调用 `client.models.list()` 拉取可用模型列表，便于扩展本地 Ollama 或各类云端服务（DeepSeek、文心一言、OpenAI 等）。
 - 全局与部门配置直接选择 Provider，并根据需要覆盖模型、温度、Prompt 模板、投票策略；保存后写入 `app/data/config.json`，下次启动自动加载。
+
+Note: Ollama's `/api/chat` endpoint supports function/tool calling. The client forwards `tools` and optional `tool_choice` when the provider is configured as `ollama`, enabling function calls and tool-based workflows similar to OpenAI-compatible providers.
 - Streamlit “数据与设置” 页提供 Provider/全局/部门三栏编辑界面，保存后即时生效，并通过 `llm_config_snapshot()` 输出脱敏检查信息。
 - 支持使用环境变量注入敏感信息：`TUSHARE_TOKEN`、`LLM_API_KEY`。
 
