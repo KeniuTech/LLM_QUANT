@@ -5,7 +5,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from typing import Iterable, List
 
-from app.data.schema_index import initialize_index_membership_tables, add_default_indices
+# 指数相关表已直接在 SCHEMA_STATEMENTS 中定义
 from app.utils.db import db_session
 
 
@@ -137,6 +137,14 @@ SCHEMA_STATEMENTS: Iterable[str] = (
     );
     """,
     """
+    CREATE TABLE IF NOT EXISTS indices (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      index_code VARCHAR(10) NOT NULL UNIQUE,
+      name VARCHAR(50) NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """,
+    """
     CREATE TABLE IF NOT EXISTS index_basic (
       ts_code TEXT PRIMARY KEY,
       name TEXT,
@@ -177,6 +185,48 @@ SCHEMA_STATEMENTS: Iterable[str] = (
       pct_chg REAL,
       vol REAL,
       amount REAL,
+      PRIMARY KEY (ts_code, trade_date)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS index_weight (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      index_code VARCHAR(10) NOT NULL,
+      trade_date VARCHAR(8) NOT NULL,
+      ts_code VARCHAR(10) NOT NULL,
+      weight FLOAT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_index_weight_lookup ON index_weight (index_code, trade_date);
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS index_member (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      index_code VARCHAR(10) NOT NULL,
+      trade_date VARCHAR(8) NOT NULL,
+      ts_code VARCHAR(10) NOT NULL,
+      is_new INTEGER DEFAULT 0,
+      is_delete INTEGER DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_index_member_lookup ON index_member (index_code, trade_date);
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS index_dailybasic (
+      ts_code VARCHAR(10) NOT NULL,
+      trade_date VARCHAR(8) NOT NULL,
+      turnover REAL,
+      turnover_ratio REAL,
+      pe_ttm REAL,
+      pb REAL,
+      ps_ttm REAL,
+      dv_ttm REAL,
+      total_mv REAL,
+      circ_mv REAL,
       PRIMARY KEY (ts_code, trade_date)
     );
     """,
@@ -509,6 +559,8 @@ REQUIRED_TABLES = (
     "stk_limit",
     "index_basic",
     "index_daily",
+    "index_weight",
+    "index_dailybasic",
     "fund_basic",
     "fund_nav",
     "fut_basic",
@@ -566,9 +618,18 @@ def initialize_database() -> MigrationResult:
   with db_session() as session:
     cursor = session.cursor()
 
-    # 初始化指数相关表
-    initialize_index_membership_tables(session)
-    add_default_indices()
+    # 指数相关表已在 SCHEMA_STATEMENTS 中定义
+    
+    # 添加默认指数数据
+    indices = [
+        ("000300.SH", "沪深300"),
+        ("000905.SH", "中证500"),
+        ("000852.SH", "中证1000")
+    ]
+    cursor.executemany(
+        "INSERT OR IGNORE INTO indices (index_code, name) VALUES (?, ?)",
+        indices
+    )
     
     # 创建表
     for statement in SCHEMA_STATEMENTS:
