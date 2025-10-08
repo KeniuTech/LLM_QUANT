@@ -585,12 +585,23 @@ def _compute_security_factors(
             volume_ratio = latest_fields.get("daily_basic.volume_ratio")
             results[spec.name] = _volume_ratio_score(volume_ratio)
         else:
-            LOGGER.info(
-                "忽略未识别的因子 name=%s ts_code=%s",
-                spec.name,
-                ts_code,
-                extra=LOG_EXTRA,
-            )
+            # 检查是否为扩展因子
+            from app.features.extended_factors import EXTENDED_FACTORS
+            extended_factor_names = [spec.name for spec in EXTENDED_FACTORS]
+            
+            # 检查是否为情绪因子
+            sentiment_factor_names = ["sent_momentum", "sent_impact", "sent_market", "sent_divergence"]
+            
+            if spec.name in extended_factor_names or spec.name in sentiment_factor_names:
+                # 扩展因子和情绪因子将在后续统一计算，这里不记录日志
+                pass
+            else:
+                LOGGER.info(
+                    "忽略未识别的因子 name=%s ts_code=%s",
+                    spec.name,
+                    ts_code,
+                    extra=LOG_EXTRA,
+                )
     
     # 计算扩展因子值
     calculator = ExtendedFactors()
