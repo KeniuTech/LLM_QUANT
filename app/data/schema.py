@@ -137,14 +137,6 @@ SCHEMA_STATEMENTS: Iterable[str] = (
     );
     """,
     """
-    CREATE TABLE IF NOT EXISTS indices (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      index_code VARCHAR(10) NOT NULL UNIQUE,
-      name VARCHAR(50) NOT NULL,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-    """,
-    """
     CREATE TABLE IF NOT EXISTS index_basic (
       ts_code TEXT PRIMARY KEY,
       name TEXT,
@@ -618,19 +610,6 @@ def initialize_database() -> MigrationResult:
   with db_session() as session:
     cursor = session.cursor()
 
-    # 指数相关表已在 SCHEMA_STATEMENTS 中定义
-    
-    # 添加默认指数数据
-    indices = [
-        ("000300.SH", "沪深300"),
-        ("000905.SH", "中证500"),
-        ("000852.SH", "中证1000")
-    ]
-    cursor.executemany(
-        "INSERT OR IGNORE INTO indices (index_code, name) VALUES (?, ?)",
-        indices
-    )
-    
     # 创建表
     for statement in SCHEMA_STATEMENTS:
       try:

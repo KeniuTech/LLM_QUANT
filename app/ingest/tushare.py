@@ -387,8 +387,7 @@ _TABLE_SCHEMAS: Dict[str, str] = {
             trade_date VARCHAR(8) NOT NULL,
             ts_code VARCHAR(10) NOT NULL,
             weight FLOAT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            INDEX idx_index_weight_lookup (index_code, trade_date)
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
     """,
     "fund_basic": """
@@ -1274,6 +1273,11 @@ def fetch_index_weight(start: date, end: date, index_code: str) -> Iterable[Dict
         {"index_code": index_code, "start_date": start_str, "end_date": end_str},
         limit=5000,
     )
+    # Filter out rows where con_code is null to avoid DB constraint violation
+    if df is not None and not df.empty:
+        df = df.dropna(subset=["con_code"])
+        # Rename con_code to ts_code to match database schema
+        df = df.rename(columns={"con_code": "ts_code"})
     return _df_to_records(df, ["index_code", "trade_date", "ts_code", "weight"])
 
 
