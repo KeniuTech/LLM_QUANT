@@ -583,7 +583,10 @@ def render_data_settings() -> None:
     with db_session() as session:
         df = pd.read_sql_query(
             """
-            SELECT job_type, status, created_at, updated_at, error_msg
+            SELECT job_type, status, 
+                   CAST(created_at AS TIMESTAMP) as created_at,
+                   CAST(updated_at AS TIMESTAMP) as updated_at,
+                   error_msg
             FROM fetch_jobs 
             ORDER BY created_at DESC 
             LIMIT 50
@@ -592,7 +595,7 @@ def render_data_settings() -> None:
         )
         
     if not df.empty:
-        df["duration"] = (df["updated_at"] - df["created_at"]).dt.total_seconds().round(2)
+        df["duration"] = (pd.to_datetime(df["updated_at"]) - pd.to_datetime(df["created_at"])).dt.total_seconds().round(2)
         df = df.drop(columns=["updated_at"])
         df = df.rename(columns={
             "job_type": "数据类型",
