@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any, Callable, ClassVar, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
+import numpy as np
+
 from .config import get_config
 import types
 from .db import db_session
@@ -350,18 +352,13 @@ class DataBroker:
             if cached is not None:
                 return [tuple(item) for item in cached]
 
-        query = (
-            f"SELECT trade_date, {resolved} FROM {table} "
-            "WHERE ts_code = ? AND trade_date <= ? "
-            "ORDER BY trade_date DESC LIMIT ?"
-        )
         try:
             rows = self._query_engine.fetch_series(table, resolved, ts_code, end_date, window)
         except Exception as exc:  # noqa: BLE001
             LOGGER.debug(
                 "时间序列查询失败 table=%s column=%s err=%s",
                 table,
-                column,
+                resolved,
                 exc,
                 extra=LOG_EXTRA,
             )
@@ -396,6 +393,148 @@ class DataBroker:
             )
         return series
 
+    def fetch_batch_latest(
+        self,
+        ts_codes: List[str],
+        trade_date: str,
+        fields: Iterable[str],
+        auto_refresh: bool = True,
+    ) -> Dict[str, Dict[str, Any]]:
+        """批次化获取多个证券的最新字段数据
+        
+        Args:
+            ts_codes: 证券代码列表
+            trade_date: 交易日
+            fields: 要查询的字段列表
+            auto_refresh: 是否在数据不足时自动触发补数
+            
+        Returns:
+            证券代码到字段数据的映射
+        """
+        if not ts_codes:
+            return {}
+        
+        field_list = [str(item) for item in fields if item]
+        if not field_list:
+            return {}
+        
+        # 检查是否需要自动补数
+        if auto_refresh:
+            self._refresh.ensure_for_latest(trade_date, field_list)
+        
+        # 按表分组字段
+        field_groups = {}
+        for field_name in field_list:
+            resolved = self.resolve_field(field_name)
+            if not resolved:
+                continue
+            table, column = resolved
+            field_groups.setdefault(table, set()).add(column)
+        
+        batch_data = {}
+        
+        # 对每个表进行批量查询
+        for table, columns in field_groups.items():
+            if not ts_codes:
+                continue
+                
+            # 构建批量查询SQL
+            placeholders = ','.join(['?'] * len(ts_codes))
+            columns_str = ', '.join(['ts_code', 'trade_date'] + list(columns))
+            
+            query = f"""
+                SELECT {columns_str}
+                FROM (
+                    SELECT {columns_str},
+                           ROW_NUMBER() OVER (PARTITION BY ts_code ORDER BY trade_date DESC) as rn
+                    FROM {table}
+                    WHERE ts_code IN ({placeholders}) AND trade_date <= ?
+                ) WHERE rn = 1
+            """
+            
+            try:
+                with db_session(read_only=True) as conn:
+                    rows = conn.execute(query, (*ts_codes, trade_date)).fetchall()
+                    for row in rows:
+                        ts_code = row['ts_code']
+                        batch_data.setdefault(ts_code, {})
+                        
+                        for column in columns:
+                            field_name = f"{table}.{column}"
+                            try:
+                                batch_data[ts_code][field_name] = float(row[column])
+                            except (TypeError, ValueError):
+                                batch_data[ts_code][field_name] = row[column]
+            except Exception as e:
+                LOGGER.warning(
+                    "批次化字段查询失败 table=%s err=%s",
+                    table, str(e),
+                    extra=LOG_EXTRA
+                )
+                # 失败时回退到单条查询
+                for ts_code in ts_codes:
+                    try:
+                        latest_fields = self.fetch_latest(ts_code, trade_date, [f"{table}.{col}" for col in columns])
+                        batch_data.setdefault(ts_code, {}).update(latest_fields)
+                    except Exception as inner_e:
+                        LOGGER.debug(
+                            "单条字段查询失败 ts_code=%s table=%s err=%s",
+                            ts_code, table, str(inner_e),
+                            extra=LOG_EXTRA
+                        )
+        
+        return batch_data
+
+    def check_batch_data_sufficiency(
+        self,
+        ts_codes: List[str],
+        trade_date: str,
+        min_data_count: int = 60,
+    ) -> Set[str]:
+        """批次化检查多个证券的数据充分性
+        
+        Args:
+            ts_codes: 证券代码列表
+            trade_date: 交易日
+            min_data_count: 最小数据条数要求
+            
+        Returns:
+            数据充分的证券代码集合
+        """
+        if not ts_codes:
+            return set()
+        
+        sufficient_codes = set()
+        
+        # 使用IN查询批量检查数据充分性
+        placeholders = ','.join(['?'] * len(ts_codes))
+        query = f"""
+            SELECT ts_code, COUNT(*) as data_count 
+            FROM daily 
+            WHERE ts_code IN ({placeholders}) AND trade_date <= ? 
+            GROUP BY ts_code
+            HAVING COUNT(*) >= ?
+        """
+        
+        try:
+            with db_session(read_only=True) as conn:
+                rows = conn.execute(query, (*ts_codes, trade_date, min_data_count)).fetchall()
+                for row in rows:
+                    ts_code = row['ts_code']
+                    sufficient_codes.add(ts_code)
+        except Exception as e:
+            LOGGER.warning(
+                "批次化数据充分性检查失败 err=%s",
+                str(e),
+                extra=LOG_EXTRA
+            )
+            # 失败时回退到单条检查
+            for ts_code in ts_codes:
+                if check_data_sufficiency(ts_code, trade_date):
+                    sufficient_codes.add(ts_code)
+        
+        return sufficient_codes
+
     def register_refresh_callback(
         self,
         start: date | str,
@@ -421,6 +560,85 @@ class DataBroker:
             bucket = self._refresh_callbacks.setdefault(key, [])
             if callback not in bucket:
                 bucket.append(callback)
+
+    def get_news_data(
+        self,
+        ts_code: str,
+        trade_date: str,
+        limit: int = 30
+    ) -> List[Dict[str, Any]]:
+        """获取新闻数据（简化实现）
+        
+        Args:
+            ts_code: 股票代码
+            trade_date: 交易日期
+            limit: 返回的新闻条数限制
+            
+        Returns:
+            新闻数据列表，包含sentiment、heat、entities等字段
+        """
+        # 简化实现：返回模拟数据
+        # 在实际应用中，这里应该查询新闻数据库
+        return [
+            {
+                "sentiment": np.random.uniform(-1, 1),
+                "heat": np.random.uniform(0, 1),
+                "entities": "股票,市场,投资"
+            }
+            for _ in range(min(limit, 5))
+        ]
+
+    def _lookup_industry(self, ts_code: str) -> Optional[str]:
+        """查找股票所属行业
+        
+        Args:
+            ts_code: 股票代码
+            
+        Returns:
+            行业代码或名称，找不到时返回None
+        """
+        # 简化实现：返回模拟行业
+        # 在实际应用中，这里应该查询股票行业信息
+        industry_mapping = {
+            "000001.SZ": "银行",
+            "000002.SZ": "房地产",
+            "000858.SZ": "食品饮料",
+            "000962.SZ": "医药生物",
+        }
+        return industry_mapping.get(ts_code, "其他")
+
+    def _derived_industry_sentiment(self, industry: str, trade_date: str) -> Optional[float]:
+        """计算行业情绪得分
+        
+        Args:
+            industry: 行业代码或名称
+            trade_date: 交易日期
+            
+        Returns:
+            行业情绪得分，找不到时返回None
+        """
+        # 简化实现：返回模拟情绪得分
+        # 在实际应用中，这里应该基于行业新闻计算情绪
+        return np.random.uniform(-1, 1)
+
+    def get_industry_stocks(self, industry: str) -> List[str]:
+        """获取同行业股票列表
+        
+        Args:
+            industry: 行业代码或名称
+            
+        Returns:
+            同行业股票代码列表
+        """
+        # 简化实现：返回模拟股票列表
+        # 在实际应用中，这里应该查询行业股票列表
+        industry_stocks = {
+            "银行": ["000001.SZ", "002142.SZ", "600036.SH"],
+            "房地产": ["000002.SZ", "000402.SZ", "600048.SH"],
+            "食品饮料": ["000858.SZ", "600519.SH", "000568.SZ"],
+            "医药生物": ["000962.SZ", "600276.SH", "300003.SZ"],
+        }
+        return industry_stocks.get(industry, [])
 
     def fetch_flags(
         self,

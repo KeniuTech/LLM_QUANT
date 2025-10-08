@@ -108,21 +108,18 @@ class SentimentFactors:
             
             # 3. 计算市场情绪指数
             # 获取成交量数据
-            volume_data = broker.get_stock_data(
+            volume_data = broker.fetch_latest(
                 ts_code,
                 trade_date,
-                fields=["daily_basic.volume_ratio"],
-                limit=self.factor_specs["sent_market"]
+                fields=["daily_basic.volume_ratio"]
             )
-            if volume_data:
-                volume_ratios = [
-                    row.get("daily_basic.volume_ratio", 1.0)
-                    for row in volume_data
-                ]
+            if volume_data and "daily_basic.volume_ratio" in volume_data:
+                volume_ratio = volume_data["daily_basic.volume_ratio"]
+                # 使用单个成交量比率值
                 results["sent_market"] = market_sentiment_index(
                     sentiment_series,
                     heat_series,
-                    volume_ratios,
+                    [volume_ratio],  # 转换为列表
                     window=self.factor_specs["sent_market"]
                 )
             else:

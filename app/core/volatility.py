@@ -80,8 +80,8 @@ def volatility_regime(prices: Sequence[float],
     
     # 结合价格波动和成交量波动判断状态
     if vol > 0 and vol_of_vol > 0:
-        regime = 0.5 * (vol / np.mean(abs(returns)) - 1) + \
-                0.5 * (vol_of_vol / np.mean(abs(vol_changes)) - 1)
+        regime = 0.5 * (vol / np.mean(np.abs(returns)) - 1) + \
+                0.5 * (vol_of_vol / np.mean(np.abs(vol_changes)) - 1)
         return np.clip(regime, -1, 1)
     return 0.0
 

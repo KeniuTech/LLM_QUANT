@@ -185,13 +185,10 @@ class ExtendedFactors:
             return rsi(close_series, 14)
             
         elif factor_name == "tech_macd_signal":
-            _, signal = macd(close_series)
-            return signal
+            return macd(close_series, 12, 26, 9)
             
         elif factor_name == "tech_bb_position":
-            upper, lower = bollinger_bands(close_series, 20)
-            pos = (close_series[0] - lower) / (upper - lower + 1e-8)
-            return pos
+            return bollinger_bands(close_series, 20)
             
         elif factor_name == "tech_obv_momentum":
             return obv_momentum(close_series, volume_series, 20)
@@ -204,18 +201,119 @@ class ExtendedFactors:
             ma_5 = rolling_mean(close_series, 5)
             ma_20 = rolling_mean(close_series, 20)
             return ma_5 - ma_20
+            
+        elif factor_name == "trend_price_channel":
+            # 价格通道突破因子：当前价格相对于通道的位置
+            window = 20
+            high_channel = max(close_series[:window])
+            low_channel = min(close_series[:window])
+            if high_channel != low_channel:
+                return (close_series[0] - low_channel) / (high_channel - low_channel)
+            return 0.0
+            
+        elif factor_name == "trend_adx":
+            # 简化的ADX计算：基于价格变动方向
+            window = 14
+            if len(close_series) < window + 1:
+                return None
+            
+            # 计算价格变动
+            price_changes = [close_series[i] - close_series[i+1] for i in range(window)]
+            
+            # 计算正向和负向变动
+            pos_moves = sum(max(0, change) for change in price_changes)
+            neg_moves = sum(max(0, -change) for change in price_changes)
+            
+            # 简化的ADX计算
+            if pos_moves + neg_moves > 0:
+                return (pos_moves - neg_moves) / (pos_moves + neg_moves)
+            return 0.0
+        
+        # 市场微观结构因子
+        elif factor_name == "micro_tick_direction":
+            # 简化的逐笔方向：基于最近价格变动
+            window = 5
+            if len(close_series) < window + 1:
+                return None
+            
+            # 计算价格变动方向
+            directions = [1 if close_series[i] > close_series[i+1] else -1 for i in range(window)]
+            return sum(directions) / window
+            
+        elif factor_name == "micro_trade_imbalance":
+            # 交易失衡：基于价格和成交量的联合分析
+            window = 10
+            if len(close_series) < window + 1 or len(volume_series) < window + 1:
+                return None
+            
+            # 计算价格变动和成交量变动
+            price_changes = [close_series[i] - close_series[i+1] for i in range(window)]
+            volume_changes = [volume_series[i] - volume_series[i+1] for i in range(window)]
+            
+            # 计算交易失衡指标
+            imbalance = sum(price_changes[i] * volume_changes[i] for i in range(window))
+            return imbalance / (window * np.mean(volume_series[:window]) + 1e-8)
         
         # 波动率预测因子
         elif factor_name == "vol_garch":
             return garch_volatility(close_series, 20)
             
+        elif factor_name == "vol_range_pred":
+            # 波动区间预测：基于历史价格区间
+            window = 10
+            if len(close_series) < window + 5:
+                return None
+            
+            # 计算历史价格区间
+            ranges = []
+            for i in range(5):  # 使用最近5个窗口
+                if i + window < len(close_series):
+                    price_range = max(close_series[i:i+window]) - min(close_series[i:i+window])
+                    ranges.append(price_range / close_series[i])
+            
+            if ranges:
+                # 使用历史区间的75分位数作为预测
+                return np.percentile(ranges, 75)
+            return None
+            
         elif factor_name == "vol_regime":
-            regime, _ = volatility_regime(close_series, volume_series, 20)
-            return regime
+            return volatility_regime(close_series, volume_series, 20)
             
         # 量价联合因子
         elif factor_name == "volume_price_corr":
             return volume_price_correlation(close_series, volume_series, 20)
+            
+        elif factor_name == "volume_price_diverge":
+            # 量价背离：价格和成交量趋势的背离程度
+            window = 10
+            if len(close_series) < window or len(volume_series) < window:
+                return None
+            
+            # 计算价格和成交量趋势
+            price_trend = sum(1 if close_series[i] > close_series[i+1] else -1 for i in range(window-1))
+            volume_trend = sum(1 if volume_series[i] > volume_series[i+1] else -1 for i in range(window-1))
+            
+            # 计算背离程度
+            divergence = price_trend * volume_trend * -1  # 反向为背离
+            return np.clip(divergence / (window - 1), -1, 1)
+            
+        elif factor_name == "volume_intensity":
+            # 成交强度：基于成交量和价格变动的加权指标
+            window = 5
+            if len(close_series) < window + 1 or len(volume_series) < window + 1:
+                return None
+            
+            # 计算价格变动
+            price_changes = [abs(close_series[i] - close_series[i+1]) for i in range(window)]
+            
+            # 计算成交量加权的价格变动
+            weighted_changes = sum(price_changes[i] * volume_series[i] for i in range(window))
+            total_volume = sum(volume_series[:window])
+            
+            if total_volume > 0:
+                intensity = weighted_changes / (total_volume * np.mean(close_series[:window]) + 1e-8)
+                return np.clip(intensity * 100, -100, 100)  # 归一化到合理范围
+            return None
             
         # 增强动量因子
         elif factor_name == "momentum_adaptive":

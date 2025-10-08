@@ -294,10 +294,13 @@ def _compute_batch_factors(
     """批量计算多个证券的因子值，提高计算效率"""
     batch_results = []
     
+    # 批次化数据可用性检查
+    available_codes = _check_batch_data_availability(broker, ts_codes, trade_date, specs)
+    
     for ts_code in ts_codes:
         try:
-            # 先检查数据可用性
-            if not _check_data_availability(broker, ts_code, trade_date, specs):
+            # 检查数据可用性（使用批次化结果）
+            if ts_code not in available_codes:
                 validation_stats["data_missing"] += 1
                 continue
                 
@@ -364,6 +367,78 @@ def _check_data_availability(
         return False
         
     return True  # 所有检查都通过
+
+
+def _check_batch_data_availability(
+    broker: DataBroker,
+    ts_codes: List[str],
+    trade_date: str,
+    specs: Sequence[FactorSpec],
+) -> Set[str]:
+    """批次化检查多个证券的数据可用性，使用DataBroker的批次查询方法
+    
+    Args:
+        broker: 数据代理
+        ts_codes: 证券代码列表
+        trade_date: 交易日期
+        specs: 因子规格列表
+        
+    Returns:
+        数据可用的证券代码集合
+    """
+    if not ts_codes:
+        return set()
+    
+    available_codes = set()
+    
+    # 使用DataBroker的批次化检查数据充分性
+    sufficient_codes = broker.check_batch_data_sufficiency(ts_codes, trade_date)
+    
+    if not sufficient_codes:
+        return available_codes
+    
+    # 使用DataBroker的批次化获取最新字段数据
+    required_fields = ["daily.close", "daily_basic.turnover_rate"]
+    batch_fields_data = broker.fetch_batch_latest(sufficient_codes, trade_date, required_fields)
+    
+    # 检查每个证券的必需字段
+    for ts_code in sufficient_codes:
+        fields_data = batch_fields_data.get(ts_code, {})
+        
+        # 检查必需字段是否存在
+        has_all_required = True
+        for field in required_fields:
+            if fields_data.get(field) is None:
+                LOGGER.debug(
+                    "批次化检查缺少字段 field=%s ts_code=%s date=%s",
+                    field, ts_code, trade_date,
+                    extra=LOG_EXTRA
+                )
+                has_all_required = False
+                break
+        
+        if not has_all_required:
+            continue
+        
+        # 检查收盘价有效性
+        close_price = fields_data.get("daily.close")
+        if close_price is None or float(close_price) <= 0:
+            LOGGER.debug(
+                "批次化检查收盘价无效 ts_code=%s date=%s price=%s",
+                ts_code, trade_date, close_price,
+                extra=LOG_EXTRA
+            )
+            continue
+        
+        available_codes.add(ts_code)
+    
+    LOGGER.debug(
+        "批次化数据可用性检查完成 总证券数=%s 可用证券数=%s",
+        len(ts_codes), len(available_codes),
+        extra=LOG_EXTRA
+    )
+    
+    return available_codes
 
 
 def _detect_and_handle_outliers(
