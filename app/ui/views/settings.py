@@ -269,7 +269,10 @@ def render_llm_settings() -> None:
             cfg.sync_runtime_llm()
             save_config()
             st.success("Provider 已保存。")
-            st.session_state[title_key] = provider_cfg.title or ""
+            # Avoid modifying st.session_state after the widget with the same key
+            # has been created (Streamlit raises an exception). Rerun so the
+            # page is re-executed and widgets are recreated with updated values.
+            st.rerun()
 
         provider_in_use = (cfg.llm.primary.provider == selected_provider) or any(
             ep.provider == selected_provider for ep in cfg.llm.ensemble
