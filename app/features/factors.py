@@ -577,10 +577,17 @@ def _compute_security_factors(
     包括基础因子、扩展因子和情绪因子的计算。
     """
     # 确定所需的最大窗口大小
-    close_windows = [spec.window for spec in specs if _factor_prefix(spec.name) in {"mom", "volat"}]
+    # 包含所有因子（基础因子和扩展因子）的窗口需求
+    close_windows = [spec.window for spec in specs]
     turnover_windows = [spec.window for spec in specs if _factor_prefix(spec.name) == "turn"]
     max_close_window = max(close_windows) if close_windows else 0
     max_turn_window = max(turnover_windows) if turnover_windows else 0
+    
+    # 确保窗口大小至少满足扩展因子的需求
+    from app.features.extended_factors import EXTENDED_FACTORS
+    extended_windows = [spec.window for spec in EXTENDED_FACTORS]
+    max_extended_window = max(extended_windows) if extended_windows else 0
+    max_close_window = max(max_close_window, max_extended_window)
 
     # 获取所需的时间序列数据
     close_series = _fetch_series_values(
