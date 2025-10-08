@@ -48,27 +48,31 @@ def run_boot_check(
     initialize_database()
     start, end = _default_window(days)
     LOGGER.info("开机检查覆盖窗口：%s 至 %s", start, end)
-    
-    from app.ingest.tushare import FetchJob, run_ingestion
-    
-    # 创建数据拉取任务，这样会自动触发因子计算
-    job = FetchJob(
-        name="ui_auto_update",
-        start=start,
-        end=end,
-        granularity="daily",  # 使用日线数据以触发因子计算
-    )
 
     refresh = force_refresh
     if refresh is None:
         refresh = get_config().force_refresh
 
     if auto_fetch:
-        # 使用 run_ingestion 来确保数据和因子都被更新
-        if progress_hook:
-            progress_hook("开始更新数据和计算因子...", 0.0)
+        # 先执行增量数据更新
+        ensure_data_coverage(
+            start,
+            end,
+            force=refresh,
+            progress_hook=progress_hook,
+        )
         
-        run_ingestion(job, include_limits=True)
+        # 然后执行因子计算
+        if progress_hook:
+            progress_hook("开始计算因子...", 0.8)
+            
+        from app.features.factors import compute_factor_range
+        try:
+            compute_factor_range(start, end, skip_existing=not refresh)
+            LOGGER.info("因子计算完成", extra={"stage": "factor_compute"})
+        except Exception as e:
+            LOGGER.error("因子计算失败: %s", str(e), extra={"stage": "factor_compute"})
+            raise
 
     coverage = collect_data_coverage(start, end)
 
