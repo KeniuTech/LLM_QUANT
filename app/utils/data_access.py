@@ -1474,6 +1474,38 @@ class DataBroker:
             )
             return None
 
+    def get_all_stocks(self, trade_date: str) -> List[str]:
+        """获取所有股票代码列表。
+
+        Args:
+            trade_date: 交易日期
+
+        Returns:
+            List[str]: 股票代码列表
+        """
+        try:
+            with db_session(read_only=True) as conn:
+                # 获取指定日期之前所有有交易的股票
+                rows = conn.execute(
+                    """
+                    SELECT DISTINCT ts_code
+                    FROM daily
+                    WHERE trade_date <= ?
+                    ORDER BY ts_code
+                    """,
+                    (trade_date,)
+                ).fetchall()
+                
+                return [row["ts_code"] for row in rows if row and row["ts_code"]]
+        except Exception as exc:
+            LOGGER.exception(
+                "获取所有股票失败 date=%s err=%s",
+                trade_date,
+                exc,
+                extra=LOG_EXTRA
+            )
+            return []
+
     def get_data_coverage(self, start_date: str, end_date: str) -> Dict:
         """获取指定日期范围内的数据覆盖情况。
         
