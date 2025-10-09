@@ -108,8 +108,8 @@ def validate_factor_value(
         "vol_regime": (0, 1.0),              # 波动率状态，0-1之间
         
         # 微观结构精确范围
-        "micro_tick_direction": (0, 1.0),    # 买卖方向比例
-        "micro_trade_imbalance": (-1.0, 1.0), # 交易不平衡度
+        "micro_tick_direction": (-1.0, 1.0),    # 买卖方向比例
+        "micro_trade_imbalance": (-100.0, 100.0), # 交易不平衡度
         
         # 情绪指标精确范围
         "sent_impact": (0, 1.0),             # 情绪影响度
