@@ -12,6 +12,7 @@ from app.features.validation import check_data_sufficiency
 from app.utils.config import get_config
 from app.utils.data_access import DataBroker
 from app.utils.db import db_session
+from app.utils.logging import get_logger
 
 
 def _get_latest_trading_date() -> datetime.date:
@@ -36,7 +37,13 @@ def _get_latest_trading_date() -> datetime.date:
 
 def render_stock_evaluation() -> None:
     """渲染股票筛选与评估页面。"""
+    LOGGER = get_logger(__name__)
+    LOG_EXTRA = {"stage": "stock_evaluation_ui"}
+    
     st.subheader("股票筛选与评估")
+    
+    # 记录页面加载
+    LOGGER.info("股票筛选与评估页面已加载", extra=LOG_EXTRA)
     
     # 1. 时间范围选择
     col1, col2 = st.columns(2)
@@ -150,6 +157,15 @@ def render_stock_evaluation() -> None:
     # 同步评估函数
     def run_evaluation_sync():
         try:
+            # 记录评估开始
+            LOGGER.info(
+                "开始因子评估 因子数量=%s 评估日期=%s 至 %s",
+                len(selected_factors),
+                start_date,
+                end_date,
+                extra=LOG_EXTRA
+            )
+            
             st.session_state.evaluation_status = 'running'
             results = []
             
@@ -221,11 +237,21 @@ def render_stock_evaluation() -> None:
         
         # 生成股票评分
         with st.spinner("正在生成股票评分..."):
+            # 使用IC均值作为权重，但如果IC均值全为零，则使用均匀分布
+            if all(mean == 0 for mean in ic_means):
+                factor_weights = [1.0 / len(ic_means)] * len(ic_means)
+                LOGGER.info("所有因子IC均值均为零，使用均匀权重", extra=LOG_EXTRA)
+            else:
+                # 将IC均值归一化为权重
+                abs_sum = sum(abs(m) for m in ic_means)
+                factor_weights = [m / abs_sum for m in ic_means]
+                LOGGER.info("使用IC均值作为权重: %s", factor_weights, extra=LOG_EXTRA)
+                
             scores = _calculate_stock_scores(
                 universe,
                 selected_factors,
                 end_date,
-                ic_means
+                factor_weights
             )
             
             if scores:
@@ -256,7 +282,19 @@ def _calculate_stock_scores(
     factor_weights: List[float]
 ) -> List[Dict[str, str]]:
     """计算股票的综合评分。"""
+    LOGGER = get_logger(__name__)
+    LOG_EXTRA = {"stage": "stock_evaluation"}
+    
     broker = DataBroker()
+    
+    # 记录评估开始
+    LOGGER.info(
+        "开始股票评估评估日期=%s 因子数量=%d 权重=%s",
+        eval_date.strftime("%Y-%m-%d"),
+        len(factors),
+        factor_weights,
+        extra=LOG_EXTRA
+    )
     
     # 标准化权重
     weights = np.array(factor_weights)
@@ -269,15 +307,30 @@ def _calculate_stock_scores(
     
     # 获取所有股票的因子值
     stocks = universe or broker.get_all_stocks(eval_date.strftime("%Y%m%d"))
+    
+    # 记录股票列表信息
+    LOGGER.info(
+        "获取股票列表 universe_size=%d total_stocks=%d",
+        len(universe) if universe else 0,
+        len(stocks),
+        extra=LOG_EXTRA
+    )
+    
     results = []
     
+    evaluated_count = 0
+    skipped_count = 0
+    
     for ts_code in stocks:
+        # 检查数据是否充分
         if not check_data_sufficiency(ts_code, eval_date.strftime("%Y%m%d")):
+            skipped_count += 1
             continue
             
         # 获取股票信息
         info = broker.get_stock_info(ts_code)
         if not info:
+            skipped_count += 1
             continue
             
         # 获取因子值
@@ -285,14 +338,18 @@ def _calculate_stock_scores(
         for factor in factors:
             value = broker.fetch_latest_factor(ts_code, factor, eval_date)
             if value is None:
+                skipped_count += 1
                 break
             factor_values.append(value)
             
+        # 检查是否所有因子值都已获取
         if len(factor_values) != len(factors):
+            skipped_count += 1
             continue
             
         # 计算综合评分
         score = np.dot(factor_values, weights)
+        evaluated_count += 1
         
         results.append({
             "股票代码": ts_code,
@@ -301,6 +358,16 @@ def _calculate_stock_scores(
             "综合评分": f"{score:.4f}"
         })
         
+    # 记录评估完成信息
+    LOGGER.info(
+        "股票评估完成 总股票数=%d 已评估=%d 跳过=%d 结果数=%d",
+        len(stocks),
+        evaluated_count,
+        skipped_count,
+        len(results),
+        extra=LOG_EXTRA
+    )
+    
     return results
 
 

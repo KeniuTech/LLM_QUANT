@@ -208,6 +208,13 @@ def check_data_sufficiency(
     
     broker = DataBroker()
     
+    # 记录检查开始
+    LOGGER.debug(
+        "开始检查数据充分性 ts_code=%s date=%s min_days=%d",
+        ts_code, trade_date, min_days,
+        extra=LOG_EXTRA
+    )
+    
     # 检查历史收盘价数据
     close_series = broker.fetch_series("daily", "close", ts_code, trade_date, min_days)
     # 计算有效值的数量
