@@ -550,6 +550,7 @@ class DepartmentAgent:
         return response_payload, delivered
 
 
+    # TODO. 支持对更多表的访问，如指数、因子、新闻、舆情等
     def _build_tools(self) -> List[Dict[str, Any]]:
         max_window = getattr(self._broker, "MAX_WINDOW", 120)
         return [
