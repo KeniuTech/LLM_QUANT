@@ -17,7 +17,7 @@ from app.features.extended_factors import ExtendedFactors
 from app.features.sentiment_factors import SentimentFactors
 from app.features.value_risk_factors import ValueRiskFactors
 # 导入因子验证功能
-from app.features.validation import check_data_sufficiency, detect_outliers
+from app.features.validation import check_data_sufficiency, check_data_sufficiency_for_zero_window, detect_outliers
 # 导入UI进度状态管理
 from app.ui.progress_state import factor_progress
 
@@ -132,11 +132,13 @@ def compute_factors(
         return []
 
     if skip_existing:
-        existing = _existing_factor_codes(trade_date_str)
+        # 检查所有因子名称
+        factor_names = [spec.name for spec in specs]
+        existing = _existing_factor_codes_with_factors(trade_date_str, factor_names)
         universe = [code for code in universe if code not in existing]
         if not universe:
             LOGGER.debug(
-                "目标交易日因子已存在 trade_date=%s universe_size=%s",
+                "目标交易日所有因子已存在 trade_date=%s universe_size=%s",
                 trade_date_str,
                 len(existing),
                 extra=LOG_EXTRA,
@@ -287,6 +289,45 @@ def _existing_factor_codes(trade_date: str) -> set[str]:
             (trade_date,),
         ).fetchall()
     return {row["ts_code"] for row in rows if row["ts_code"]}
+
+
+def _existing_factor_codes_with_factors(trade_date: str, factor_names: List[str]) -> Dict[str, bool]:
+    """检查特定日期和因子的数据是否存在
+    
+    Args:
+        trade_date: 交易日期
+        factor_names: 因子名称列表
+        
+    Returns:
+        字典，键为股票代码，值为是否存在所有因子
+    """
+    if not factor_names:
+        return {}
+        
+    # 构建检查条件
+    conditions = []
+    for name in factor_names:
+        conditions.append(f"json_extract(factors, '$.{name}') IS NOT NULL")
+    condition_str = " AND ".join(conditions)
+    
+    # 构建SQL查询
+    query = """
+        SELECT ts_code
+        FROM factors
+        WHERE trade_date = ?
+        AND """ + condition_str + """
+        GROUP BY ts_code
+    """
+    
+    with db_session(read_only=True) as conn:
+        rows = conn.execute(query, (trade_date,)).fetchall()
+    
+    # 返回结果
+    result = {}
+    for row in rows:
+        result[row["ts_code"]] = True
+    
+    return result
 
 
 def _list_trade_dates(
@@ -603,13 +644,26 @@ def _compute_security_factors(
     )
     
     # 数据有效性检查
-    if not check_data_sufficiency(ts_code, trade_date):
-        LOGGER.debug(
-            "数据不满足计算条件 ts_code=%s date=%s",
-            ts_code, trade_date,
-            extra=LOG_EXTRA
-        )
-        return {}
+    # 检查是否有窗口为0的因子
+    has_zero_window = any(spec.window == 0 for spec in specs)
+    
+    # 如果有窗口为0的因子，使用专门的数据检查函数
+    if has_zero_window:
+        if not check_data_sufficiency_for_zero_window(ts_code, trade_date):
+            LOGGER.debug(
+                "数据不满足计算条件(窗口为0) ts_code=%s date=%s",
+                ts_code, trade_date,
+                extra=LOG_EXTRA
+            )
+            return {}
+    else:
+        if not check_data_sufficiency(ts_code, trade_date):
+            LOGGER.debug(
+                "数据不满足计算条件 ts_code=%s date=%s",
+                ts_code, trade_date,
+                extra=LOG_EXTRA
+            )
+            return {}
         
     turnover_series = _fetch_series_values(
         broker,

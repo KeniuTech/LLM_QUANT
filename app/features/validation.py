@@ -189,6 +189,55 @@ def detect_outliers(
             
     return result
 
+def check_data_sufficiency_for_zero_window(
+    ts_code: str,
+    trade_date: str
+) -> bool:
+    """验证窗口为0的因子所需数据是否充分。
+
+    Args:
+        ts_code: 股票代码
+        trade_date: 交易日期
+
+    Returns:
+        数据是否充分
+    """
+    from app.utils.data_access import DataBroker
+
+    broker = DataBroker()
+    
+    # 记录检查开始
+    LOGGER.debug(
+        "开始检查窗口为0的因子数据充分性 ts_code=%s date=%s",
+        ts_code, trade_date,
+        extra=LOG_EXTRA
+    )
+
+    # 检查日期点数据完整性
+    latest_fields = broker.fetch_latest(
+        ts_code,
+        trade_date,
+        ["daily.close", "daily_basic.turnover_rate", "daily_basic.pe", "daily_basic.pb"]
+    )
+    required_fields = {"daily.close"}
+
+    for field in required_fields:
+        if latest_fields.get(field) is None:
+            LOGGER.warning(
+                "缺少必需字段 field=%s ts_code=%s date=%s",
+                field, ts_code, trade_date,
+                extra=LOG_EXTRA
+            )
+            return False
+    
+    LOGGER.debug(
+        "窗口为0的因子数据充分性检查通过 ts_code=%s",
+        ts_code,
+        extra=LOG_EXTRA
+    )
+    return True
+
+
 def check_data_sufficiency(
     ts_code: str,
     trade_date: str,

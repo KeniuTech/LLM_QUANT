@@ -91,11 +91,13 @@ def evaluate_factor(
     
     try:
         # 计算因子值
+        # 设置 skip_existing=False，确保即使因子已存在也会重新计算
         factor_results = compute_factor_range(
             start_date,
             end_date,
             factors=[FactorSpec(factor_name, 0)],
-            ts_codes=universe
+            ts_codes=universe,
+            skip_existing=False
         )
         
         # 因子计算完成（在异步线程中不直接访问factor_progress）
