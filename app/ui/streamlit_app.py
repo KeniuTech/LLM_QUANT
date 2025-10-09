@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import streamlit as st
+from streamlit_option_menu import option_menu
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -68,41 +69,67 @@ def main() -> None:
 
     render_global_dashboard()
 
-    tabs = st.tabs(["今日计划", "投资池/仓位", "回测与复盘", "行情可视化", "日志钻取", "数据与设置", "自检测试"])
-    LOGGER.debug(
-        "Tabs 初始化完成：%s",
-        ["今日计划", "投资池/仓位", "回测与复盘", "行情可视化", "日志钻取", "数据与设置", "自检测试"],
-        extra=LOG_EXTRA,
+    # --- 顶部导航（第三方组件 streamlit-option-menu） ---
+    top_labels = ["今日计划", "投资池/仓位", "回测与复盘", "行情可视化", "日志钻取", "数据与设置", "自检测试"]
+    selected_top = option_menu(
+        menu_title=None,
+        options=top_labels,
+        icons=["calendar", "briefcase", "bar-chart", "activity", "file-text", "gear", "bug"],
+        orientation="horizontal",
     )
+    LOGGER.debug("Top menu selected: %s", selected_top, extra=LOG_EXTRA)
 
-    with tabs[0]:
+    # --- 仅渲染当前选中页（懒加载） ---
+    if selected_top == "今日计划":
         render_today_plan()
-    with tabs[1]:
+
+    elif selected_top == "投资池/仓位":
         render_pool_overview()
-    with tabs[2]:
-        backtest_tabs = st.tabs(["回测复盘", "股票评估", "因子计算"])
-        with backtest_tabs[0]:
+
+    elif selected_top == "回测与复盘":
+        sub_labels = ["回测复盘", "股票评估", "因子计算"]
+        selected_backtest = option_menu(
+            menu_title=None,
+            options=sub_labels,
+            icons=["bar-chart", "graph-up", "calculator"],
+            orientation="horizontal",
+        )
+        LOGGER.debug("Backtest submenu selected: %s", selected_backtest, extra=LOG_EXTRA)
+
+        if selected_backtest == "回测复盘":
             render_backtest_review()
-        with backtest_tabs[1]:
+        elif selected_backtest == "股票评估":
             render_stock_evaluation()
-        with backtest_tabs[2]:
+        else:
             render_factor_calculation()
-    with tabs[3]:
+
+    elif selected_top == "行情可视化":
         render_market_visualization()
-    with tabs[4]:
+
+    elif selected_top == "日志钻取":
         render_log_viewer()
-    with tabs[5]:
+
+    elif selected_top == "数据与设置":
         st.header("系统设置")
-        settings_tabs = st.tabs(["配置概览", "LLM 设置", "投资组合", "数据源"])
-        with settings_tabs[0]:
+        settings_labels = ["配置概览", "LLM 设置", "投资组合", "数据源"]
+        selected_settings = option_menu(
+            menu_title=None,
+            options=settings_labels,
+            icons=["list-task", "cpu", "bank", "database"],
+            orientation="horizontal",
+        )
+        LOGGER.debug("Settings submenu selected: %s", selected_settings, extra=LOG_EXTRA)
+
+        if selected_settings == "配置概览":
             render_config_overview()
-        with settings_tabs[1]:
+        elif selected_settings == "LLM 设置":
             render_llm_settings()
-        with settings_tabs[2]:
+        elif selected_settings == "投资组合":
             render_portfolio_config()
-        with settings_tabs[3]:
+        else:
             render_data_settings()
-    with tabs[6]:
+
+    elif selected_top == "自检测试":
         render_tests()
 
 
