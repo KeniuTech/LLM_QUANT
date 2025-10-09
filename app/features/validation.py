@@ -77,6 +77,11 @@ def validate_factor_value(
         如果因子值有效则返回原值，否则返回 None
     """
     if value is None:
+        LOGGER.warning(
+            "因子值非数值 factor=%s value=%s ts_code=%s date=%s",
+            name, value, ts_code, trade_date, 
+            extra=LOG_EXTRA
+        )
         return None
         
     # 检查是否为有限数值
@@ -98,8 +103,8 @@ def validate_factor_value(
         "tech_pv_trend": (-1.0, 1.0),       # 量价趋势相关性
         
         # 趋势指标精确范围
-        "trend_adx": (0, 100.0),             # ADX趋势强度 0-100
-        "trend_ma_cross": (-1.0, 1.0),       # 均线交叉
+        "trend_adx": (0, 100.0),             # 简化版 ADX（近似）趋势强度 0-100
+        "trend_ma_cross": (-1.0, 1.0),       # 均线交叉比例
         "trend_price_channel": (-1.0, 1.0),     # 价格通道位置
         
         # 波动率指标精确范围
@@ -109,7 +114,7 @@ def validate_factor_value(
         
         # 微观结构精确范围
         "micro_tick_direction": (-1.0, 1.0),    # 买卖方向比例
-        "micro_trade_imbalance": (-100.0, 100.0), # 交易不平衡度
+        "micro_trade_imbalance": (-1.0, 1.0), # 交易不平衡度，范围在[-1, 1]之间
         
         # 情绪指标精确范围
         "sent_impact": (0, 1.0),             # 情绪影响度
