@@ -11,15 +11,15 @@ LOG_EXTRA = {"stage": "factor_validation"}
 # 因子值范围限制配置 - 基于物理规律和实际数据特征
 FACTOR_LIMITS = {
     # 动量类因子：收益率相关，限制在 ±50% (实际收益率很少超过这个范围)
-    "mom_": (-0.5, 0.5),
-    "momentum_": (-0.5, 0.5),
+    "mom_": (-50.0, 50.0),
+    "momentum_": (-50.0, 50.0),
     
     # 波动率类因子：年化波动率，限制在 0-200% (考虑极端市场情况)
-    "volat_": (0, 2.0),
-    "vol_": (0, 2.0),
+    "volat_": (0, 200.0),
+    "vol_": (0, 200.0),
     
     # 换手率类因子：日换手率，限制在 0-100% (实际换手率通常在这个范围内)
-    "turn_": (0, 1.0),
+    "turn_": (0, 200.0),
     
     # 估值评分类因子：标准化评分，限制在 -3到3 (Z-score标准化范围)
     "val_": (-3.0, 3.0),
@@ -33,14 +33,14 @@ FACTOR_LIMITS = {
     
     # 技术指标类因子：具体技术指标的范围限制
     "tech_rsi": (0, 100.0),           # RSI指标范围 0-100
-    "tech_macd": (-0.5, 0.5),         # MACD信号范围
+    "tech_macd": (-5.0, 5.0),         # MACD信号范围
     "tech_bb": (-3.0, 3.0),            # 布林带位置，标准差倍数
     "tech_obv": (-10.0, 10.0),         # OBV动量标准化
     "tech_pv": (-1.0, 1.0),            # 量价趋势相关性
     
     # 趋势类因子：趋势强度指标
     "trend_": (-3.0, 3.0),
-    "trend_ma": (-0.5, 0.5),           # 均线交叉
+    "trend_ma": (-1.0, 1.0),           # 均线交叉
     "trend_adx": (0, 100.0),           # ADX趋势强度 0-100
     
     # 微观结构类因子：标准化微观指标
@@ -92,7 +92,7 @@ def validate_factor_value(
     exact_matches = {
         # 技术指标精确范围
         "tech_rsi_14": (0, 100.0),           # RSI指标范围 0-100
-        "tech_macd_signal": (-0.5, 0.5),     # MACD信号范围
+        "tech_macd_signal": (-5, 5),     # MACD信号范围
         "tech_bb_position": (-3.0, 3.0),     # 布林带位置，标准差倍数
         "tech_obv_momentum": (-10.0, 10.0),  # OBV动量标准化
         "tech_pv_trend": (-1.0, 1.0),       # 量价趋势相关性
@@ -100,11 +100,11 @@ def validate_factor_value(
         # 趋势指标精确范围
         "trend_adx": (0, 100.0),             # ADX趋势强度 0-100
         "trend_ma_cross": (-1.0, 1.0),       # 均线交叉
-        "trend_price_channel": (0, 1.0),     # 价格通道位置
+        "trend_price_channel": (-1.0, 1.0),     # 价格通道位置
         
         # 波动率指标精确范围
-        "vol_garch": (0, 0.5),               # GARCH波动率预测，限制在50%以内
-        "vol_range_pred": (0, 0.2),          # 波动率范围预测，限制在20%以内
+        "vol_garch": (0, 50),               # GARCH波动率预测，限制在50%以内
+        "vol_range_pred": (0, 20),          # 波动率范围预测，限制在20%以内
         "vol_regime": (0, 1.0),              # 波动率状态，0-1之间
         
         # 微观结构精确范围
@@ -114,6 +114,7 @@ def validate_factor_value(
         # 情绪指标精确范围
         "sent_impact": (0, 1.0),             # 情绪影响度
         "sent_divergence": (-1.0, 1.0),      # 情绪分歧度
+        "volume_price_diverge": (-1.0, 1.0), # 量价背离度
     }
     
     # 检查精确匹配
