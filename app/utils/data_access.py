@@ -1397,6 +1397,83 @@ class DataBroker:
         self._coverage_cache.clear()
         LOGGER.info("数据覆盖缓存已清除", extra=LOG_EXTRA)
 
+    def get_stock_info(self, ts_code: str, trade_date: str = None) -> Optional[Dict[str, Any]]:
+        """获取股票基本信息。
+
+        Args:
+            ts_code: 股票代码
+            trade_date: 交易日期，默认为最新日期
+
+        Returns:
+            Dict: 股票基本信息，包含名称、行业等
+        """
+        if not trade_date:
+            # 如果没有提供交易日期，使用当前日期
+            trade_date = datetime.now().strftime("%Y%m%d")
+        
+        try:
+            # 获取股票基本信息
+            info = self.fetch_latest(
+                ts_code=ts_code,
+                trade_date=trade_date,
+                fields=["stock_basic.name", "stock_basic.industry"]
+            )
+            
+            if not info:
+                return None
+                
+            # 添加股票代码
+            result = {"ts_code": ts_code}
+            result.update(info)
+            
+            return result
+        except Exception as exc:
+            LOGGER.debug(
+                "获取股票信息失败 ts_code=%s err=%s",
+                ts_code,
+                exc,
+                extra=LOG_EXTRA
+            )
+            return None
+
+    def fetch_latest_factor(self, ts_code: str, factor: str, eval_date: date) -> Optional[float]:
+        """获取指定股票的最新因子值。
+
+        Args:
+            ts_code: 股票代码
+            factor: 因子名称
+            eval_date: 评估日期
+
+        Returns:
+            float: 因子值，如果获取失败则返回None
+        """
+        trade_date = eval_date.strftime("%Y%m%d")
+        
+        try:
+            # 构建因子字段名称
+            factor_field = f"factors.{factor}"
+            
+            # 获取因子值
+            result = self.fetch_latest(
+                ts_code=ts_code,
+                trade_date=trade_date,
+                fields=[factor_field]
+            )
+            
+            if not result or factor_field not in result:
+                return None
+                
+            return result[factor_field]
+        except Exception as exc:
+            LOGGER.debug(
+                "获取因子值失败 ts_code=%s factor=%s err=%s",
+                ts_code,
+                factor,
+                exc,
+                extra=LOG_EXTRA
+            )
+            return None
+
     def get_data_coverage(self, start_date: str, end_date: str) -> Dict:
         """获取指定日期范围内的数据覆盖情况。
         

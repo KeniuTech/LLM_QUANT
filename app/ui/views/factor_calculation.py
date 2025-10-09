@@ -274,7 +274,7 @@ def render_factor_calculation() -> None:
                 
                 if df_data:
                     df = pd.DataFrame(df_data)
-                    st.dataframe(df.head(100), use_container_width=True)  # 只显示前100条
+                    st.dataframe(df.head(100), width="stretch")  # 只显示前100条
                     st.info(f"共 {len(df_data)} 条因子记录（显示前100条）")
             else:
                 st.info("没有找到因子计算结果")

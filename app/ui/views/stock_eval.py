@@ -208,7 +208,7 @@ def render_stock_evaluation() -> None:
         st.dataframe(
             result_df,
             hide_index=True,
-            use_container_width=True
+            width="stretch"
         )
         
         # 绘制IC均值分布
@@ -237,7 +237,7 @@ def render_stock_evaluation() -> None:
                 st.dataframe(
                     score_df,
                     hide_index=True,
-                    use_container_width=True
+                    width="stretch"
                 )
                 
                 # 添加入池功能
@@ -260,7 +260,12 @@ def _calculate_stock_scores(
     
     # 标准化权重
     weights = np.array(factor_weights)
-    weights = weights / np.sum(np.abs(weights))
+    abs_sum = np.sum(np.abs(weights))
+    if abs_sum > 0:  # 避免除以零
+        weights = weights / abs_sum
+    else:
+        # 如果所有权重都是零，则使用均匀分布
+        weights = np.ones_like(weights) / len(weights)
     
     # 获取所有股票的因子值
     stocks = universe or broker.get_all_stocks(eval_date.strftime("%Y%m%d"))

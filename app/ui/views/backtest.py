@@ -381,7 +381,7 @@ def render_backtest_review() -> None:
                                     title="风险事件分布",
                                 )
                                 agg_fig.update_layout(height=320, margin=dict(l=10, r=10, t=40, b=20))
-                                st.plotly_chart(agg_fig, use_container_width=True)
+                                st.plotly_chart(agg_fig, width="stretch")
                         except Exception:  # noqa: BLE001
                             LOGGER.debug("绘制风险事件分布失败", extra=LOG_EXTRA)
                 except Exception:  # noqa: BLE001

@@ -194,10 +194,10 @@ def render_market_visualization() -> None:
         ]
     )
     fig.update_layout(title=f"{ts_code} K线图", xaxis_title="日期", yaxis_title="价格")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     fig_vol = px.bar(df, x="trade_date", y="vol", title="成交量")
-    st.plotly_chart(fig_vol, use_container_width=True)
+    st.plotly_chart(fig_vol, width="stretch")
 
     df_ma = df.copy()
     df_ma["MA5"] = df_ma["close"].rolling(window=5).mean()
@@ -205,6 +205,6 @@ def render_market_visualization() -> None:
     df_ma["MA60"] = df_ma["close"].rolling(window=60).mean()
 
     fig_ma = px.line(df_ma, x="trade_date", y=["close", "MA5", "MA20", "MA60"], title="均线对比")
-    st.plotly_chart(fig_ma, use_container_width=True)
+    st.plotly_chart(fig_ma, width="stretch")
 
     st.dataframe(df, hide_index=True, width='stretch')
