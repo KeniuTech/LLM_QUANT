@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Optional, Dict, Any
+import time
 import streamlit as st
 
 
@@ -25,7 +26,7 @@ class FactorProgressState:
                 'status': 'idle',  # idle, running, completed, error
                 'message': '',
                 'start_time': None,
-                'elapsed_time': 0
+                'elapsed_time': 0.0,
             }
     
     def start_calculation(self, total_securities: int, total_batches: int) -> None:
@@ -35,16 +36,17 @@ class FactorProgressState:
             total_securities: 总证券数量
             total_batches: 总批次数
         """
+        now = time.time()
         st.session_state.factor_progress.update({
             'current': 0,
-            'total': total_securities,
+            'total': max(total_securities, 0),
             'percentage': 0.0,
             'current_batch': 0,
-            'total_batches': total_batches,
+            'total_batches': max(total_batches, 0),
             'status': 'running',
             'message': '开始因子计算...',
-            'start_time': st.session_state.get('factor_progress', {}).get('start_time'),
-            'elapsed_time': 0
+            'start_time': now,
+            'elapsed_time': 0.0,
         })
     
     def update_progress(self, current_securities: int, current_batch: int, 
@@ -59,18 +61,26 @@ class FactorProgressState:
         progress = st.session_state.factor_progress
         
         # 计算百分比
-        if progress['total'] > 0:
-            percentage = (current_securities / progress['total']) * 100
+        total = progress.get('total', 0) or 0
+        if total > 0:
+            percentage = (current_securities / total) * 100
         else:
             percentage = 0.0
+
+        start_time = progress.get('start_time')
+        if isinstance(start_time, (int, float)):
+            elapsed = max(0.0, time.time() - start_time)
+        else:
+            elapsed = 0.0
         
         # 更新状态
         progress.update({
             'current': current_securities,
             'current_batch': current_batch,
             'percentage': percentage,
-            'message': message or f'处理批次 {current_batch}/{progress["total_batches"]}',
-            'status': 'running'
+            'message': message or f'处理批次 {current_batch}/{progress["total_batches"] or 1}',
+            'status': 'running',
+            'elapsed_time': elapsed,
         })
     
     def complete_calculation(self, message: str = '因子计算完成') -> None:
@@ -80,11 +90,17 @@ class FactorProgressState:
             message: 完成消息
         """
         progress = st.session_state.factor_progress
+        start_time = progress.get('start_time')
+        if isinstance(start_time, (int, float)):
+            elapsed = max(0.0, time.time() - start_time)
+        else:
+            elapsed = progress.get('elapsed_time', 0.0) or 0.0
         progress.update({
-            'current': progress['total'],
-            'percentage': 100.0,
+            'current': progress.get('total', 0),
+            'percentage': 100.0 if progress.get('total', 0) else progress.get('percentage', 0.0),
             'status': 'completed',
-            'message': message
+            'message': message,
+            'elapsed_time': elapsed,
         })
     
     def error_occurred(self, error_message: str) -> None:
@@ -93,9 +109,16 @@ class FactorProgressState:
         Args:
             error_message: 错误消息
         """
-        st.session_state.factor_progress.update({
+        progress = st.session_state.factor_progress
+        start_time = progress.get('start_time')
+        if isinstance(start_time, (int, float)):
+            elapsed = max(0.0, time.time() - start_time)
+        else:
+            elapsed = progress.get('elapsed_time', 0.0) or 0.0
+        progress.update({
             'status': 'error',
-            'message': f'错误: {error_message}'
+            'message': f'错误: {error_message}',
+            'elapsed_time': elapsed,
         })
     
     def get_progress_info(self) -> Dict[str, Any]:
@@ -118,7 +141,7 @@ class FactorProgressState:
             'status': 'idle',
             'message': '',
             'start_time': None,
-            'elapsed_time': 0
+            'elapsed_time': 0.0,
         }
 
 

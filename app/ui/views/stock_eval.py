@@ -1,6 +1,7 @@
 """股票筛选与评估视图。"""
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from datetime import date, datetime, timedelta
+from typing import Dict, List, Optional
+import json
 
 import numpy as np
 import pandas as pd
@@ -15,11 +16,10 @@ from app.utils.db import db_session
 from app.utils.logging import get_logger
 
 
-def _get_latest_trading_date() -> datetime.date:
+def _get_latest_trading_date() -> date:
     """获取数据库中的最新交易日期"""
-    with db_session() as session:
-        # 获取当前日期的上一个有效交易日
-        result = session.execute(
+    with db_session(read_only=True) as conn:
+        result = conn.execute(
             """
             SELECT trade_date 
             FROM daily_basic 
@@ -34,6 +34,19 @@ def _get_latest_trading_date() -> datetime.date:
         if result and result[0]:
             return datetime.strptime(str(result[0]), "%Y%m%d").date()
         return datetime.now().date() - timedelta(days=1)  # 如果查询失败才返回昨天
+
+
+def _normalize_universe(universe: Optional[List[str]]) -> List[str]:
+    """标准化股票代码列表，去重并转为大写。"""
+
+    if not universe:
+        return []
+    normalized: Dict[str, None] = {}
+    for code in universe:
+        candidate = (code or "").strip().upper()
+        if candidate and candidate not in normalized:
+            normalized[candidate] = None
+    return list(normalized.keys())
 
 def render_stock_evaluation() -> None:
     """渲染股票筛选与评估页面。"""
@@ -141,6 +154,9 @@ def render_stock_evaluation() -> None:
                 index_code,
                 end_date.strftime("%Y%m%d")
             )
+    universe = _normalize_universe(universe)
+    if universe == []:
+        universe = None
             
     # 4. 评估结果
     
@@ -167,11 +183,12 @@ def render_stock_evaluation() -> None:
             )
             
             st.session_state.evaluation_status = 'running'
+            st.session_state.pop('evaluation_error', None)
             results = []
             
             for i, factor_name in enumerate(selected_factors):
                 st.session_state.current_factor = factor_name
-                st.session_state.progress = (i / len(selected_factors)) * 100
+                st.session_state.progress = ((i + 1) / len(selected_factors)) * 100
                 
                 performance = evaluate_factor(
                     factor_name,
@@ -181,11 +198,11 @@ def render_stock_evaluation() -> None:
                 )
                 results.append({
                     "因子": factor_name,
-                    "IC均值": f"{performance.ic_mean:.4f}",
-                    "RankIC均值": f"{performance.rank_ic_mean:.4f}",
-                    "IC信息比率": f"{performance.ic_ir:.4f}",
-                    "夏普比率": f"{performance.sharpe_ratio:.4f}" if performance.sharpe_ratio else "N/A",
-                    "换手率": f"{performance.turnover_rate*100:.1f}%" if performance.turnover_rate else "N/A"
+                    "IC均值": performance.ic_mean,
+                    "RankIC均值": performance.rank_ic_mean,
+                    "IC信息比率": performance.ic_ir,
+                    "夏普比率": performance.sharpe_ratio,
+                    "换手率": performance.turnover_rate,
                 })
             
             st.session_state.evaluation_results = results
@@ -221,71 +238,89 @@ def render_stock_evaluation() -> None:
         
         st.markdown("##### 因子评估结果")
         result_df = pd.DataFrame(results)
-        st.dataframe(
-            result_df,
-            hide_index=True,
-            width="stretch"
-        )
+        if not result_df.empty:
+            display_df = result_df.copy()
+            for col in ["IC均值", "RankIC均值", "IC信息比率"]:
+                if col in display_df:
+                    display_df[col] = display_df[col].map(lambda v: f"{v:.4f}")
+            if "夏普比率" in display_df:
+                display_df["夏普比率"] = display_df["夏普比率"].map(
+                    lambda v: "N/A" if v is None else f"{v:.4f}"
+                )
+            if "换手率" in display_df:
+                display_df["换手率"] = display_df["换手率"].map(
+                    lambda v: "N/A" if v is None else f"{v * 100:.1f}%"
+                )
+            st.dataframe(
+                display_df,
+                hide_index=True,
+                width="stretch"
+            )
+        else:
+            st.info("未产生任何因子评估结果。")
         
         # 绘制IC均值分布
-        ic_means = [float(r["IC均值"]) for r in results]
+        ic_means = result_df["IC均值"].astype(float).tolist() if not result_df.empty else []
         chart_df = pd.DataFrame({
             "因子": [r["因子"] for r in results],
             "IC均值": ic_means
         })
         st.bar_chart(chart_df.set_index("因子"))
-        
-        # 生成股票评分
+
+        if not ic_means:
+            st.info("暂无足够的 IC 数据，无法生成股票评分。")
+            return
+
         with st.spinner("正在生成股票评分..."):
-            # 使用IC均值作为权重，但如果IC均值全为零，则使用均匀分布
             if all(mean == 0 for mean in ic_means):
                 factor_weights = [1.0 / len(ic_means)] * len(ic_means)
                 LOGGER.info("所有因子IC均值均为零，使用均匀权重", extra=LOG_EXTRA)
             else:
-                # 将IC均值归一化为权重
-                abs_sum = sum(abs(m) for m in ic_means)
+                abs_sum = sum(abs(m) for m in ic_means) or 1.0
                 factor_weights = [m / abs_sum for m in ic_means]
                 LOGGER.info("使用IC均值作为权重: %s", factor_weights, extra=LOG_EXTRA)
-                
+
             scores = _calculate_stock_scores(
                 universe,
                 selected_factors,
                 end_date,
                 factor_weights
             )
-            
-            if scores:
-                st.markdown("##### 股票综合评分 (Top 20)")
-                score_df = pd.DataFrame(scores).sort_values(
-                    "综合评分",
-                    ascending=False
-                ).head(20)
-                st.dataframe(
-                    score_df,
-                    hide_index=True,
-                    width="stretch"
-                )
-                
-                # 添加入池功能
-                if st.button("将Top 20股票加入股票池"):
-                    _add_to_stock_pool(
-                        score_df["股票代码"].tolist(),
-                        end_date
-                    )
-                    st.success("已成功将选中股票加入股票池！")
+
+        if scores:
+            st.markdown("##### 股票综合评分 (Top 20)")
+            score_df = pd.DataFrame(scores).sort_values(
+                "综合评分",
+                ascending=False
+            )
+            top_df = score_df.head(20).reset_index(drop=True)
+            display_scores = top_df.copy()
+            display_scores["综合评分"] = display_scores["综合评分"].map(lambda v: f"{v:.4f}")
+            st.dataframe(
+                display_scores,
+                hide_index=True,
+                width="stretch"
+            )
+
+            if st.button("将Top 20股票加入股票池"):
+                _add_to_stock_pool(top_df, end_date)
+                st.success("已成功将选中股票加入股票池！")
+        else:
+            st.info("无法根据当前因子权重生成有效的股票评分结果。")
 
 
 def _calculate_stock_scores(
     universe: Optional[List[str]],
     factors: List[str],
-    eval_date: datetime.date,
+    eval_date: date,
     factor_weights: List[float]
-) -> List[Dict[str, str]]:
+) -> List[Dict[str, object]]:
     """计算股票的综合评分。"""
     LOGGER = get_logger(__name__)
     LOG_EXTRA = {"stage": "stock_evaluation"}
     
     broker = DataBroker()
+    trade_date_str = eval_date.strftime("%Y%m%d")
     
     # 记录评估开始
     LOGGER.info(
@@ -297,7 +332,7 @@ def _calculate_stock_scores(
     )
     
     # 标准化权重
-    weights = np.array(factor_weights)
+    weights = np.array(factor_weights, dtype=float)
     abs_sum = np.sum(np.abs(weights))
     if abs_sum > 0:  # 避免除以零
         weights = weights / abs_sum
@@ -306,7 +341,10 @@ def _calculate_stock_scores(
         weights = np.ones_like(weights) / len(weights)
     
     # 获取所有股票的因子值
-    stocks = universe or broker.get_all_stocks(eval_date.strftime("%Y%m%d"))
+    stocks = universe or broker.get_all_stocks(trade_date_str)
+    if not stocks:
+        LOGGER.warning("股票列表为空，无法生成评分", extra=LOG_EXTRA)
+        return []
     
     # 记录股票列表信息
     LOGGER.info(
@@ -320,42 +358,54 @@ def _calculate_stock_scores(
     
     evaluated_count = 0
     skipped_count = 0
+    factor_fields = [f"factors.{name}" for name in factors]
     
     for ts_code in stocks:
-        # 检查数据是否充分
-        if not check_data_sufficiency(ts_code, eval_date.strftime("%Y%m%d")):
+        if not check_data_sufficiency(ts_code, trade_date_str):
             skipped_count += 1
             continue
-            
-        # 获取股票信息
-        info = broker.get_stock_info(ts_code)
+
+        latest_payload = broker.fetch_latest(
+            ts_code,
+            trade_date_str,
+            factor_fields,
+            auto_refresh=False,
+        )
+
+        if not latest_payload:
+            skipped_count += 1
+            continue
+
+        factor_values: List[float] = []
+        missing = False
+        for field in factor_fields:
+            value = latest_payload.get(field)
+            if value is None:
+                missing = True
+                break
+            try:
+                factor_values.append(float(value))
+            except (TypeError, ValueError):
+                missing = True
+                break
+
+        if missing or len(factor_values) != len(factors):
+            skipped_count += 1
+            continue
+
+        info = broker.get_stock_info(ts_code, trade_date_str)
         if not info:
             skipped_count += 1
             continue
-            
-        # 获取因子值
-        factor_values = []
-        for factor in factors:
-            value = broker.fetch_latest_factor(ts_code, factor, eval_date)
-            if value is None:
-                skipped_count += 1
-                break
-            factor_values.append(value)
-            
-        # 检查是否所有因子值都已获取
-        if len(factor_values) != len(factors):
-            skipped_count += 1
-            continue
-            
-        # 计算综合评分
-        score = np.dot(factor_values, weights)
+
+        score = float(np.dot(factor_values, weights))
         evaluated_count += 1
         
         results.append({
             "股票代码": ts_code,
             "股票名称": info.get("name", ""),
             "行业": info.get("industry", ""),
-            "综合评分": f"{score:.4f}"
+            "综合评分": score,
         })
         
     # 记录评估完成信息
@@ -372,36 +422,51 @@ def _calculate_stock_scores(
 
 
 def _add_to_stock_pool(
-    ts_codes: List[str],
-    eval_date: datetime.date
+    score_df: pd.DataFrame,
+    eval_date: date
 ) -> None:
-    """将股票添加到股票池。"""
-    with db_session() as session:
-        # 删除已有记录
-        session.execute(
-            """
-            DELETE FROM stock_pool 
-            WHERE entry_date = :entry_date
-            """,
-            {"entry_date": eval_date}
-        )
-        
-        # 插入新记录
-        values = [
+    """将股票评分结果写入投资池。"""
+
+    trade_date = eval_date.strftime("%Y%m%d")
+    payload: List[tuple] = []
+    ranked_df = score_df.reset_index(drop=True)
+
+    for rank, row in ranked_df.iterrows():
+        tags = json.dumps(["stock_evaluation", "top20"], ensure_ascii=False)
+        metadata = json.dumps(
             {
-                "ts_code": code,
-                "entry_date": eval_date,
-                "entry_reason": "factor_evaluation"
-            }
-            for code in ts_codes
-        ]
-        
-        session.execute(
-            """
-            INSERT INTO stock_pool (ts_code, entry_date, entry_reason)
-            VALUES (:ts_code, :entry_date, :entry_reason)
-            """,
-            values
+                "source": "stock_evaluation",
+                "rank": rank + 1,
+                "score": float(row["综合评分"]),
+            },
+            ensure_ascii=False,
         )
-        
-        session.commit()
+        payload.append(
+            (
+                trade_date,
+                row["股票代码"],
+                float(row["综合评分"]),
+                "candidate",
+                "factor_evaluation_top20",
+                tags,
+                metadata,
+            )
+        )
+
+    with db_session() as conn:
+        conn.execute("DELETE FROM investment_pool WHERE trade_date = ?", (trade_date,))
+        if payload:
+            conn.executemany(
+                """
+                INSERT INTO investment_pool (
+                    trade_date,
+                    ts_code,
+                    score,
+                    status,
+                    rationale,
+                    tags,
+                    metadata
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                payload,
+            )

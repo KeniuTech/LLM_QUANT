@@ -2,16 +2,11 @@
 from __future__ import annotations
 
 import json
-import uuid
-from dataclasses import asdict
 from datetime import date, datetime
 from typing import Dict, List, Optional
 
-import numpy as np
 import pandas as pd
 import plotly.express as px
-import requests
-from requests.exceptions import RequestException
 import streamlit as st
 
 from app.agents.base import AgentContext

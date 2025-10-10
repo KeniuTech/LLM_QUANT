@@ -90,6 +90,17 @@ DEFAULT_FACTORS: List[FactorSpec] = [
     FactorSpec("risk_penalty", 0),  # 风险惩罚因子
 ]
 
+_FACTOR_SPEC_MAP: Dict[str, FactorSpec] = {spec.name: spec for spec in DEFAULT_FACTORS}
+
+
+def lookup_factor_spec(name: str) -> Optional[FactorSpec]:
+    """Return a copy of the registered ``FactorSpec`` for ``name`` if available."""
+
+    base = _FACTOR_SPEC_MAP.get(name)
+    if base is None:
+        return None
+    return FactorSpec(name=base.name, window=base.window)
+
 
 def compute_factors(
     trade_date: date,
@@ -304,30 +315,33 @@ def _existing_factor_codes_with_factors(trade_date: str, factor_names: List[str]
     if not factor_names:
         return {}
         
-    # 构建检查条件
-    conditions = []
-    for name in factor_names:
-        conditions.append(f"json_extract(factors, '$.{name}') IS NOT NULL")
-    condition_str = " AND ".join(conditions)
-    
-    # 构建SQL查询
-    query = """
-        SELECT ts_code
-        FROM factors
-        WHERE trade_date = ?
-        AND """ + condition_str + """
-        GROUP BY ts_code
-    """
-    
+    valid_names = [
+        name
+        for name in factor_names
+        if isinstance(name, str) and _IDENTIFIER_RE.match(name)
+    ]
+    if not valid_names:
+        return {}
+
     with db_session(read_only=True) as conn:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(factors)").fetchall()
+        }
+        selected = [name for name in valid_names if name in columns]
+        if not selected:
+            return {}
+
+        predicates = " AND ".join(f"{col} IS NOT NULL" for col in selected)
+        query = (
+            "SELECT ts_code FROM factors "
+            "WHERE trade_date = ? AND "
+            f"{predicates} "
+            "GROUP BY ts_code"
+        )
         rows = conn.execute(query, (trade_date,)).fetchall()
-    
-    # 返回结果
-    result = {}
-    for row in rows:
-        result[row["ts_code"]] = True
-    
-    return result
+
+    return {row["ts_code"]: True for row in rows if row and row["ts_code"]}
 
 
 def _list_trade_dates(

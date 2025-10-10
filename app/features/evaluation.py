@@ -9,7 +9,8 @@ from app.features.factors import (
     DEFAULT_FACTORS,
     FactorResult,
     FactorSpec,
-    compute_factor_range
+    compute_factor_range,
+    lookup_factor_spec,
 )
 from app.utils.data_access import DataBroker
 from app.utils.logging import get_logger
@@ -90,14 +91,14 @@ def evaluate_factor(
     # )
     
     try:
-        # 计算因子值
-        # 设置 skip_existing=False，确保即使因子已存在也会重新计算
+        spec = lookup_factor_spec(factor_name) or FactorSpec(factor_name, 0)
+
         factor_results = compute_factor_range(
             start_date,
             end_date,
-            factors=[FactorSpec(factor_name, 0)],
+            factors=[spec],
             ts_codes=universe,
-            skip_existing=False
+            skip_existing=True,
         )
         
         # 因子计算完成（在异步线程中不直接访问factor_progress）

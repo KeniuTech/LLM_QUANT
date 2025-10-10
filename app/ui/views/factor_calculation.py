@@ -1,19 +1,20 @@
 """因子计算页面。"""
-from datetime import datetime, timedelta
-from typing import List, Optional
+from datetime import date, datetime, timedelta
+from typing import List, Optional, Sequence
 
 import streamlit as st
 
-from app.features.factors import compute_factors, DEFAULT_FACTORS, FactorSpec
+from app.features.factors import DEFAULT_FACTORS, FactorSpec, compute_factor_range
 from app.ui.progress_state import factor_progress
+from app.ui.shared import LOGGER, LOG_EXTRA
 from app.utils.data_access import DataBroker
 from app.utils.db import db_session
 
 
 def _get_latest_trading_date() -> datetime.date:
     """获取数据库中的最新交易日期"""
-    with db_session() as session:
-        result = session.execute(
+    with db_session(read_only=True) as conn:
+        result = conn.execute(
             """
             SELECT trade_date 
             FROM daily_basic 
@@ -34,9 +35,9 @@ def _get_all_stocks() -> List[str]:
     """获取所有股票代码"""
     try:
         # 从daily表获取所有股票代码
-        with db_session() as session:
+        with db_session(read_only=True) as conn:
             latest_date = _get_latest_trading_date()
-            result = session.execute(
+            result = conn.execute(
                 """
                 SELECT DISTINCT ts_code 
                 FROM daily 
@@ -45,10 +46,86 @@ def _get_all_stocks() -> List[str]:
                 {"trade_date": latest_date.strftime("%Y%m%d")}
             ).fetchall()
             
-            return [row[0] for row in result] if result else []
-    except Exception as e:
-        st.error(f"获取股票列表失败: {str(e)}")
+            return [row["ts_code"] for row in result if row and row["ts_code"]] if result else []
+    except Exception as exc:
+        LOGGER.exception("获取股票列表失败", extra={**LOG_EXTRA, "error": str(exc)})
+        st.error(f"获取股票列表失败: {exc}")
         return []
+
+
+def _normalize_universe(universe: Optional[Sequence[str]]) -> List[str]:
+    """去重并规范股票代码格式。"""
+    if not universe:
+        return []
+    seen: dict[str, None] = {}
+    for code in universe:
+        normalized = code.strip().upper()
+        if normalized and normalized not in seen:
+            seen[normalized] = None
+    return list(seen.keys())
+
+
+def _get_trade_dates_between(
+    start: date,
+    end: date,
+    universe: Optional[Sequence[str]] = None,
+) -> List[date]:
+    """获取区间内存在行情数据的交易日期列表。"""
+
+    if end < start:
+        return []
+
+    start_str = start.strftime("%Y%m%d")
+    end_str = end.strftime("%Y%m%d")
+    params: List[str] = [start_str, end_str]
+    query = (
+        "SELECT DISTINCT trade_date FROM daily "
+        "WHERE trade_date BETWEEN ? AND ?"
+    )
+    scoped_universe = _normalize_universe(universe)
+    if scoped_universe:
+        placeholders = ", ".join("?" for _ in scoped_universe)
+        query += f" AND ts_code IN ({placeholders})"
+        params.extend(scoped_universe)
+    query += " ORDER BY trade_date"
+
+    with db_session(read_only=True) as conn:
+        rows = conn.execute(query, params).fetchall()
+
+    return [
+        datetime.strptime(str(row["trade_date"]), "%Y%m%d").date()
+        for row in rows
+        if row and row["trade_date"]
+    ]
+
+
+def _estimate_total_workload(
+    trade_dates: Sequence[date],
+    universe: Optional[Sequence[str]],
+) -> int:
+    """估算本次计算需要处理的证券数量，用于驱动进度条。"""
+
+    trade_days = list(trade_dates)
+    if not trade_days:
+        return 0
+
+    scoped_universe = _normalize_universe(universe)
+    if scoped_universe:
+        return len(scoped_universe) * len(trade_days)
+
+    start_str = min(trade_days).strftime("%Y%m%d")
+    end_str = max(trade_days).strftime("%Y%m%d")
+    with db_session(read_only=True) as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(DISTINCT ts_code) AS cnt
+            FROM daily
+            WHERE trade_date BETWEEN ? AND ?
+            """,
+            (start_str, end_str),
+        ).fetchone()
+    universe_size = int(row["cnt"]) if row and row["cnt"] is not None else 0
+    return universe_size * len(trade_days)
 
 
 def render_factor_calculation() -> None:
@@ -153,97 +230,55 @@ def render_factor_calculation() -> None:
         help="如果勾选，将跳过数据库中已存在的因子计算结果"
     )
     
-    # 5. 同步计算函数
-    def run_factor_calculation_sync():
-        """同步执行因子计算"""
-        # 计算参数
-        total_stocks = len(universe) if universe else len(_get_all_stocks())
-        total_batches = len(selected_factors)
-        
-        try:
-            # 执行因子计算
-            results = []
-            for i, factor in enumerate(selected_factors):
-                # 更新批次进度
-                factor_progress.update_progress(
-                    current_securities=0,
-                    current_batch=i+1,
-                    message=f"正在计算因子: {factor.name}"
-                )
-                
-                # 计算单个交易日的因子
-                current_date = start_date
-                while current_date <= end_date:
-                    try:
-                        # 计算指定日期的因子
-                        daily_results = compute_factors(
-                            current_date,
-                            [factor],
-                            ts_codes=universe,
-                            skip_existing=skip_existing
-                        )
-                        results.extend(daily_results)
-                        
-                    except Exception as e:
-                        # 记录错误但不中断计算
-                        error_msg = f"计算因子 {factor.name} 在日期 {current_date} 时出错: {str(e)}"
-                        print(f"ERROR: {error_msg}")
-                    
-                    current_date += timedelta(days=1)
-            
-            # 计算完成
-            factor_progress.complete_calculation(f"因子计算完成！共计算 {len(results)} 条因子记录")
-            
-            return {
-                'success': True,
-                'results': results,
-                'factors': [f.name for f in selected_factors],
-                'date_range': f"{start_date} 至 {end_date}",
-                'stock_count': len(set(r.ts_code for r in results)) if results else 0,
-                'message': f"因子计算完成！共计算 {len(results)} 条因子记录"
-            }
-                
-        except Exception as e:
-            # 计算失败
-            factor_progress.error_occurred(f"因子计算失败: {str(e)}")
-            return {
-                'success': False,
-                'error': str(e),
-                'message': f"因子计算失败: {str(e)}"
-            }
-    
-    # 6. 开始计算按钮
+    # 5. 开始计算按钮
     if st.button("开始计算因子", disabled=not selected_factors):
         # 重置状态
-        if 'factor_calculation_results' in st.session_state:
-            st.session_state.factor_calculation_results = None
-        if 'factor_calculation_error' in st.session_state:
-            st.session_state.factor_calculation_error = None
-        
-        # 初始化进度状态
-        total_stocks = len(universe) if universe else len(_get_all_stocks())
+        st.session_state.pop('factor_calculation_results', None)
+        st.session_state.pop('factor_calculation_error', None)
+        factor_progress.reset()
+
+        scoped_universe = _normalize_universe(universe) or None
+        trade_dates = _get_trade_dates_between(start_date, end_date, scoped_universe)
+        if not trade_dates:
+            st.warning("所选时间窗口内无可用交易日数据，请先执行数据同步。")
+            return
+
+        total_workload = _estimate_total_workload(trade_dates, scoped_universe)
         factor_progress.start_calculation(
-            total_securities=total_stocks,
-            total_batches=len(selected_factors)
+            total_securities=max(total_workload, 1),
+            total_batches=len(trade_dates),
         )
-        
-        # 直接调用同步计算函数
-        result = run_factor_calculation_sync()
-        
-        # 处理计算结果
-        if result['success']:
-            st.session_state.factor_calculation_results = {
-                'results': result['results'],
-                'factors': result['factors'],
-                'date_range': result['date_range'],
-                'stock_count': result['stock_count']
-            }
-            st.success("✅ 因子计算完成！")
-        else:
-            st.session_state.factor_calculation_error = result['error']
-            st.error(f"❌ 因子计算失败: {result['error']}")
+
+        with st.spinner("正在计算因子..."):
+            try:
+                results = compute_factor_range(
+                    start=min(trade_dates),
+                    end=max(trade_dates),
+                    factors=selected_factors,
+                    ts_codes=scoped_universe,
+                    skip_existing=skip_existing,
+                )
+            except Exception as exc:
+                LOGGER.exception("因子计算失败", extra={**LOG_EXTRA, "error": str(exc)})
+                factor_progress.error_occurred(str(exc))
+                st.session_state.factor_calculation_error = str(exc)
+                st.error(f"❌ 因子计算失败: {exc}")
+            else:
+                factor_progress.complete_calculation(
+                    f"因子计算完成，共生成 {len(results)} 条因子记录"
+                )
+                factor_names = [spec.name for spec in selected_factors]
+                stock_count = len({item.ts_code for item in results}) if results else 0
+                st.session_state.factor_calculation_results = {
+                    'results': results,
+                    'factors': factor_names,
+                    'date_range': f"{trade_dates[0]} 至 {trade_dates[-1]}",
+                    'stock_count': stock_count,
+                    'trade_days': len(trade_dates),
+                }
+                st.success("✅ 因子计算完成！")
     
-    # 7. 显示计算结果
+    # 6. 显示计算结果
     if 'factor_calculation_results' in st.session_state and st.session_state.factor_calculation_results:
         results = st.session_state.factor_calculation_results
         
@@ -255,7 +290,8 @@ def render_factor_calculation() -> None:
         with col2:
             st.metric("涉及股票数量", results['stock_count'])
         with col3:
-            st.metric("计算时间范围", results['date_range'])
+            st.metric("交易日数量", results.get('trade_days', 0))
+        st.caption(f"时间范围：{results['date_range']}")
         
         # 显示计算详情
         with st.expander("查看计算详情"):
@@ -279,8 +315,6 @@ def render_factor_calculation() -> None:
             else:
                 st.info("没有找到因子计算结果")
     
-    # 8. 移除异步线程检查逻辑（已改为同步模式）
-    
-    # 9. 显示错误信息
+    # 7. 显示错误信息
     if 'factor_calculation_error' in st.session_state and st.session_state.factor_calculation_error:
         st.error(f"❌ 因子计算失败: {st.session_state.factor_calculation_error}")
