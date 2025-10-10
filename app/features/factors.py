@@ -706,7 +706,9 @@ def _compute_security_factors(
             "daily_basic.pe",
             "daily_basic.pb",
             "daily_basic.ps",
+            "daily_basic.turnover_rate",
             "daily_basic.volume_ratio",
+            "daily.close",
             "daily.amount",
             "daily.vol",
             "daily_basic.dv_ratio",  # 股息率用于扩展因子

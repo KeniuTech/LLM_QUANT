@@ -37,12 +37,14 @@ class FactorProgressState:
             total_batches: 总批次数
         """
         now = time.time()
+        normalized_total = max(total_securities, 0)
+        normalized_batches = max(total_batches, 1) if total_batches else 1
         st.session_state.factor_progress.update({
             'current': 0,
-            'total': max(total_securities, 0),
+            'total': normalized_total,
             'percentage': 0.0,
             'current_batch': 0,
-            'total_batches': max(total_batches, 0),
+            'total_batches': normalized_batches,
             'status': 'running',
             'message': '开始因子计算...',
             'start_time': now,
@@ -74,8 +76,9 @@ class FactorProgressState:
             elapsed = 0.0
         
         # 更新状态
+        clamped_current = max(0, min(current_securities, total)) if total > 0 else max(0, current_securities)
         progress.update({
-            'current': current_securities,
+            'current': clamped_current,
             'current_batch': current_batch,
             'percentage': percentage,
             'message': message or f'处理批次 {current_batch}/{progress["total_batches"] or 1}',
@@ -95,9 +98,10 @@ class FactorProgressState:
             elapsed = max(0.0, time.time() - start_time)
         else:
             elapsed = progress.get('elapsed_time', 0.0) or 0.0
+        total = progress.get('total', 0)
         progress.update({
-            'current': progress.get('total', 0),
-            'percentage': 100.0 if progress.get('total', 0) else progress.get('percentage', 0.0),
+            'current': total,
+            'percentage': 100.0 if total else progress.get('percentage', 0.0),
             'status': 'completed',
             'message': message,
             'elapsed_time': elapsed,

@@ -203,6 +203,7 @@ def render_stock_evaluation() -> None:
                     "IC信息比率": performance.ic_ir,
                     "夏普比率": performance.sharpe_ratio,
                     "换手率": performance.turnover_rate,
+                    "有效样本数": performance.sample_size,
                 })
             
             st.session_state.evaluation_results = results
@@ -251,6 +252,8 @@ def render_stock_evaluation() -> None:
                 display_df["换手率"] = display_df["换手率"].map(
                     lambda v: "N/A" if v is None else f"{v * 100:.1f}%"
                 )
+            if "有效样本数" in display_df:
+                display_df["有效样本数"] = display_df["有效样本数"].astype(int)
             st.dataframe(
                 display_df,
                 hide_index=True,
@@ -260,31 +263,64 @@ def render_stock_evaluation() -> None:
             st.info("未产生任何因子评估结果。")
         
         # 绘制IC均值分布
-        ic_means = result_df["IC均值"].astype(float).tolist() if not result_df.empty else []
+        factor_names = result_df["因子"].tolist() if not result_df.empty else []
+        ic_series = result_df["IC均值"].astype(float) if not result_df.empty else pd.Series(dtype=float)
+        if "有效样本数" in result_df:
+            sample_series = result_df["有效样本数"].astype(int)
+            ic_series = ic_series.where(sample_series > 0)
+        ic_means = ic_series.tolist()
         chart_df = pd.DataFrame({
-            "因子": [r["因子"] for r in results],
+            "因子": factor_names,
             "IC均值": ic_means
         })
         st.bar_chart(chart_df.set_index("因子"))
 
-        if not ic_means:
+        if not factor_names:
             st.info("暂无足够的 IC 数据，无法生成股票评分。")
             return
 
+        ic_array = np.array(ic_means, dtype=float)
+        usable_indices = [idx for idx, value in enumerate(ic_array) if np.isfinite(value)]
+        if not usable_indices:
+            st.info("所有因子 IC 均值均不可用，请先补充因子数据再评估。")
+            return
+
+        usable_factors = [factor_names[idx] for idx in usable_indices]
+        usable_ic = ic_array[usable_indices]
+
+        dropped_factors = [factor_names[idx] for idx, value in enumerate(ic_array) if not np.isfinite(value)]
+        if dropped_factors:
+            st.caption(f"已忽略缺少有效 IC 数据的因子：{', '.join(dropped_factors)}")
+
         with st.spinner("正在生成股票评分..."):
-            if all(mean == 0 for mean in ic_means):
-                factor_weights = [1.0 / len(ic_means)] * len(ic_means)
-                LOGGER.info("所有因子IC均值均为零，使用均匀权重", extra=LOG_EXTRA)
+            if np.all(np.abs(usable_ic) <= 1e-9):
+                factor_weights = np.full(usable_ic.shape, 1.0 / usable_ic.size, dtype=float)
+                LOGGER.info("有效因子IC均值均为零，使用均匀权重", extra=LOG_EXTRA)
             else:
-                abs_sum = sum(abs(m) for m in ic_means) or 1.0
-                factor_weights = [m / abs_sum for m in ic_means]
-                LOGGER.info("使用IC均值作为权重: %s", factor_weights, extra=LOG_EXTRA)
+                abs_sum = float(np.sum(np.abs(usable_ic)))
+                if abs_sum <= 1e-9:
+                    factor_weights = np.full(usable_ic.shape, 1.0 / usable_ic.size, dtype=float)
+                    LOGGER.info("有效因子IC均值绝对和过小，使用均匀权重", extra=LOG_EXTRA)
+                else:
+                    factor_weights = usable_ic / abs_sum
+                    LOGGER.info("使用IC均值作为权重: %s", factor_weights.tolist(), extra=LOG_EXTRA)
+
+            weight_mask = np.abs(factor_weights) > 1e-6
+            filtered_factors = [name for name, flag in zip(usable_factors, weight_mask) if flag]
+            filtered_weights = [float(weight) for weight, flag in zip(factor_weights, weight_mask) if flag]
+
+            if not filtered_factors:
+                st.info("因子权重有效值均为零，无法生成股票评分。")
+                return
+            if len(filtered_factors) < len(usable_factors):
+                dropped_names = [name for name, flag in zip(usable_factors, weight_mask) if not flag]
+                LOGGER.info("已忽略权重为零的因子：%s", dropped_names, extra=LOG_EXTRA)
 
             scores = _calculate_stock_scores(
                 universe,
-                selected_factors,
+                filtered_factors,
                 end_date,
-                factor_weights
+                filtered_weights,
             )
 
         if scores:
@@ -319,6 +355,18 @@ def _calculate_stock_scores(
     LOGGER = get_logger(__name__)
     LOG_EXTRA = {"stage": "stock_evaluation"}
     
+    if not factors:
+        LOGGER.warning("因子列表为空，无法计算股票评分", extra=LOG_EXTRA)
+        return []
+    if len(factors) != len(factor_weights):
+        LOGGER.error(
+            "因子数量与权重数量不一致 factors=%s weights=%s",
+            len(factors),
+            len(factor_weights),
+            extra=LOG_EXTRA,
+        )
+        return []
+
     broker = DataBroker()
     trade_date_str = eval_date.strftime("%Y%m%d")
     

@@ -1413,20 +1413,21 @@ class DataBroker:
         
         try:
             # 获取股票基本信息
-            info = self.fetch_latest(
+            raw_info = self.fetch_latest(
                 ts_code=ts_code,
                 trade_date=trade_date,
                 fields=["stock_basic.name", "stock_basic.industry"]
             )
-            
-            if not info:
+            if not raw_info:
                 return None
-                
-            # 添加股票代码
-            result = {"ts_code": ts_code}
-            result.update(info)
-            
-            return result
+
+            info: Dict[str, Any] = {"ts_code": ts_code}
+            for key, value in raw_info.items():
+                if key == "ts_code":
+                    continue
+                alias = key.split(".", 1)[-1] if isinstance(key, str) and "." in key else key
+                info[alias] = value
+            return info
         except Exception as exc:
             LOGGER.debug(
                 "获取股票信息失败 ts_code=%s err=%s",

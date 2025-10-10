@@ -229,7 +229,26 @@ def render_factor_calculation() -> None:
         value=True,
         help="如果勾选，将跳过数据库中已存在的因子计算结果"
     )
-    
+
+    st.markdown("##### 数据维护")
+    maintenance_col1, maintenance_col2 = st.columns([1, 2])
+    with maintenance_col1:
+        clear_confirm = st.checkbox("确认清空因子表", key="factor_clear_confirm")
+    with maintenance_col2:
+        if st.button("清空因子表数据", disabled=not clear_confirm):
+            try:
+                with db_session() as conn:
+                    conn.execute("DELETE FROM factors")
+                st.session_state.pop('factor_calculation_results', None)
+                st.session_state.pop('factor_calculation_error', None)
+                factor_progress.reset()
+                st.success("因子表数据已清空。")
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.exception("清空因子表失败", extra={**LOG_EXTRA, "error": str(exc)})
+                st.error(f"清空因子表失败：{exc}")
+            finally:
+                st.session_state['factor_clear_confirm'] = False
+
     # 5. 开始计算按钮
     if st.button("开始计算因子", disabled=not selected_factors):
         # 重置状态
