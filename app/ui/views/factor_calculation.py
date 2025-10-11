@@ -247,7 +247,9 @@ def render_factor_calculation() -> None:
                 LOGGER.exception("清空因子表失败", extra={**LOG_EXTRA, "error": str(exc)})
                 st.error(f"清空因子表失败：{exc}")
             finally:
-                st.session_state['factor_clear_confirm'] = False
+                # 使用st.rerun()代替直接修改session_state
+                # 清空因子表后重置页面状态
+                st.rerun()
 
     # 5. 开始计算按钮
     if st.button("开始计算因子", disabled=not selected_factors):

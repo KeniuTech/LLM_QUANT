@@ -46,9 +46,18 @@ def render_pool_overview() -> None:
     else:
         st.info("暂无组合快照，请在执行回测或实盘同步后写入 portfolio_snapshots。")
 
+    st.write("候选投资池：")
     try:
         latest_date = get_latest_trade_date()
-        candidates = list_investment_pool(trade_date=latest_date)
+        
+        # 添加状态过滤功能
+        status_options = ["全部", "watch", "candidate", "exit", "buy_s", "buy_m", "buy_l"]
+        status_filter = st.selectbox("选择状态", options=status_options, index=0)
+        
+        if status_filter != "全部":
+            candidates = list_investment_pool(trade_date=latest_date, status=[status_filter])
+        else:
+            candidates = list_investment_pool(trade_date=latest_date)
     except Exception:  # noqa: BLE001
         LOGGER.exception("加载候选池失败", extra=LOG_EXTRA)
         candidates = []
@@ -67,7 +76,6 @@ def render_pool_overview() -> None:
                 for item in candidates
             ]
         )
-        st.write("候选投资池：")
         st.dataframe(candidate_df, width='stretch', hide_index=True)
     else:
         st.caption("候选投资池暂无数据。")
