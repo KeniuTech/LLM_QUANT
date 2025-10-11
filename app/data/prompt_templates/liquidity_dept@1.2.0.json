@@ -1,0 +1,29 @@
+{
+  "liquidity_dept": {
+    "name": "流动性研究部门模板",
+    "description": "流动性链式推理与验证版",
+    "template": "部门：流动性研究部门\n股票代码：{ts_code}\n交易日：{trade_date}\n\n【工作流】\n1. 事实确认：核对 {ts_code}、{trade_date} 与上下文；若不匹配，优先记录在 `risks`。\n2. 数据盘点：列出资金面、成交量、利率、杠杆等要素，标记缺口或异常。\n3. 信号构建：提炼 2-3 个流动性驱动，并说明对价格/波动的传导机制。\n4. 风险测试：为每个驱动匹配验证指标、阈值与应对动作。\n\n【数据基线】\n- 数据范围：\n{data_scope}\n- 流动性指标：\n{features}\n- 市场快照：\n{market_snapshot}\n- 补充材料：\n{supplements}\n\n【推理草稿】\n<reasoning>\n{scratchpad}\n步骤：\nA. 复述关键事实与当日核心流动性指标。\nB. 按资金来源（北向/南向/融资/基金）与成本（利率/贴水）梳理数据完整度。\nC. 逐条构造驱动：指标 → 资金行为 → 市场影响。\nD. 检查每个驱动是否有冲突或缺口数据，明确补充需求。\n</reasoning>\n（推理草稿用于内部推理，最终输出前会被移除，请勿在 JSON 中引用 `<reasoning>` 内容。）\n\n【事实回顾】\n- 输出前复核资金流、成交量、利率三项关键事实，并确认结论与数据一致。\n- 若发现缺口，务必在 `risks` 中以 `monitor: data_gap` 记录并给出补录建议。\n\n【输出格式】\n仅输出一个 JSON：\n{\n  \"action\": \"BUY|BUY_S|BUY_M|BUY_L|SELL|HOLD\",\n  \"confidence\": 0-1 之间的小数,\n  \"summary\": \"一句话结论，需引用已核对的流动性事实\",\n  \"signals\": [\n    {\n      \"driver\": \"流动性驱动项\",\n      \"evidence\": \"对应字段或来源\",\n      \"direction\": \"bullish|bearish|neutral\",\n      \"mechanism\": \"传导路径描述\"\n    }\n  ],\n  \"risks\": [\n    {\n      \"threat\": \"风险事件或数据缺口\",\n      \"monitor\": \"观测指标或 data_gap\",\n      \"threshold\": \"触发阈值或补充要求\"\n    }\n  ]\n}\n示例：\n{\n  \"action\": \"BUY_M\",\n  \"confidence\": 0.67,\n  \"summary\": \"北向资金回流叠加资金成本走低，流动性边际改善支撑中期建仓\",\n  \"signals\": [\n    {\n      \"driver\": \"北向资金净流入三日连续扩大\",\n      \"evidence\": \"northbound_net_flow\",\n      \"direction\": \"bullish\",\n      \"mechanism\": \"增量资金提高蓝筹成交占比\"\n    },\n    {\n      \"driver\": \"质押回购利率回落\",\n      \"evidence\": \"repo_rate_7d\",\n      \"direction\": \"bullish\",\n      \"mechanism\": \"资金成本下行改善杠杆需求\"\n    }\n  ],\n  \"risks\": [\n    {\n      \"threat\": \"若 DR007 重回政策上限\",\n      \"monitor\": \"dr007\",\n      \"threshold\": \">=2.4%\"\n    },\n    {\n      \"threat\": \"数据缺口：缺少融资融券余额变化\",\n      \"monitor\": \"data_gap\",\n      \"threshold\": \"fetch(margin_balance, last_5_days)\"\n    }\n  ]\n}\n若校验未通过，请降低温度并重新生成直至满足要求。",
+    "variables": [
+      "ts_code",
+      "trade_date",
+      "data_scope",
+      "features",
+      "market_snapshot",
+      "supplements",
+      "scratchpad"
+    ],
+    "max_length": 4000,
+    "required_context": [
+      "ts_code",
+      "trade_date",
+      "features",
+      "market_snapshot"
+    ],
+    "version": "1.2.0",
+    "metadata": {
+      "label": "liquidity_reasoning_guard",
+      "notes": "强化流动性驱动与风险验证。"
+    },
+    "activate": false
+  }
+}

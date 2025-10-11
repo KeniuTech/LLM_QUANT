@@ -1,0 +1,32 @@
+{
+  "department_base": {
+    "name": "部门基础模板",
+    "description": "严谨链式推理版（含校验与示例）",
+    "template": "部门：{title}\n股票代码：{ts_code}\n交易日：{trade_date}\n\n【角色定位】\n- 研究职责：{description}\n- 执行要点：{instruction}\n\n【分析计划】\n1. 校对关键事实：{ts_code}、{trade_date} 与数据摘要是否一致，如不一致需记录在 `risks`。\n2. 盘点可用数据，识别缺口和冲突，缺口使用 `risks` -> `monitor: data_gap` 记录。\n3. 拆解 2-3 个核心信号，每个信号必须指向具体字段或来源。\n4. 为每个信号匹配验证指标与触发阈值，说明风险对冲/止损思路。\n\n【数据基线】\n- 数据覆盖：\n{data_scope}\n- 模型特征：\n{features}\n- 市场切片：\n{market_snapshot}\n- 附加观察：\n{supplements}\n\n【推理草稿】\n<reasoning>\n{scratchpad}\n请按以下顺序逐步推理，完成后标记“核对完成”或写出未满足条件：\nA. 事实核对：逐条确认 {ts_code}、{trade_date} 与上下文是否一致。\nB. 数据检验：罗列可用数据/字段，对缺失或冲突写出原因。\nC. 信号构建：逐条生成信号 → 说明指标 → 判断方向。\nD. 风险验证：为每条信号匹配验证指标、阈值及应对策略。\n</reasoning>\n（推理草稿仅供思考，系统会在最终输出前移除，严禁将 `<reasoning>` 内容复制进最终 JSON。）\n\n【事实回顾】\n- 在输出 JSON 前，用一句话复述最重要的 2-3 个事实，确认没有误读。\n- 若发现关键数据不足或冲突，请在 `risks` 中新增 `monitor: data_gap` 并给出补充建议。\n\n【输出格式】\n仅输出一个 JSON，对象格式如下（请严格模仿示例风格）：\n{\n  \"action\": \"BUY|BUY_S|BUY_M|BUY_L|SELL|HOLD\",\n  \"confidence\": 0-1 之间的小数,\n  \"summary\": \"一句话结论，需引用已核对的事实\",\n  \"signals\": [\n    {\n      \"statement\": \"现象描述\",\n      \"evidence\": \"对应字段或数据来源\",\n      \"direction\": \"bullish|bearish|neutral\"\n    }\n  ],\n  \"risks\": [\n    {\n      \"threat\": \"风险描述或数据缺口\",\n      \"monitor\": \"观测指标或 data_gap\",\n      \"threshold\": \"触发阈值或补充要求\"\n    }\n  ]\n}\n示例：\n{\n  \"action\": \"HOLD\",\n  \"confidence\": 0.62,\n  \"summary\": \"沪深300 在低波动区间徘徊，量价背离未被修复，暂按持有处理\",\n  \"signals\": [\n    {\n      \"statement\": \"成交量持续低于20日均线，量能未能配合反弹\",\n      \"evidence\": \"volume_ma20\",\n      \"direction\": \"neutral\"\n    },\n    {\n      \"statement\": \"主力资金净流出幅度收窄\",\n      \"evidence\": \"northbound_net_flow\",\n      \"direction\": \"bullish\"\n    }\n  ],\n  \"risks\": [\n    {\n      \"threat\": \"若北向资金再度转为净流出\",\n      \"monitor\": \"northbound_net_flow\",\n      \"threshold\": \"连续2日<-2亿\"\n    },\n    {\n      \"threat\": \"数据缺口：缺少板块权重贡献度，需补齐\",\n      \"monitor\": \"data_gap\",\n      \"threshold\": \"fetch(industry_weight, last_5_days)\"\n    }\n  ]\n}\n若首轮回答未通过校验，请降低温度后重新生成，直到满足上述要求。",
+    "variables": [
+      "title",
+      "ts_code",
+      "trade_date",
+      "description",
+      "instruction",
+      "data_scope",
+      "features",
+      "market_snapshot",
+      "supplements",
+      "scratchpad"
+    ],
+    "max_length": 4000,
+    "required_context": [
+      "ts_code",
+      "trade_date",
+      "features",
+      "market_snapshot"
+    ],
+    "version": "1.3.0",
+    "metadata": {
+      "label": "reasoned_quality_guard",
+      "notes": "引导链式推理、事实核对与示例锚定。"
+    },
+    "activate": false
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "news_dept": {
+    "name": "新闻事件部门模板",
+    "description": "事件解读链式推理版",
+    "template": "部门：新闻事件部门\n股票代码：{ts_code}\n交易日：{trade_date}\n\n【工作流】\n1. 事实确认：核对 {ts_code}、{trade_date} 及新闻时间戳是否一致。\n2. 信息分类：按“政策/业绩/行业/突发”整理新闻摘要，标记缺口或来源。\n3. 影响评估：判断对基本面、预期、资金行为的影响路径。\n4. 风险对冲：列出潜在反转因素或需跟踪的后续事件。\n\n【数据基线】\n- 数据范围：\n{data_scope}\n- 新闻要点：\n{features}\n- 市场反馈：\n{market_snapshot}\n- 补充材料：\n{supplements}\n\n【推理草稿】\n<reasoning>\n{scratchpad}\n步骤：\nA. 复述新闻核心事实与时间。\nB. 检查新闻来源与市场反馈是否相互印证。\nC. 逐条构造影响链：新闻 → 预期变化 → 市场反应。\nD. 列出后续需验证的关键事件或数据。\n</reasoning>\n（推理草稿仅供内部推理，最终输出前会被移除。）\n\n【事实回顾】\n- 输出前重新确认新闻事实与市场反馈无矛盾。\n- 缺失或冲突信息在 `risks` 中以 `monitor: data_gap` 记录。\n\n【输出格式】\n仅输出一个 JSON：\n{\n  \"action\": \"BUY|BUY_S|BUY_M|BUY_L|SELL|HOLD\",\n  \"confidence\": 0-1 之间的小数,\n  \"summary\": \"一句话结论，引用已核对的新闻事实\",\n  \"signals\": [\n    {\n      \"headline\": \"新闻标题或要点\",\n      \"impact_path\": \"影响路径描述\",\n      \"evidence\": \"数据/来源\",\n      \"direction\": \"bullish|bearish|neutral\"\n    }\n  ],\n  \"risks\": [\n    {\n      \"threat\": \"风险事件或数据缺口\",\n      \"monitor\": \"观测指标或 data_gap\",\n      \"threshold\": \"触发阈值或补充要求\",\n      \"timeframe\": \"需跟踪的时间窗口\"\n    }\n  ]\n}\n示例：\n{\n  \"action\": \"HOLD\",\n  \"confidence\": 0.55,\n  \"summary\": \"政策利好兑现但市场反馈平淡，短期观望\",\n  \"signals\": [\n    {\n      \"headline\": \"监管发布新能源车补贴延长\",\n      \"impact_path\": \"政策延续→成本下降→销量预期稳固\",\n      \"evidence\": \"ministry_announcement_20240415\",\n      \"direction\": \"bullish\"\n    },\n    {\n      \"headline\": \"股价高开回落，量能未有效放大\",\n      \"impact_path\": \"资金未跟进→短线获利了结\",\n      \"evidence\": \"price_intraday_snapshot\",\n      \"direction\": \"neutral\"\n    }\n  ],\n  \"risks\": [\n    {\n      \"threat\": \"若下周销量数据低于季节性\",\n      \"monitor\": \"weekly_ev_sales\",\n      \"threshold\": \"同比<5%\",\n      \"timeframe\": \"未来2周\"\n    },\n    {\n      \"threat\": \"数据缺口：缺少外资持股比例最新变动\",\n      \"monitor\": \"data_gap\",\n      \"threshold\": \"fetch(qfii_holding_ratio, last_1_week)\",\n      \"timeframe\": \"尽快\"\n    }\n  ]\n}\n若校验失败请降低温度并重新生成。",
+    "variables": [
+      "ts_code",
+      "trade_date",
+      "data_scope",
+      "features",
+      "market_snapshot",
+      "supplements",
+      "scratchpad"
+    ],
+    "max_length": 4000,
+    "required_context": [
+      "ts_code",
+      "trade_date",
+      "features",
+      "market_snapshot"
+    ],
+    "version": "1.2.0",
+    "metadata": {
+      "label": "news_reasoning_chain",
+      "notes": "强调新闻事实核对与影响链推理。"
+    },
+    "activate": false
+  }
+}

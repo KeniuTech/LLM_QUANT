@@ -1,0 +1,29 @@
+{
+  "momentum_dept": {
+    "name": "动量策略部门模板",
+    "description": "动量信号链式推理版",
+    "template": "部门：动量策略部门\n股票代码：{ts_code}\n交易日：{trade_date}\n\n【工作流】\n1. 事实确认：复核 {ts_code}、{trade_date} 与输入一致；若冲突，在 `risks` 中记录。\n2. 数据盘点：按价格动量、量能、趋势结构、波动四类整理输入数据。\n3. 信号构建：生成 2-3 个动量信号，并明确周期、方向与证据。\n4. 风险反证：为每个信号列出可能的反向触发条件和监控指标。\n\n【数据基线】\n- 数据范围：\n{data_scope}\n- 动量特征：\n{features}\n- 市场切片：\n{market_snapshot}\n- 补充材料：\n{supplements}\n\n【推理草稿】\n<reasoning>\n{scratchpad}\n步骤：\nA. 复述关键事实及核心周期（如日线/周线）。\nB. 检查动量相关字段是否齐全，标记缺口或异常。\nC. 逐条构造信号：周期 → 指标 → 方向 → 逻辑链。\nD. 对每个信号找出潜在反向指标或阈值。\n</reasoning>\n（该草稿仅用于推理，最终输出前会被移除。）\n\n【事实回顾】\n- 输出前再次确认价格、成交量、波动的关键事实与结论一致。\n- 缺口或冲突用 `risks` 中 `monitor: data_gap` 记录并给出补充建议。\n\n【输出格式】\n仅输出一个 JSON：\n{\n  \"action\": \"BUY|BUY_S|BUY_M|BUY_L|SELL|HOLD\",\n  \"confidence\": 0-1 之间的小数,\n  \"summary\": \"一句话动量结论，需引用已核对的事实\",\n  \"signals\": [\n    {\n      \"statement\": \"动量现象描述\",\n      \"evidence\": \"对应字段或来源\",\n      \"direction\": \"bullish|bearish|neutral\",\n      \"horizon\": \"intraday|short|medium|long\"\n    }\n  ],\n  \"risks\": [\n    {\n      \"threat\": \"风险或数据缺口\",\n      \"monitor\": \"观测指标或 data_gap\",\n      \"threshold\": \"触发阈值或补充要求\"\n    }\n  ]\n}\n示例：\n{\n  \"action\": \"BUY_S\",\n  \"confidence\": 0.71,\n  \"summary\": \"短期价格突破叠加量能放大，动量延续概率高\",\n  \"signals\": [\n    {\n      \"statement\": \"价格站上布林带上轨并保持3日\",\n      \"evidence\": \"boll_upper_breakout\",\n      \"direction\": \"bullish\",\n      \"horizon\": \"short\"\n    },\n    {\n      \"statement\": \"成交量较20日均线放大40%\",\n      \"evidence\": \"volume_ma20_ratio\",\n      \"direction\": \"bullish\",\n      \"horizon\": \"short\"\n    }\n  ],\n  \"risks\": [\n    {\n      \"threat\": \"14日 RSI 高位钝化转向\",\n      \"monitor\": \"rsi_14\",\n      \"threshold\": \"跌破65\"\n    },\n    {\n      \"threat\": \"数据缺口：缺少期权隐含波动率\",\n      \"monitor\": \"data_gap\",\n      \"threshold\": \"fetch(iv30, last_5_days)\"\n    }\n  ]\n}\n若校验失败请调整温度并重新生成。",
+    "variables": [
+      "ts_code",
+      "trade_date",
+      "data_scope",
+      "features",
+      "market_snapshot",
+      "supplements",
+      "scratchpad"
+    ],
+    "max_length": 4000,
+    "required_context": [
+      "ts_code",
+      "trade_date",
+      "features",
+      "market_snapshot"
+    ],
+    "version": "1.2.0",
+    "metadata": {
+      "label": "momentum_reasoning_flow",
+      "notes": "强化动量信号构建与风险反证。"
+    },
+    "activate": false
+  }
+}

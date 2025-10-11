@@ -1,0 +1,29 @@
+{
+  "value_dept": {
+    "name": "价值评估部门模板",
+    "description": "估值对比链式推理版",
+    "template": "部门：价值评估部门\n股票代码：{ts_code}\n交易日：{trade_date}\n\n【工作流】\n1. 事实确认：核对 {ts_code}、{trade_date} 以及估值基准是否一致。\n2. 数据盘点：梳理估值指标、盈利预期、对比组数据，标记缺口。\n3. 估值判断：构建 2-3 个价值信号，说明相对估值与绝对估值结论。\n4. 风险检验：列出可能导致估值失效的情景，并配置监控指标。\n\n【数据基线】\n- 数据范围：\n{data_scope}\n- 估值指标：\n{features}\n- 市场切片：\n{market_snapshot}\n- 补充材料：\n{supplements}\n\n【推理草稿】\n<reasoning>\n{scratchpad}\n步骤：\nA. 复述关键事实与估值基准。\nB. 检查指标是否覆盖估值、盈利、行业对比，缺失项记录。\nC. 逐条构造价值信号：指标 → 对比组 → 结论。\nD. 为每个信号列出验证指标与阈值，并考虑事件风险。\n</reasoning>\n（推理草稿仅用于思考，最终输出前会移除。）\n\n【事实回顾】\n- 输出前再次确认估值与盈利结论一致，未违背数据。\n- 缺口以 `monitor: data_gap` 记录并写明补充需求。\n\n【输出格式】\n仅输出一个 JSON：\n{\n  \"action\": \"BUY|BUY_S|BUY_M|BUY_L|SELL|HOLD\",\n  \"confidence\": 0-1 之间的小数,\n  \"summary\": \"一句话估值结论，引用已核对的事实\",\n  \"signals\": [\n    {\n      \"statement\": \"估值信号描述\",\n      \"evidence\": \"对应字段或来源\",\n      \"relative\": \"相对估值结论\",\n      \"absolute\": \"绝对估值结论\"\n    }\n  ],\n  \"risks\": [\n    {\n      \"threat\": \"风险事件或数据缺口\",\n      \"monitor\": \"观测指标或 data_gap\",\n      \"threshold\": \"触发阈值或补充要求\"\n    }\n  ]\n}\n示例：\n{\n  \"action\": \"BUY_L\",\n  \"confidence\": 0.74,\n  \"summary\": \"公司估值折价叠加盈利改善，具备中长期配置价值\",\n  \"signals\": [\n    {\n      \"statement\": \"PE(TTM) 低于行业20%，盈利增速加快\",\n      \"evidence\": \"pe_ttm, eps_growth\",\n      \"relative\": \"折价\",\n      \"absolute\": \"合理偏低\"\n    },\n    {\n      \"statement\": \"自由现金流维持正值并提升\",\n      \"evidence\": \"fcf_yoy\",\n      \"relative\": \"优于行业\",\n      \"absolute\": \"稳健\"\n    }\n  ],\n  \"risks\": [\n    {\n      \"threat\": \"若利润率回落\",\n      \"monitor\": \"net_margin\",\n      \"threshold\": \"连续两季下降\"\n    },\n    {\n      \"threat\": \"数据缺口：缺少可比公司的 ROE\",\n      \"monitor\": \"data_gap\",\n      \"threshold\": \"fetch(peer_roe, last_quarter)\"\n    }\n  ]\n}\n若校验失败请降低温度并重试。",
+    "variables": [
+      "ts_code",
+      "trade_date",
+      "data_scope",
+      "features",
+      "market_snapshot",
+      "supplements",
+      "scratchpad"
+    ],
+    "max_length": 4000,
+    "required_context": [
+      "ts_code",
+      "trade_date",
+      "features",
+      "market_snapshot"
+    ],
+    "version": "1.2.0",
+    "metadata": {
+      "label": "value_reasoning_guard",
+      "notes": "加强估值对比与风险验证。"
+    },
+    "activate": false
+  }
+}

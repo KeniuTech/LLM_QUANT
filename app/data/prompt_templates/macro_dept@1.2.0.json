@@ -1,0 +1,29 @@
+{
+  "macro_dept": {
+    "name": "宏观研究部门模板",
+    "description": "宏观驱动严谨推理版",
+    "template": "部门：宏观研究部门\n股票代码：{ts_code}\n交易日：{trade_date}\n\n【工作流】\n1. 事实确认：核对 {ts_code}、{trade_date} 与背景描述一致；若不一致，先记录在 `risks`。\n2. 数据梳理：按“增长-价格-流动性”整理指标，缺口或冲突以 `monitor: data_gap` 记录。\n3. 信号构建：提炼 2-3 个宏观驱动，并说明对板块/指数的传导链。\n4. 风险反证：为每个驱动列出反向指标或事件，写明触发条件。\n\n【数据基线】\n- 数据范围：\n{data_scope}\n- 宏观指标：\n{features}\n- 行业位置：\n{market_snapshot}\n- 补充材料：\n{supplements}\n\n【推理草稿】\n<reasoning>\n{scratchpad}\n步骤：\nA. 复述关键事实（代码、日期、最新两条宏观数据）。\nB. 列出所有宏观指标，并标记所属类别与是否完整。\nC. 逐条构造驱动：指标 → 传导链条 → 结论；若缺数据，注明原因。\nD. 为每个驱动匹配验证指标与阈值，确认是否存在冲突证据。\n</reasoning>\n（推理草稿仅供思考，系统会在最终输出前移除，请勿将 `<reasoning>` 内容直接复制到 JSON。）\n\n【事实回顾】\n- 在输出 JSON 前，再次确认增长/价格/流动性三类指标的阶段判定没有矛盾。\n- 若出现数据缺口或冲突，请在 `risks` 中新增 `monitor: data_gap` 并写明补充要求。\n\n【输出格式】\n仅输出一个 JSON：\n{\n  \"action\": \"BUY|BUY_S|BUY_M|BUY_L|SELL|HOLD\",\n  \"confidence\": 0-1 之间的小数,\n  \"summary\": \"一句话结论，需引用已核对的宏观事实\",\n  \"signals\": [\n    {\n      \"driver\": \"宏观驱动项\",\n      \"stage\": \"expansion|contraction|turning\",\n      \"evidence\": \"对应指标\",\n      \"impact\": \"对行业/指数的影响描述\"\n    }\n  ],\n  \"risks\": [\n    {\n      \"event\": \"风险事件或数据缺口\",\n      \"monitor\": \"观测指标或 data_gap\",\n      \"threshold\": \"触发阈值或补充要求\",\n      \"scenario\": \"positive|negative|uncertain\"\n    }\n  ]\n}\n示例：\n{\n  \"action\": \"HOLD\",\n  \"confidence\": 0.58,\n  \"summary\": \"经济增长指标维持扩张但流动性收紧，建议观望等待资金面改善\",\n  \"signals\": [\n    {\n      \"driver\": \"PMI 连续两月>50\",\n      \"stage\": \"expansion\",\n      \"evidence\": \"manufacturing_pmi\",\n      \"impact\": \"增长支撑周期板块\"\n    },\n    {\n      \"driver\": \"社融增速回落\",\n      \"stage\": \"turning\",\n      \"evidence\": \"total_social_financing\",\n      \"impact\": \"资金面趋紧压制估值\"\n    }\n  ],\n  \"risks\": [\n    {\n      \"event\": \"若央行 MLF 利率继续上调\",\n      \"monitor\": \"mlf_rate\",\n      \"threshold\": \">=10bp\",\n      \"scenario\": \"negative\"\n    },\n    {\n      \"event\": \"数据缺口：缺少大宗商品价格走势\",\n      \"monitor\": \"data_gap\",\n      \"threshold\": \"fetch(commodity_index, last_4_weeks)\",\n      \"scenario\": \"uncertain\"\n    }\n  ]\n}\n若首轮回答未通过校验，请降低温度并重新生成，直至满足上述要求。",
+    "variables": [
+      "ts_code",
+      "trade_date",
+      "data_scope",
+      "features",
+      "market_snapshot",
+      "supplements",
+      "scratchpad"
+    ],
+    "max_length": 4000,
+    "required_context": [
+      "ts_code",
+      "trade_date",
+      "features",
+      "market_snapshot"
+    ],
+    "version": "1.2.0",
+    "metadata": {
+      "label": "macro_reasoning_matrix",
+      "notes": "引导宏观驱动分组、链式推理与校验。"
+    },
+    "activate": false
+  }
+}
