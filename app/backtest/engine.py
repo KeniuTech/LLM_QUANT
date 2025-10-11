@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -970,12 +971,17 @@ class BacktestEngine:
                 for code, dept in decision.department_decisions.items()
             }
 
+        stock_info = self.data_broker.get_stock_info(context.ts_code, context.trade_date)
+        name = stock_info.get("name") if stock_info else None
+        industry = stock_info.get("industry") if stock_info else None
+
         with db_session() as conn:
+            self._ensure_investment_pool_columns(conn)
             conn.execute(
                 """
                 INSERT OR REPLACE INTO investment_pool
-                (trade_date, ts_code, score, status, rationale, tags, metadata)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                (trade_date, ts_code, score, status, rationale, tags, metadata, name, industry)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     context.trade_date,
@@ -985,8 +991,43 @@ class BacktestEngine:
                     summary or None,
                     json.dumps(_department_tags(decision), ensure_ascii=False),
                     json.dumps(metadata, ensure_ascii=False),
+                    name,
+                    industry,
                 ),
             )
+
+    @staticmethod
+    def _ensure_investment_pool_columns(conn: sqlite3.Connection) -> None:
+        try:
+            info = conn.execute("PRAGMA table_info(investment_pool)").fetchall()
+        except sqlite3.Error:
+            return
+
+        columns = {
+            (row[1] if not isinstance(row, sqlite3.Row) else row["name"])
+            for row in info
+            if row is not None
+        }
+        if "name" not in columns:
+            try:
+                conn.execute("ALTER TABLE investment_pool ADD COLUMN name TEXT")
+            except sqlite3.Error:
+                pass
+        if "industry" not in columns:
+            try:
+                conn.execute("ALTER TABLE investment_pool ADD COLUMN industry TEXT")
+            except sqlite3.Error:
+                pass
+        if "created_at" not in columns:
+            try:
+                conn.execute(
+                    "ALTER TABLE investment_pool ADD COLUMN created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))"
+                )
+            except sqlite3.Error:
+                try:
+                    conn.execute("ALTER TABLE investment_pool ADD COLUMN created_at TEXT")
+                except sqlite3.Error:
+                    pass
 
     def _persist_portfolio(
         self,

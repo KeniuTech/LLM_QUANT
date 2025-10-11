@@ -2,6 +2,7 @@
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional
 import json
+import sqlite3
 
 import numpy as np
 import pandas as pd
@@ -14,6 +15,44 @@ from app.utils.config import get_config
 from app.utils.data_access import DataBroker
 from app.utils.db import db_session
 from app.utils.logging import get_logger
+
+LOGGER = get_logger(__name__)
+LOG_EXTRA = {"stage": "stock_eval"}
+
+
+def _ensure_investment_pool_schema(conn: sqlite3.Connection) -> None:
+    """Ensure investment_pool table has latest optional columns."""
+    try:
+        info = conn.execute("PRAGMA table_info(investment_pool)").fetchall()
+    except sqlite3.Error:
+        return
+
+    columns = {
+        (row["name"] if isinstance(row, sqlite3.Row) else row[1])
+        for row in info
+        if row is not None
+    }
+
+    if "name" not in columns:
+        try:
+            conn.execute("ALTER TABLE investment_pool ADD COLUMN name TEXT")
+        except sqlite3.Error:
+            pass
+    if "industry" not in columns:
+        try:
+            conn.execute("ALTER TABLE investment_pool ADD COLUMN industry TEXT")
+        except sqlite3.Error:
+            pass
+    if "created_at" not in columns:
+        try:
+            conn.execute(
+                "ALTER TABLE investment_pool ADD COLUMN created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))"
+            )
+        except sqlite3.Error:
+            try:
+                conn.execute("ALTER TABLE investment_pool ADD COLUMN created_at TEXT")
+            except sqlite3.Error:
+                pass
 
 
 def _get_latest_trading_date() -> date:
@@ -510,6 +549,7 @@ def _add_to_stock_pool(
         )
 
     with db_session() as conn:
+        _ensure_investment_pool_schema(conn)
         conn.execute("DELETE FROM investment_pool WHERE trade_date = ?", (trade_date,))
         if payload:
             conn.executemany(

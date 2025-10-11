@@ -11,7 +11,7 @@ import pandas as pd
 import streamlit as st
 
 from app.backtest.engine import BacktestEngine, PortfolioState, BtConfig
-from app.utils.portfolio import list_investment_pool
+from app.utils.portfolio import InvestmentCandidate, list_investment_pool
 from app.utils.db import db_session
 
 from app.ui.shared import (
@@ -175,24 +175,39 @@ def render_today_plan() -> None:
         ).fetchall()
     symbols = [row["ts_code"] for row in code_rows]
 
+    candidate_records = list_investment_pool(trade_date=trade_date)
+    if candidate_records:
+        st.caption(
+            f"候选池包含 {len(candidate_records)} 个标的："
+            + "、".join(item.ts_code for item in candidate_records[:12])
+            + ("…" if len(candidate_records) > 12 else "")
+        )
+
+    if candidate_records:
+        candidate_codes = [item.ts_code for item in candidate_records]
+        symbols = list(dict.fromkeys(candidate_codes + symbols))
+
     detail_tab, assistant_tab = st.tabs(["标的详情", "投资助理模式"])
     with assistant_tab:
-        _render_today_plan_assistant_view(trade_date)
+        _render_today_plan_assistant_view(trade_date, candidate_records)
 
     with detail_tab:
         if not symbols:
             st.info("所选交易日暂无 agent_utils 记录。")
         else:
-            _render_today_plan_symbol_view(trade_date, symbols, query)
+            _render_today_plan_symbol_view(trade_date, symbols, query, candidate_records)
 
 
-def _render_today_plan_assistant_view(trade_date: str | int | date) -> None:
+def _render_today_plan_assistant_view(
+    trade_date: str | int | date,
+    candidate_records: List[InvestmentCandidate],
+) -> None:
     # 确保日期格式为字符串
     if isinstance(trade_date, date):
         trade_date = trade_date.strftime("%Y%m%d")
     st.info("已开启投资助理模式：以下内容为组合级（去标的）建议，不包含任何具体标的代码。")
     try:
-        candidates = list_investment_pool(trade_date=trade_date)
+        candidates = candidate_records or list_investment_pool(trade_date=trade_date)
         if candidates:
             scores = [float(item.score or 0.0) for item in candidates]
             statuses = [item.status or "UNKNOWN" for item in candidates]
@@ -259,6 +274,7 @@ def _render_today_plan_symbol_view(
     trade_date: str | int | date,
     symbols: List[str],
     query_params: Dict[str, List[str]],
+    candidate_records: List[InvestmentCandidate],
 ) -> None:
     default_ts = query_params.get("code", [symbols[0]])[0]
     try:
@@ -266,7 +282,9 @@ def _render_today_plan_symbol_view(
     except ValueError:
         default_ts_idx = 0
     ts_code = st.selectbox("标的", symbols, index=default_ts_idx)
-    batch_symbols = st.multiselect("批量重评估（可多选）", symbols, default=[])
+    candidate_code_set = {item.ts_code for item in candidate_records}
+    default_batch = [code for code in symbols if code in candidate_code_set]
+    batch_symbols = st.multiselect("批量重评估（可多选）", symbols, default=default_batch[:10])
 
     if st.button("一键重评估所有标的", type="primary", width='stretch'):
         with st.spinner("正在对所有标的进行重评估，请稍候..."):
@@ -317,6 +335,16 @@ def _render_today_plan_symbol_view(
     if not rows:
         st.info("未查询到详细决策记录，稍后再试。")
         return
+
+    candidate_map = {item.ts_code: item for item in candidate_records}
+    candidate_info = candidate_map.get(ts_code)
+    if candidate_info:
+        info_cols = st.columns(3)
+        info_cols[0].metric("候选评分", f"{(candidate_info.score or 0):.3f}")
+        info_cols[1].metric("状态", candidate_info.status or "-")
+        info_cols[2].metric("更新时间", candidate_info.created_at or "-")
+        if candidate_info.rationale:
+            st.caption(f"候选理由：{candidate_info.rationale}")
 
     try:
         feasible_actions = json.loads(rows[0]["feasible"] or "[]")

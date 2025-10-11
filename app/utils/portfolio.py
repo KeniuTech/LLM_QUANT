@@ -34,6 +34,7 @@ class InvestmentCandidate:
     metadata: Dict[str, Any]
     name: Optional[str] = None
     industry: Optional[str] = None
+    created_at: Optional[str] = None
 
 
 def list_investment_pool(
@@ -44,31 +45,55 @@ def list_investment_pool(
 ) -> List[InvestmentCandidate]:
     """Return investment candidates for the given trade date (latest if None)."""
 
-    query = [
-        "SELECT trade_date, ts_code, score, status, rationale, tags, metadata, name, industry",
-        "FROM investment_pool",
-    ]
-    params: List[Any] = []
-
-    if trade_date:
-        query.append("WHERE trade_date = ?")
-        params.append(trade_date)
-    else:
-        query.append(
-            "WHERE trade_date = (SELECT MAX(trade_date) FROM investment_pool)"
-        )
-
-    if status:
-        placeholders = ", ".join("?" for _ in status)
-        query.append(f"AND status IN ({placeholders})")
-        params.extend(list(status))
-
-    query.append("ORDER BY (score IS NULL), score DESC, ts_code")
-    query.append("LIMIT ?")
-    params.append(int(limit))
-
-    sql = "\n".join(query)
     with db_session(read_only=True) as conn:
+        try:
+            info = conn.execute("PRAGMA table_info(investment_pool)").fetchall()
+        except Exception:  # noqa: BLE001
+            LOGGER.exception("无法读取 investment_pool 结构", extra=LOG_EXTRA)
+            return []
+
+        available_columns = {
+            (row[1] if not isinstance(row, dict) else row.get("name"))
+            for row in info
+        }
+
+        select_columns = [
+            "trade_date",
+            "ts_code",
+            "score",
+            "status",
+            "rationale",
+            "tags",
+            "metadata",
+        ]
+        optional_columns = [col for col in ("name", "industry", "created_at") if col in available_columns]
+        select_columns.extend(optional_columns)
+
+        column_clause = ", ".join(select_columns)
+        query = [
+            f"SELECT {column_clause}",
+            "FROM investment_pool",
+        ]
+        params: List[Any] = []
+
+        if trade_date:
+            query.append("WHERE trade_date = ?")
+            params.append(trade_date)
+        else:
+            query.append(
+                "WHERE trade_date = (SELECT MAX(trade_date) FROM investment_pool)"
+            )
+
+        if status:
+            placeholders = ", ".join("?" for _ in status)
+            query.append(f"AND status IN ({placeholders})")
+            params.extend(list(status))
+
+        query.append("ORDER BY (score IS NULL), score DESC, ts_code")
+        query.append("LIMIT ?")
+        params.append(int(limit))
+
+        sql = "\n".join(query)
         try:
             rows = conn.execute(sql, params).fetchall()
         except Exception:  # noqa: BLE001
@@ -77,6 +102,7 @@ def list_investment_pool(
 
     candidates: List[InvestmentCandidate] = []
     for row in rows:
+        row_keys = set(row.keys()) if hasattr(row, "keys") else set()
         candidates.append(
             InvestmentCandidate(
                 trade_date=row["trade_date"],
@@ -86,8 +112,9 @@ def list_investment_pool(
                 rationale=row["rationale"],
                 tags=list(_loads_or_default(row["tags"], [])),
                 metadata=dict(_loads_or_default(row["metadata"], {})),
-                name=row["name"],
-                industry=row["industry"],
+                name=row["name"] if "name" in row_keys else None,
+                industry=row["industry"] if "industry" in row_keys else None,
+                created_at=row["created_at"] if "created_at" in row_keys else None,
             )
         )
     return candidates

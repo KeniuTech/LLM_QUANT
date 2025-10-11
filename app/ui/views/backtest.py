@@ -26,6 +26,7 @@ from app.llm.templates import TemplateRegistry
 from app.utils import alerts
 from app.utils.config import get_config, save_config
 from app.utils.tuning import log_tuning_result
+from app.utils.portfolio import list_investment_pool
 
 from app.utils.db import db_session
 
@@ -59,7 +60,18 @@ def render_backtest_review() -> None:
     col1, col2 = st.columns(2)
     start_date = col1.date_input("开始日期", value=default_start, key="bt_start_date")
     end_date = col2.date_input("结束日期", value=default_end, key="bt_end_date")
-    universe_text = st.text_input("股票列表（逗号分隔）", value="000001.SZ", key="bt_universe")
+
+    latest_candidates = list_investment_pool(limit=50)
+    candidate_codes = [item.ts_code for item in latest_candidates]
+    default_universe = ",".join(candidate_codes) if candidate_codes else "000001.SZ"
+    universe_text = st.text_input(
+        "股票列表（逗号分隔）",
+        value=default_universe,
+        key="bt_universe",
+        help="默认载入最新候选池，如需自定义可直接编辑。",
+    )
+    if candidate_codes:
+        st.caption(f"候选池载入 {len(candidate_codes)} 个标的：{'、'.join(candidate_codes[:10])}{'…' if len(candidate_codes)>10 else ''}")
     col_target, col_stop, col_hold, col_cap = st.columns(4)
     target = col_target.number_input("目标收益（例：0.035 表示 3.5%）", value=0.035, step=0.005, format="%.3f", key="bt_target")
     stop = col_stop.number_input("止损收益（例：-0.015 表示 -1.5%）", value=-0.015, step=0.005, format="%.3f", key="bt_stop")
