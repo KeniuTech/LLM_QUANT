@@ -475,6 +475,7 @@ def _add_to_stock_pool(
 ) -> None:
     """将股票评分结果写入投资池。"""
 
+    broker = DataBroker()
     trade_date = eval_date.strftime("%Y%m%d")
     payload: List[tuple] = []
     ranked_df = score_df.reset_index(drop=True)
@@ -489,6 +490,11 @@ def _add_to_stock_pool(
             },
             ensure_ascii=False,
         )
+        # 获取股票基本信息
+        stock_info = broker.get_stock_info(row["股票代码"], trade_date)
+        stock_name = stock_info.get("name", "") if stock_info else ""
+        stock_industry = stock_info.get("industry", "") if stock_info else ""
+        
         payload.append(
             (
                 trade_date,
@@ -498,6 +504,8 @@ def _add_to_stock_pool(
                 "factor_evaluation_top20",
                 tags,
                 metadata,
+                stock_name,
+                stock_industry,
             )
         )
 
@@ -513,8 +521,10 @@ def _add_to_stock_pool(
                     status,
                     rationale,
                     tags,
-                    metadata
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    metadata,
+                    name,
+                    industry
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 payload,
             )

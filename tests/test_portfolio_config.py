@@ -133,19 +133,21 @@ def test_list_investment_pool_orders_without_nulls(tmp_path):
                     rationale TEXT,
                     tags TEXT,
                     metadata TEXT,
+                    name TEXT,
+                    industry TEXT,
                     PRIMARY KEY (trade_date, ts_code)
                 )
                 """
             )
             conn.executemany(
                 """
-                INSERT INTO investment_pool (trade_date, ts_code, score, status, rationale, tags, metadata)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO investment_pool (trade_date, ts_code, score, status, rationale, tags, metadata, name, industry)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
-                    ("2024-01-01", "AAA", 0.8, "buy", "", None, None),
-                    ("2024-01-01", "BBB", None, "hold", "", None, None),
-                    ("2024-01-01", "CCC", 0.9, "buy", "", None, None),
+                    ("2024-01-01", "AAA", 0.8, "buy", "", None, None, "Company A", "Technology"),
+                    ("2024-01-01", "BBB", None, "hold", "", None, None, "Company B", "Finance"),
+                    ("2024-01-01", "CCC", 0.9, "buy", "", None, None, "Company C", "Healthcare"),
                 ],
             )
 

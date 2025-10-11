@@ -474,6 +474,8 @@ SCHEMA_STATEMENTS: Iterable[str] = (
       rationale TEXT,
       tags TEXT,
       metadata TEXT,
+      name TEXT,
+      industry TEXT,
       created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
       PRIMARY KEY (trade_date, ts_code)
     );

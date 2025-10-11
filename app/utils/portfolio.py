@@ -45,7 +45,7 @@ def list_investment_pool(
     """Return investment candidates for the given trade date (latest if None)."""
 
     query = [
-        "SELECT trade_date, ts_code, score, status, rationale, tags, metadata",
+        "SELECT trade_date, ts_code, score, status, rationale, tags, metadata, name, industry",
         "FROM investment_pool",
     ]
     params: List[Any] = []

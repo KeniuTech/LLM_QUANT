@@ -76,6 +76,8 @@ SCHEMA_STATEMENTS = [
         rationale TEXT,
         tags TEXT,  -- JSON array
         metadata TEXT,  -- JSON object
+        name TEXT,
+        industry TEXT,
         PRIMARY KEY (trade_date, ts_code)
     );
     """,
