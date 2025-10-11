@@ -153,12 +153,15 @@ def render_today_plan() -> None:
         return
 
     query = get_query_params()
-    default_trade_date = query.get("date", [trade_dates[0]])[0]
+    # 确保默认日期格式正确
+    default_trade_date = str(query.get("date", [trade_dates[0]])[0])
     try:
         default_idx = trade_dates.index(default_trade_date)
     except ValueError:
         default_idx = 0
-    trade_date = st.selectbox("交易日", trade_dates, index=default_idx)
+    # 确保日期格式统一为 YYYYMMDD
+    formatted_trade_dates = [str(td) for td in trade_dates]
+    trade_date = st.selectbox("交易日", formatted_trade_dates, index=default_idx)
 
     with db_session(read_only=True) as conn:
         code_rows = conn.execute(
@@ -184,6 +187,9 @@ def render_today_plan() -> None:
 
 
 def _render_today_plan_assistant_view(trade_date: str | int | date) -> None:
+    # 确保日期格式为字符串
+    if isinstance(trade_date, date):
+        trade_date = trade_date.strftime("%Y%m%d")
     st.info("已开启投资助理模式：以下内容为组合级（去标的）建议，不包含任何具体标的代码。")
     try:
         candidates = list_investment_pool(trade_date=trade_date)

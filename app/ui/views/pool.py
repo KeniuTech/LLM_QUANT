@@ -49,25 +49,32 @@ def render_pool_overview() -> None:
     st.write("候选投资池：")
     try:
         latest_date = get_latest_trade_date()
+        # 将日期对象转换为字符串格式，与数据库保持一致
+        latest_date_str = latest_date.strftime("%Y%m%d") if latest_date else None
         
         # 添加状态过滤功能
         status_options = ["全部", "watch", "candidate", "exit", "buy_s", "buy_m", "buy_l"]
         status_filter = st.selectbox("选择状态", options=status_options, index=0)
         
         if status_filter != "全部":
-            candidates = list_investment_pool(trade_date=latest_date, status=[status_filter])
+            candidates = list_investment_pool(trade_date=latest_date_str, status=[status_filter])
         else:
-            candidates = list_investment_pool(trade_date=latest_date)
+            candidates = list_investment_pool(trade_date=latest_date_str)
     except Exception:  # noqa: BLE001
         LOGGER.exception("加载候选池失败", extra=LOG_EXTRA)
         candidates = []
 
     if candidates:
+        # 添加调试信息
+        st.caption(f"找到 {len(candidates)} 条候选记录")
+
         candidate_df = pd.DataFrame(
             [
                 {
                     "交易日": item.trade_date,
                     "代码": item.ts_code,
+                    "名称": item.name or "-",
+                    "行业": item.industry or "-",
                     "评分": item.score,
                     "状态": item.status,
                     "标签": "、".join(item.tags) if item.tags else "-",

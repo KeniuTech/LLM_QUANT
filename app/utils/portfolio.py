@@ -32,6 +32,8 @@ class InvestmentCandidate:
     rationale: Optional[str]
     tags: List[str]
     metadata: Dict[str, Any]
+    name: Optional[str] = None
+    industry: Optional[str] = None
 
 
 def list_investment_pool(
@@ -84,6 +86,8 @@ def list_investment_pool(
                 rationale=row["rationale"],
                 tags=list(_loads_or_default(row["tags"], [])),
                 metadata=dict(_loads_or_default(row["metadata"], {})),
+                name=row["name"],
+                industry=row["industry"],
             )
         )
     return candidates
