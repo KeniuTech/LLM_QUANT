@@ -181,11 +181,12 @@ class DepartmentAgent:
         usage_records: List[Dict[str, Any]] = []
         tool_call_records: List[Dict[str, Any]] = []
         rounds_executed = 0
-        CONV_LOGGER.info(
-            "dept=%s ts_code=%s trade_date=%s start",
-            self.settings.code,
-            context.ts_code,
-            context.trade_date,
+        self._log_conversation(
+            "info",
+            "start",
+            ts_code=context.ts_code,
+            trade_date=context.trade_date,
+            template_meta=template_meta,
         )
 
         for round_idx in range(self._max_rounds):
@@ -231,11 +232,11 @@ class DepartmentAgent:
             if tool_calls:
                 assistant_record["tool_calls"] = tool_calls
             messages.append(assistant_record)
-            CONV_LOGGER.info(
-                "dept=%s round=%s assistant=%s",
-                self.settings.code,
-                round_idx + 1,
-                assistant_record,
+            self._log_conversation(
+                "info",
+                "assistant_reply",
+                round=round_idx + 1,
+                assistant=assistant_record,
             )
 
             if tool_calls:
@@ -281,12 +282,12 @@ class DepartmentAgent:
                         }
                     )
                     delivered_requests.update(delivered)
-                    CONV_LOGGER.info(
-                        "dept=%s round=%s tool_call=%s response=%s",
-                        self.settings.code,
-                        round_idx + 1,
-                        call,
-                        tool_response,
+                    self._log_conversation(
+                        "info",
+                        "tool_call",
+                        round=round_idx + 1,
+                        call=call,
+                        tool_response=tool_response,
                     )
                 continue
 
@@ -300,10 +301,10 @@ class DepartmentAgent:
                 extra=LOG_EXTRA,
             )
             final_message = message
-            CONV_LOGGER.warning(
-                "dept=%s rounds_exhausted last_message=%s",
-                self.settings.code,
-                final_message,
+            self._log_conversation(
+                "warning",
+                "rounds_exhausted",
+                last_message=final_message,
             )
 
         mutable_context.raw["supplement_transcript"] = list(transcript)
@@ -399,17 +400,19 @@ class DepartmentAgent:
             decision.confidence,
             extra=LOG_EXTRA,
         )
-        CONV_LOGGER.info(
-            "dept=%s decision action=%s confidence=%.2f summary=%s",
-            self.settings.code,
-            decision.action.value,
-            decision.confidence,
-            summary or "",
+        self._log_conversation(
+            "info",
+            "decision",
+            action=decision.action.value,
+            confidence=decision.confidence,
+            summary=summary or "",
+            signals=decision.signals,
+            risks=decision.risks,
         )
-        CONV_LOGGER.info(
-            "dept=%s telemetry=%s",
-            self.settings.code,
-            json.dumps(telemetry, ensure_ascii=False),
+        self._log_conversation(
+            "info",
+            "telemetry",
+            telemetry=telemetry,
         )
         return decision
 
@@ -573,6 +576,36 @@ class DepartmentAgent:
             }
         summary["row_count"] = len(rows)
         return summary
+
+    def _log_conversation(
+        self,
+        level: str,
+        event: str,
+        **fields: Any,
+    ) -> None:
+        lines = [f"[{self.settings.code}] {event}"]
+        for key, value in fields.items():
+            if value is None:
+                continue
+            if isinstance(value, (dict, list)):
+                serialized = json.dumps(value, ensure_ascii=False, indent=2)
+                lines.append(f"  {key}:")
+                for line in serialized.splitlines():
+                    lines.append(f"    {line}")
+            else:
+                text = str(value)
+                if "\n" in text:
+                    lines.append(f"  {key}:")
+                    for segment in text.splitlines():
+                        if segment.strip():
+                            lines.append(f"    {segment}")
+                        else:
+                            lines.append("")
+                else:
+                    lines.append(f"  {key}: {text}")
+        message = "\n".join(lines)
+        log_method = getattr(CONV_LOGGER, level, CONV_LOGGER.info)
+        log_method(message)
 
 
     def _handle_tool_call(
@@ -739,10 +772,10 @@ class DepartmentAgent:
                 exc,
                 extra=LOG_EXTRA,
             )
-            CONV_LOGGER.error(
-                "dept=%s legacy_call_failed err=%s",
-                self.settings.code,
-                exc,
+            self._log_conversation(
+                "error",
+                "legacy_call_failed",
+                error=str(exc),
             )
             return DepartmentDecision(
                 department=self.settings.code,
@@ -753,7 +786,11 @@ class DepartmentAgent:
             )
 
         context.raw["supplement_transcript"] = [response]
-        CONV_LOGGER.info("dept=%s legacy_response=%s", self.settings.code, response)
+        self._log_conversation(
+            "info",
+            "legacy_response",
+            response=response,
+        )
         decision_data = _parse_department_response(response)
         action = _normalize_action(decision_data.get("action"))
         confidence = _clamp_float(decision_data.get("confidence"), default=0.5)
