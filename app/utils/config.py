@@ -203,8 +203,13 @@ class LLMEndpoint:
 
     def __post_init__(self) -> None:
         self.provider = (self.provider or "ollama").lower()
-        if self.temperature is not None:
-            self.temperature = float(self.temperature)
+        if self.temperature is None:
+            self.temperature = DEFAULT_LLM_TEMPERATURES.get(self.provider)
+        else:
+            try:
+                self.temperature = float(self.temperature)
+            except (TypeError, ValueError):
+                self.temperature = DEFAULT_LLM_TEMPERATURES.get(self.provider)
 
 
 @dataclass
@@ -302,7 +307,22 @@ class DepartmentSettings:
     prompt: str = ""
     llm: LLMConfig = field(default_factory=LLMConfig)
     prompt_template_id: Optional[str] = None
-    prompt_template_version: Optional[str] = None
+
+    @property
+    def prompt_template_version(self) -> Optional[str]:
+        value = getattr(self.llm.primary, "prompt_template", None)
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @prompt_template_version.setter
+    def prompt_template_version(self, value: Optional[str]) -> None:
+        if value is None:
+            self.llm.primary.prompt_template = None
+            return
+        text = str(value).strip()
+        self.llm.primary.prompt_template = text or None
 
 
 def _default_departments() -> Dict[str, DepartmentSettings]:
@@ -748,19 +768,6 @@ def _load_from_file(cfg: AppConfig) -> None:
             else:
                 template_id = f"{code}_dept"
 
-            template_version_raw = data.get("prompt_template_version")
-            if isinstance(template_version_raw, str):
-                template_version_candidate = template_version_raw.strip()
-            elif template_version_raw is not None:
-                template_version_candidate = str(template_version_raw).strip()
-            else:
-                template_version_candidate = ""
-            if template_version_candidate:
-                template_version = template_version_candidate
-            elif current_setting:
-                template_version = current_setting.prompt_template_version
-            else:
-                template_version = None
             new_departments[code] = DepartmentSettings(
                 code=code,
                 title=title,
@@ -770,8 +777,19 @@ def _load_from_file(cfg: AppConfig) -> None:
                 prompt=prompt_text,
                 llm=resolved_cfg,
                 prompt_template_id=template_id,
-                prompt_template_version=template_version,
             )
+            template_version_raw = data.get("prompt_template_version")
+            template_version = None
+            if isinstance(template_version_raw, str):
+                template_version = template_version_raw.strip() or None
+            elif template_version_raw is not None:
+                template_version = str(template_version_raw).strip() or None
+            elif isinstance(resolved_cfg.primary.prompt_template, str):
+                template_version = resolved_cfg.primary.prompt_template.strip() or None
+            elif current_setting:
+                template_version = current_setting.prompt_template_version
+            if template_version:
+                new_departments[code].prompt_template_version = template_version
         if new_departments:
             cfg.departments = new_departments
 
@@ -824,7 +842,6 @@ def save_config(cfg: AppConfig | None = None) -> None:
                 "data_scope": list(dept.data_scope),
                 "prompt": dept.prompt,
                 "prompt_template_id": dept.prompt_template_id,
-                "prompt_template_version": dept.prompt_template_version,
                 "llm": {
                     "strategy": dept.llm.strategy if dept.llm.strategy in ALLOWED_LLM_STRATEGIES else "single",
                     "majority_threshold": dept.llm.majority_threshold,
