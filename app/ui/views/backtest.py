@@ -26,7 +26,10 @@ from app.llm.templates import TemplateRegistry
 from app.utils import alerts
 from app.utils.config import get_config, save_config
 from app.utils.tuning import log_tuning_result
-from app.utils.portfolio import list_investment_pool
+from app.utils.portfolio import (
+    get_candidate_pool,
+    get_portfolio_settings_snapshot,
+)
 
 from app.utils.db import db_session
 
@@ -43,6 +46,7 @@ def render_backtest_review() -> None:
     st.header("回测与复盘")
     st.caption("1. 基于历史数据复盘当前策略；2. 借助强化学习/调参探索更优参数组合。")
     app_cfg = get_config()
+    portfolio_snapshot = get_portfolio_settings_snapshot()
     default_start, default_end = default_backtest_range(window_days=60)
     LOGGER.debug(
         "回测默认参数：start=%s end=%s universe=%s target=%s stop=%s hold_days=%s initial_capital=%s",
@@ -61,8 +65,8 @@ def render_backtest_review() -> None:
     start_date = col1.date_input("开始日期", value=default_start, key="bt_start_date")
     end_date = col2.date_input("结束日期", value=default_end, key="bt_end_date")
 
-    latest_candidates = list_investment_pool(limit=50)
-    candidate_codes = [item.ts_code for item in latest_candidates]
+    candidate_records, candidate_fallback = get_candidate_pool(limit=50)
+    candidate_codes = [item.ts_code for item in candidate_records]
     default_universe = ",".join(candidate_codes) if candidate_codes else "000001.SZ"
     universe_text = st.text_input(
         "股票列表（逗号分隔）",
@@ -71,25 +75,40 @@ def render_backtest_review() -> None:
         help="默认载入最新候选池，如需自定义可直接编辑。",
     )
     if candidate_codes:
-        st.caption(f"候选池载入 {len(candidate_codes)} 个标的：{'、'.join(candidate_codes[:10])}{'…' if len(candidate_codes)>10 else ''}")
+        message = f"候选池载入 {len(candidate_codes)} 个标的：{'、'.join(candidate_codes[:10])}{'…' if len(candidate_codes)>10 else ''}"
+        if candidate_fallback:
+            message += "（使用最新候选池作为回退）"
+        st.caption(message)
     col_target, col_stop, col_hold, col_cap = st.columns(4)
     target = col_target.number_input("目标收益（例：0.035 表示 3.5%）", value=0.035, step=0.005, format="%.3f", key="bt_target")
     stop = col_stop.number_input("止损收益（例：-0.015 表示 -1.5%）", value=-0.015, step=0.005, format="%.3f", key="bt_stop")
     hold_days = col_hold.number_input("持有期（交易日）", value=10, step=1, key="bt_hold_days")
+    initial_capital_default = float(portfolio_snapshot["initial_capital"])
     initial_capital = col_cap.number_input(
         "组合初始资金",
-        value=float(app_cfg.portfolio.initial_capital),
+        value=initial_capital_default,
         step=100000.0,
         format="%.0f",
         key="bt_initial_capital",
     )
     initial_capital = max(0.0, float(initial_capital))
+    position_limits = portfolio_snapshot.get("position_limits", {})
     backtest_params = {
         "target": float(target),
         "stop": float(stop),
         "hold_days": int(hold_days),
         "initial_capital": initial_capital,
+        "max_position_weight": float(position_limits.get("max_position", 0.2)),
+        "max_total_positions": int(position_limits.get("max_total_positions", 20)),
     }
+
+    st.caption(
+        "组合约束：单仓上限 {max_pos:.0%} ｜ 最大持仓 {max_count} ｜ 行业敞口 {sector:.0%}".format(
+            max_pos=backtest_params["max_position_weight"],
+            max_count=position_limits.get("max_total_positions", 20),
+            sector=position_limits.get("max_sector_exposure", 0.35),
+        )
+    )
     structure_options = [item.value for item in GameStructure]
     selected_structure_values = st.multiselect(
         "选择博弈框架",

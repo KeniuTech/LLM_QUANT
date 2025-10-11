@@ -120,6 +120,30 @@ def list_investment_pool(
     return candidates
 
 
+def get_candidate_pool(
+    *,
+    trade_date: Optional[str] = None,
+    status: Optional[Iterable[str]] = None,
+    limit: int = 200,
+) -> tuple[List[InvestmentCandidate], bool]:
+    """Return candidate pool records with optional fallback to latest date.
+
+    Returns:
+        (candidates, fallback_used)
+    """
+
+    candidates = list_investment_pool(trade_date=trade_date, status=status, limit=limit)
+    if candidates or trade_date is None:
+        return candidates, False
+    latest_candidates = list_investment_pool(status=status, limit=limit)
+    return latest_candidates, bool(latest_candidates)
+
+
+def get_portfolio_settings_snapshot() -> Dict[str, Any]:
+    """Return current portfolio settings as a dict for UI consumption."""
+    return get_portfolio_config()
+
+
 @dataclass
 class PortfolioPosition:
     id: int

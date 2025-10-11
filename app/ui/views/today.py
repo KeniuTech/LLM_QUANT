@@ -11,7 +11,11 @@ import pandas as pd
 import streamlit as st
 
 from app.backtest.engine import BacktestEngine, PortfolioState, BtConfig
-from app.utils.portfolio import InvestmentCandidate, list_investment_pool
+from app.utils.portfolio import (
+    InvestmentCandidate,
+    get_candidate_pool,
+    get_portfolio_settings_snapshot,
+)
 from app.utils.db import db_session
 
 from app.ui.shared import (
@@ -132,6 +136,17 @@ def render_today_plan() -> None:
         st.caption(f"最新交易日：{latest_trade_date.isoformat()}（统计数据请见左侧系统监控）")
     else:
         st.caption("统计与决策概览现已移至左侧'系统监控'侧栏。")
+
+    portfolio_snapshot = get_portfolio_settings_snapshot()
+    limits = portfolio_snapshot.get("position_limits", {})
+    st.caption(
+        "组合约束：单仓上限 {max_pos:.0%} ｜ 最小仓位 {min_pos:.0%} ｜ 最大持仓数 {max_cnt} ｜ 行业上限 {sector:.0%}".format(
+            max_pos=limits.get("max_position", 0.2),
+            min_pos=limits.get("min_position", 0.02),
+            max_cnt=int(limits.get("max_total_positions", 20)),
+            sector=limits.get("max_sector_exposure", 0.35),
+        )
+    )
     try:
         with db_session(read_only=True) as conn:
             date_rows = conn.execute(
@@ -175,17 +190,22 @@ def render_today_plan() -> None:
         ).fetchall()
     symbols = [row["ts_code"] for row in code_rows]
 
-    candidate_records = list_investment_pool(trade_date=trade_date)
+    candidate_records, fallback_used = get_candidate_pool(trade_date=trade_date)
     if candidate_records:
-        st.caption(
+        message = (
             f"候选池包含 {len(candidate_records)} 个标的："
             + "、".join(item.ts_code for item in candidate_records[:12])
             + ("…" if len(candidate_records) > 12 else "")
         )
+        if fallback_used:
+            message += "（使用最新候选池）"
+        st.caption(message)
 
     if candidate_records:
         candidate_codes = [item.ts_code for item in candidate_records]
         symbols = list(dict.fromkeys(candidate_codes + symbols))
+    else:
+        st.caption("所选日期暂无候选池数据，仍可查看代理决策记录。")
 
     detail_tab, assistant_tab = st.tabs(["标的详情", "投资助理模式"])
     with assistant_tab:
@@ -339,10 +359,11 @@ def _render_today_plan_symbol_view(
     candidate_map = {item.ts_code: item for item in candidate_records}
     candidate_info = candidate_map.get(ts_code)
     if candidate_info:
-        info_cols = st.columns(3)
+        info_cols = st.columns(4)
         info_cols[0].metric("候选评分", f"{(candidate_info.score or 0):.3f}")
         info_cols[1].metric("状态", candidate_info.status or "-")
         info_cols[2].metric("更新时间", candidate_info.created_at or "-")
+        info_cols[3].metric("行业", candidate_info.industry or "-")
         if candidate_info.rationale:
             st.caption(f"候选理由：{candidate_info.rationale}")
 
