@@ -27,6 +27,6 @@
       "label": "reasoned_quality_guard",
       "notes": "引导链式推理、事实核对与示例锚定。"
     },
-    "activate": false
+    "activate": true
   }
 }

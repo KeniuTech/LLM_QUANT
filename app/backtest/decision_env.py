@@ -155,14 +155,28 @@ class DecisionEnv:
         else:
             applied_controls = self._apply_department_controls(engine, department_controls)
 
+        records_list: List[Dict[str, Any]] = []
         try:
             records, done = engine.step_session(session)
+            records_list = list(records) if records is not None else []
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("backtest failed under action", extra={**LOG_EXTRA, "error": str(exc)})
-            info = {"error": str(exc)}
-            return {"failure": 1.0}, -1.0, True, info
-
-        records_list = list(records) if records is not None else []
+            failure_metrics = self._empty_metrics(getattr(session, "result", None))
+            self._last_metrics = failure_metrics
+            self._last_department_controls = applied_controls
+            observation = self._build_observation(failure_metrics, records_list, True)
+            observation["failure"] = 1.0
+            info = {
+                "error": str(exc),
+                "weights": weights,
+                "department_controls": applied_controls,
+                "nav_series": failure_metrics.nav_series,
+                "trades": failure_metrics.trades,
+                "risk_breakdown": failure_metrics.risk_breakdown,
+                "session_done": True,
+                "raw_records": records_list,
+            }
+            return observation, -1.0, True, info
 
         snapshots, trades_override = self._fetch_portfolio_records()
         metrics = self._compute_metrics(
@@ -584,3 +598,40 @@ class DecisionEnv:
             except json.JSONDecodeError:
                 return default
         return default
+
+    def _empty_metrics(self, result: Optional[BacktestResult]) -> EpisodeMetrics:
+        nav_series: List[Dict[str, Any]] = []
+        trades: List[Dict[str, Any]] = []
+        risk_events: List[Dict[str, Any]] = []
+
+        if result is not None:
+            try:
+                nav_series = list(result.nav_series or [])
+            except Exception:  # noqa: BLE001
+                nav_series = []
+            try:
+                trades = list(result.trades or [])
+            except Exception:  # noqa: BLE001
+                trades = []
+            try:
+                risk_events = list(getattr(result, "risk_events", []) or [])
+            except Exception:  # noqa: BLE001
+                risk_events = []
+
+        risk_breakdown: Dict[str, int] = {}
+        for event in risk_events:
+            reason = str(event.get("reason") or "unknown")
+            risk_breakdown[reason] = risk_breakdown.get(reason, 0) + 1
+
+        return EpisodeMetrics(
+            total_return=0.0,
+            max_drawdown=0.0,
+            volatility=0.0,
+            nav_series=nav_series,
+            trades=trades,
+            turnover=0.0,
+            turnover_value=0.0,
+            trade_count=len(trades),
+            risk_count=len(risk_events),
+            risk_breakdown=risk_breakdown,
+        )
