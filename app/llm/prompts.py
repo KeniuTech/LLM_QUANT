@@ -94,6 +94,15 @@ def department_prompt(
         "supplements": supplements.strip() or "- 当前无追加数据",
         "action": ""  # 添加 action 变量以避免模板格式化错误
     }
+    template_vars.setdefault("scratchpad", "")
+
+    # Ensure all declared template variables exist to avoid KeyError
+    try:
+        declared_vars = list(getattr(template, "variables", []) or [])
+    except Exception:  # noqa: BLE001
+        declared_vars = []
+    for var in declared_vars:
+        template_vars.setdefault(var, "")
     
     # Get template and format prompt
     return template.format(template_vars)

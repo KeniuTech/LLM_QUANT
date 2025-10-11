@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
@@ -55,11 +56,15 @@ class PromptTemplate:
             if missing:
                 raise ValueError(f"Missing required context: {', '.join(missing)}")
 
-        # Format template
-        try:
-            result = self.template.format(**context)
-        except KeyError as e:
-            raise ValueError(f"Missing template variable: {e}")
+        pattern = re.compile(r"\{([^{}]+)\}")
+
+        def _replace(match: re.Match[str]) -> str:
+            token = match.group(1)
+            if token in context:
+                return str(context[token])
+            return match.group(0)
+
+        result = pattern.sub(_replace, self.template)
 
         # Truncate if needed, preserving exact number of characters
         if self.max_length > 0 and len(result) > self.max_length:
