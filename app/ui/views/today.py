@@ -23,6 +23,107 @@ from app.ui.shared import (
 )
 
 
+def _fetch_agent_actions(trade_date: str, symbols: List[str]) -> Dict[str, Dict[str, Optional[str]]]:
+    unique_symbols = list(dict.fromkeys(symbols))
+    if not unique_symbols:
+        return {}
+    placeholder = ", ".join("?" for _ in unique_symbols)
+    sql = (
+        f"""
+        SELECT ts_code, agent, action
+        FROM agent_utils
+        WHERE trade_date = ?
+        AND ts_code IN ({placeholder})
+        """
+    )
+    params: List[object] = [trade_date, *unique_symbols]
+    with db_session(read_only=True) as conn:
+        rows = conn.execute(sql, params).fetchall()
+    mapping: Dict[str, Dict[str, Optional[str]]] = {}
+    for row in rows:
+        ts_code = row["ts_code"]
+        agent = row["agent"]
+        action = row["action"]
+        mapping.setdefault(ts_code, {})[agent] = action
+    return mapping
+
+
+def _reevaluate_symbols(
+    trade_date_obj: date,
+    symbols: List[str],
+    cfg_id: str,
+    cfg_name: str,
+) -> List[Dict[str, object]]:
+    unique_symbols = list(dict.fromkeys(symbols))
+    if not unique_symbols:
+        return []
+    trade_date_str = trade_date_obj.isoformat()
+    before_map = _fetch_agent_actions(trade_date_str, unique_symbols)
+    engine_params: Dict[str, object] = {}
+    target_val = st.session_state.get("bt_target")
+    if target_val is not None:
+        try:
+            engine_params["target"] = float(target_val)
+        except (TypeError, ValueError):
+            pass
+    stop_val = st.session_state.get("bt_stop")
+    if stop_val is not None:
+        try:
+            engine_params["stop"] = float(stop_val)
+        except (TypeError, ValueError):
+            pass
+    hold_val = st.session_state.get("bt_hold_days")
+    if hold_val is not None:
+        try:
+            engine_params["hold_days"] = int(hold_val)
+        except (TypeError, ValueError):
+            pass
+    capital_val = st.session_state.get("bt_initial_capital")
+    if capital_val is not None:
+        try:
+            engine_params["initial_capital"] = float(capital_val)
+        except (TypeError, ValueError):
+            pass
+    cfg = BtConfig(
+        id=cfg_id,
+        name=cfg_name,
+        start_date=trade_date_obj,
+        end_date=trade_date_obj,
+        universe=unique_symbols,
+        params=engine_params,
+    )
+    engine = BacktestEngine(cfg)
+    state = PortfolioState(cash=engine.initial_cash)
+    engine.simulate_day(trade_date_obj, state)
+    after_map = _fetch_agent_actions(trade_date_str, unique_symbols)
+    changes: List[Dict[str, object]] = []
+    for code in unique_symbols:
+        before_agents = before_map.get(code, {})
+        after_agents = after_map.get(code, {})
+        for agent, new_action in after_agents.items():
+            old_action = before_agents.get(agent)
+            if new_action != old_action:
+                changes.append(
+                    {
+                        "代码": code,
+                        "代理": agent,
+                        "原动作": old_action,
+                        "新动作": new_action,
+                    }
+                )
+        for agent, old_action in before_agents.items():
+            if agent not in after_agents:
+                changes.append(
+                    {
+                        "代码": code,
+                        "代理": agent,
+                        "原动作": old_action,
+                        "新动作": None,
+                    }
+                )
+    return changes
+
+
 def render_today_plan() -> None:
     LOGGER.info("渲染今日计划页面", extra=LOG_EXTRA)
     st.header("今日计划")
@@ -176,56 +277,15 @@ def _render_today_plan_symbol_view(
                     raise ValueError(f"无法解析交易日：{trade_date}")
 
                 progress = st.progress(0.0)
-                changes_all: List[Dict[str, object]] = []
-                success_count = 0
-                error_count = 0
-
-                for idx, code in enumerate(symbols, start=1):
-                    try:
-                        with db_session(read_only=True) as conn:
-                            before_rows = conn.execute(
-                                "SELECT agent, action FROM agent_utils WHERE trade_date = ? AND ts_code = ?",
-                                (trade_date, code),
-                            ).fetchall()
-                        before_map = {row["agent"]: row["action"] for row in before_rows}
-
-                        cfg = BtConfig(
-                            id="reeval_ui_all",
-                            name="UI All Re-eval",
-                            start_date=trade_date_obj,
-                            end_date=trade_date_obj,
-                            universe=[code],
-                            params={},
-                        )
-                        engine = BacktestEngine(cfg)
-                        state = PortfolioState()
-                        engine.simulate_day(trade_date_obj, state)
-
-                        with db_session(read_only=True) as conn:
-                            after_rows = conn.execute(
-                                "SELECT agent, action FROM agent_utils WHERE trade_date = ? AND ts_code = ?",
-                                (trade_date, code),
-                            ).fetchall()
-                        for row in after_rows:
-                            agent = row["agent"]
-                            new_action = row["action"]
-                            old_action = before_map.get(agent)
-                            if new_action != old_action:
-                                changes_all.append(
-                                    {"代码": code, "代理": agent, "原动作": old_action, "新动作": new_action}
-                                )
-                        success_count += 1
-                    except Exception:  # noqa: BLE001
-                        LOGGER.exception("重评估 %s 失败", code, extra=LOG_EXTRA)
-                        error_count += 1
-
-                    progress.progress(idx / len(symbols))
-
-                if error_count > 0:
-                    st.error(f"一键重评估完成：成功 {success_count} 个，失败 {error_count} 个")
-                else:
-                    st.success(f"一键重评估完成：所有 {success_count} 个标的重评估成功")
-
+                progress.progress(0.3 if symbols else 1.0)
+                changes_all = _reevaluate_symbols(
+                    trade_date_obj,
+                    symbols,
+                    "reeval_ui_all",
+                    "UI All Re-eval",
+                )
+                progress.progress(1.0)
+                st.success(f"一键重评估完成：共处理 {len(symbols)} 个标的")
                 if changes_all:
                     st.write("检测到以下动作变更：")
                     st.dataframe(pd.DataFrame(changes_all), hide_index=True, width='stretch')
@@ -579,44 +639,20 @@ def _render_today_plan_symbol_view(
                         pass
                 if trade_date_obj is None:
                     raise ValueError(f"无法解析交易日：{trade_date}")
-                with db_session(read_only=True) as conn:
-                    before_rows = conn.execute(
-                        """
-                        SELECT agent, action, utils FROM agent_utils
-                        WHERE trade_date = ? AND ts_code = ?
-                        """,
-                        (trade_date, ts_code),
-                    ).fetchall()
-                before_map = {row["agent"]: (row["action"], row["utils"]) for row in before_rows}
-                cfg = BtConfig(
-                    id="reeval_ui",
-                    name="UI Re-evaluation",
-                    start_date=trade_date_obj,
-                    end_date=trade_date_obj,
-                    universe=[ts_code],
-                    params={},
+                changes = _reevaluate_symbols(
+                    trade_date_obj,
+                    [ts_code],
+                    "reeval_ui",
+                    "UI Re-evaluation",
                 )
-                engine = BacktestEngine(cfg)
-                state = PortfolioState()
-                engine.simulate_day(trade_date_obj, state)
-                with db_session(read_only=True) as conn:
-                    after_rows = conn.execute(
-                        """
-                        SELECT agent, action, utils FROM agent_utils
-                        WHERE trade_date = ? AND ts_code = ?
-                        """,
-                        (trade_date, ts_code),
-                    ).fetchall()
-                changes = []
-                for row in after_rows:
-                    agent = row["agent"]
-                    new_action = row["action"]
-                    old_action, _old_utils = before_map.get(agent, (None, None))
-                    if new_action != old_action:
-                        changes.append({"代理": agent, "原动作": old_action, "新动作": new_action})
                 if changes:
+                    for change in changes:
+                        change.setdefault("代码", ts_code)
+                    df_changes = pd.DataFrame(changes)
+                    if "代码" in df_changes.columns:
+                        df_changes = df_changes[["代码", "代理", "原动作", "新动作"]]
                     st.success("重评估完成，检测到动作变更：")
-                    st.dataframe(pd.DataFrame(changes), hide_index=True, width='stretch')
+                    st.dataframe(df_changes, hide_index=True, width='stretch')
                 else:
                     st.success("重评估完成，无动作变更。")
                 st.rerun()
@@ -637,38 +673,15 @@ def _render_today_plan_symbol_view(
                 if trade_date_obj is None:
                     raise ValueError(f"无法解析交易日：{trade_date}")
                 progress = st.progress(0.0)
-                changes_all: List[Dict[str, object]] = []
-                for idx, code in enumerate(batch_symbols, start=1):
-                    with db_session(read_only=True) as conn:
-                        before_rows = conn.execute(
-                            "SELECT agent, action FROM agent_utils WHERE trade_date = ? AND ts_code = ?",
-                            (trade_date, code),
-                        ).fetchall()
-                    before_map = {row["agent"]: row["action"] for row in before_rows}
-                    cfg = BtConfig(
-                        id="reeval_ui_batch",
-                        name="UI Batch Re-eval",
-                        start_date=trade_date_obj,
-                        end_date=trade_date_obj,
-                        universe=[code],
-                        params={},
-                    )
-                    engine = BacktestEngine(cfg)
-                    state = PortfolioState()
-                    engine.simulate_day(trade_date_obj, state)
-                    with db_session(read_only=True) as conn:
-                        after_rows = conn.execute(
-                            "SELECT agent, action FROM agent_utils WHERE trade_date = ? AND ts_code = ?",
-                            (trade_date, code),
-                        ).fetchall()
-                    for row in after_rows:
-                        agent = row["agent"]
-                        new_action = row["action"]
-                        old_action = before_map.get(agent)
-                        if new_action != old_action:
-                            changes_all.append({"代码": code, "代理": agent, "原动作": old_action, "新动作": new_action})
-                    progress.progress(idx / max(1, len(batch_symbols)))
-                st.success("批量重评估完成。")
+                progress.progress(0.3 if batch_symbols else 1.0)
+                changes_all = _reevaluate_symbols(
+                    trade_date_obj,
+                    batch_symbols,
+                    "reeval_ui_batch",
+                    "UI Batch Re-eval",
+                )
+                progress.progress(1.0)
+                st.success(f"批量重评估完成：共处理 {len(batch_symbols)} 个标的")
                 if changes_all:
                     st.dataframe(pd.DataFrame(changes_all), hide_index=True, width='stretch')
                 st.rerun()

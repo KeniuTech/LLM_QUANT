@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from app.agents.base import AgentAction, AgentContext
@@ -16,7 +16,7 @@ from app.llm.metrics import record_decision as metrics_record_decision
 from app.agents.registry import default_agents
 from app.data.schema import initialize_database
 from app.utils.data_access import DataBroker
-from app.utils.config import get_config
+from app.utils.config import PortfolioSettings, get_config
 from app.utils.db import db_session
 from app.utils.logging import get_logger
 from app.utils import alerts
@@ -105,11 +105,25 @@ class BacktestEngine:
         )
         self.data_broker = DataBroker()
         params = cfg.params or {}
+        portfolio_cfg = getattr(app_cfg, "portfolio", None) or PortfolioSettings()
         self.risk_params = {
             "max_position_weight": float(params.get("max_position_weight", 0.2)),
             "max_daily_turnover_ratio": float(params.get("max_daily_turnover_ratio", 0.25)),
             "fee_rate": float(params.get("fee_rate", 0.0005)),
             "slippage_bps": float(params.get("slippage_bps", 10.0)),
+        }
+        self.initial_cash = max(0.0, float(params.get("initial_capital", portfolio_cfg.initial_capital)))
+        target_return = params.get("target", params.get("target_return", 0.0)) or 0.0
+        stop_loss = params.get("stop", params.get("stop_loss", 0.0)) or 0.0
+        hold_days_param = params.get("hold_days", params.get("max_hold_days", 0))
+        try:
+            max_hold_days = int(hold_days_param) if hold_days_param is not None else 0
+        except (TypeError, ValueError):
+            max_hold_days = 0
+        self.trading_rules = {
+            "target_return": float(target_return),
+            "stop_loss": float(stop_loss),
+            "max_hold_days": max(0, max_hold_days),
         }
         self._fee_rate = max(self.risk_params["fee_rate"], 0.0)
         self._slippage_rate = max(self.risk_params["slippage_bps"], 0.0) / 10_000.0
@@ -314,9 +328,9 @@ class BacktestEngine:
             is_suspended = self.data_broker.fetch_flags(
                 "suspend",
                 ts_code,
-                trade_date,
-                "ts_code = ?",
-                [ts_code],
+                trade_date_str,
+                "",
+                [],
                 auto_refresh=False,  # 避免在回测中触发自动补数
             )
 
@@ -650,6 +664,7 @@ class BacktestEngine:
                 continue
             features = feature_cache.get(ts_code, {})
             current_qty = state.holdings.get(ts_code, 0.0)
+            current_cost_basis = float(state.cost_basis.get(ts_code, 0.0) or 0.0)
             liquidity_score = float(features.get("liquidity_score") or 0.0)
             risk_penalty = float(features.get("risk_penalty") or 0.0)
             is_suspended = bool(features.get("is_suspended"))
@@ -678,6 +693,76 @@ class BacktestEngine:
                     )
                     if risk.status == "blocked":
                         continue
+
+            rule_override_action: Optional[AgentAction] = None
+            rule_override_reason: Optional[str] = None
+            gain_ratio: Optional[float] = None
+            if current_qty > 0 and current_cost_basis:
+                try:
+                    gain_ratio = (price / current_cost_basis) - 1.0
+                except ZeroDivisionError:
+                    gain_ratio = None
+            target_return = self.trading_rules.get("target_return", 0.0)
+            if (
+                rule_override_action is None
+                and gain_ratio is not None
+                and target_return
+                and gain_ratio >= target_return
+            ):
+                rule_override_action = AgentAction.SELL
+                rule_override_reason = "target_reached"
+            stop_loss = self.trading_rules.get("stop_loss", 0.0)
+            if (
+                rule_override_action is None
+                and gain_ratio is not None
+                and stop_loss
+                and gain_ratio <= stop_loss
+            ):
+                rule_override_action = AgentAction.SELL
+                rule_override_reason = "stop_loss"
+            max_hold_days = self.trading_rules.get("max_hold_days", 0)
+            if (
+                rule_override_action is None
+                and max_hold_days
+                and max_hold_days > 0
+                and current_qty > 0
+            ):
+                opened_str = state.opened_dates.get(ts_code)
+                opened_dt: Optional[date] = None
+                if opened_str:
+                    try:
+                        opened_dt = date.fromisoformat(str(opened_str))
+                    except ValueError:
+                        try:
+                            opened_dt = datetime.strptime(str(opened_str), "%Y%m%d").date()
+                        except ValueError:
+                            opened_dt = None
+                            LOGGER.debug(
+                                "无法解析持仓日期 ts_code=%s value=%s",
+                                ts_code,
+                                opened_str,
+                                extra=LOG_EXTRA,
+                            )
+                if opened_dt:
+                    holding_days = (trade_date - opened_dt).days
+                    if holding_days >= max_hold_days:
+                        rule_override_action = AgentAction.SELL
+                        rule_override_reason = "holding_period"
+
+            if rule_override_action and rule_override_action is not effective_action:
+                effective_action = rule_override_action
+                effective_weight = target_weight_for_action(effective_action)
+                _record_risk(
+                    ts_code,
+                    rule_override_reason or "rule_override",
+                    decision,
+                    extra={
+                        "rule_trigger": rule_override_reason,
+                        "gain_ratio": gain_ratio,
+                    },
+                    action_override=effective_action,
+                    target_weight_override=effective_weight,
+                )
 
             if is_suspended:
                 _record_risk(ts_code, "suspended", decision)
@@ -738,8 +823,7 @@ class BacktestEngine:
                 if total_cash_needed <= 0:
                     _record_risk(ts_code, "invalid_trade", decision)
                     continue
-
-                previous_cost = state.cost_basis.get(ts_code, 0.0) * current_qty
+                previous_cost = current_cost_basis * current_qty
                 new_qty = current_qty + delta
                 state.cost_basis[ts_code] = (
                     (previous_cost + trade_value + fee) / new_qty if new_qty > 0 else 0.0
@@ -777,8 +861,7 @@ class BacktestEngine:
                 gross_value = sell_qty * trade_price
                 fee = gross_value * self._fee_rate
                 proceeds = gross_value - fee
-                cost_basis = state.cost_basis.get(ts_code, 0.0)
-                realized = (trade_price - cost_basis) * sell_qty - fee
+                realized = (trade_price - current_cost_basis) * sell_qty - fee
                 state.cash += proceeds
                 state.realized_pnl += realized
                 new_qty = current_qty - sell_qty
@@ -1023,7 +1106,7 @@ class BacktestEngine:
         """Initialise a new incremental backtest session."""
 
         return BacktestSession(
-            state=PortfolioState(),
+            state=PortfolioState(cash=self.initial_cash),
             result=BacktestResult(),
             current_date=self.cfg.start_date,
         )

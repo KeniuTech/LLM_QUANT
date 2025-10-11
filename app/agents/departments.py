@@ -204,22 +204,29 @@ class DepartmentAgent:
 
             rounds_executed = round_idx + 1
 
-            usage = response.get("usage") if isinstance(response, Mapping) else None
-            if isinstance(usage, Mapping):
-                usage_payload = {"round": round_idx + 1}
-                usage_payload.update(dict(usage))
-                usage_records.append(usage_payload)
+            message, usage_payload, tool_calls = _normalize_llm_response(response)
+            if usage_payload:
+                payload_with_round = {"round": round_idx + 1}
+                payload_with_round.update(usage_payload)
+                usage_records.append(payload_with_round)
 
-            choice = (response.get("choices") or [{}])[0]
-            message = choice.get("message", {})
+            if not message:
+                LOGGER.debug(
+                    "部门 %s 第 %s 轮响应缺少 message 字段：%s",
+                    self.settings.code,
+                    round_idx + 1,
+                    response,
+                    extra=LOG_EXTRA,
+                )
+                message = {"role": "assistant", "content": ""}
             transcript.append(_message_to_text(message))
 
             assistant_record: Dict[str, Any] = {
-                "role": "assistant",
+                "role": message.get("role", "assistant"),
                 "content": _extract_message_content(message),
             }
-            if message.get("tool_calls"):
-                assistant_record["tool_calls"] = message.get("tool_calls")
+            if tool_calls:
+                assistant_record["tool_calls"] = tool_calls
             messages.append(assistant_record)
             CONV_LOGGER.info(
                 "dept=%s round=%s assistant=%s",
@@ -228,7 +235,6 @@ class DepartmentAgent:
                 assistant_record,
             )
 
-            tool_calls = message.get("tool_calls") or []
             if tool_calls:
                 for call in tool_calls:
                     function_block = call.get("function") or {}
@@ -656,6 +662,8 @@ class DepartmentAgent:
             dialogue=[response],
         )
         return decision
+
+
 def _ensure_mutable_context(context: DepartmentContext) -> DepartmentContext:
     if not isinstance(context.features, dict):
         context.features = dict(context.features or {})
@@ -667,6 +675,77 @@ def _ensure_mutable_context(context: DepartmentContext) -> DepartmentContext:
         raw["scope_values"] = dict(scope_values)
     context.raw = raw
     return context
+
+
+def _compose_usage_from_stats(payload: Mapping[str, Any]) -> Dict[str, Any]:
+    usage: Dict[str, Any] = {}
+    prompt_eval = payload.get("prompt_eval_count")
+    completion_eval = payload.get("eval_count")
+    if isinstance(prompt_eval, (int, float)):
+        usage["prompt_tokens"] = int(prompt_eval)
+    if isinstance(completion_eval, (int, float)):
+        usage["completion_tokens"] = int(completion_eval)
+    if usage:
+        total = usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0)
+        usage["total_tokens"] = total
+    return usage
+
+
+def _normalize_llm_response(
+    response: Mapping[str, Any]
+) -> Tuple[Dict[str, Any], Dict[str, Any], List[Dict[str, Any]]]:
+    message: Dict[str, Any] = {}
+    usage: Dict[str, Any] = {}
+    tool_calls: List[Dict[str, Any]] = []
+
+    if not isinstance(response, Mapping):
+        return message, usage, tool_calls
+
+    choices = response.get("choices")
+    if isinstance(choices, list) and choices:
+        choice = choices[0] or {}
+        candidate = choice.get("message")
+        if isinstance(candidate, Mapping):
+            message = candidate
+            raw_calls = candidate.get("tool_calls")
+            if isinstance(raw_calls, list):
+                tool_calls = list(raw_calls)
+        raw_usage = response.get("usage")
+        if isinstance(raw_usage, Mapping):
+            usage = dict(raw_usage)
+    else:
+        raw_message = response.get("message")
+        if isinstance(raw_message, Mapping):
+            message = raw_message
+            raw_calls = raw_message.get("tool_calls")
+            if isinstance(raw_calls, list):
+                tool_calls = list(raw_calls)
+        elif isinstance(response.get("messages"), list):
+            messages_list = response.get("messages") or []
+            if messages_list:
+                candidate = messages_list[-1]
+                if isinstance(candidate, Mapping):
+                    message = candidate
+                    raw_calls = candidate.get("tool_calls")
+                    if isinstance(raw_calls, list):
+                        tool_calls = list(raw_calls)
+        if not message:
+            content = response.get("content")
+            if isinstance(content, str):
+                message = {"role": "assistant", "content": content}
+        raw_usage = response.get("usage")
+        if isinstance(raw_usage, Mapping):
+            usage = dict(raw_usage)
+        else:
+            usage = _compose_usage_from_stats(response)
+
+    if not tool_calls:
+        extra = message.get("additional_kwargs")
+        if isinstance(extra, Mapping):
+            extra_calls = extra.get("tool_calls")
+            if isinstance(extra_calls, list):
+                tool_calls = list(extra_calls)
+    return message or {"role": "assistant", "content": ""}, usage, tool_calls
 
 
 def _parse_tool_arguments(payload: Any) -> Dict[str, Any]:

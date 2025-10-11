@@ -5,6 +5,12 @@ from typing import Optional, Dict, Any
 import time
 import streamlit as st
 
+try:
+    from app.features.progress import register_progress_handler
+except ImportError:  # pragma: no cover - optional dependency
+    def register_progress_handler(handler: object) -> None:
+        return
+
 
 class FactorProgressState:
     """因子计算进度状态管理类"""
@@ -151,6 +157,7 @@ class FactorProgressState:
 
 # 全局进度状态实例
 factor_progress = FactorProgressState()
+register_progress_handler(factor_progress)
 
 
 def render_factor_progress() -> None:

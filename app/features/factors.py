@@ -19,7 +19,11 @@ from app.features.value_risk_factors import ValueRiskFactors
 # 导入因子验证功能
 from app.features.validation import check_data_sufficiency, check_data_sufficiency_for_zero_window, detect_outliers
 # 导入UI进度状态管理
-from app.ui.progress_state import factor_progress
+try:
+    from app.features.progress import get_progress_handler
+except ImportError:  # pragma: no cover - optional dependency
+    def get_progress_handler():
+        return None
 
 
 LOGGER = get_logger(__name__)
@@ -176,14 +180,16 @@ def compute_factors(
     broker = DataBroker()
     results: List[FactorResult] = []
     rows_to_persist: List[tuple[str, Dict[str, float | None]]] = []
+    total_batches = (len(universe) + batch_size - 1) // batch_size if universe else 0
+    progress = get_progress_handler()
+    if progress and universe:
+        try:
+            progress.start_calculation(len(universe), total_batches)
+        except Exception:  # noqa: BLE001
+            LOGGER.debug("Progress handler start_calculation 失败", extra=LOG_EXTRA)
+            progress = None
     
     try:
-        # 启动UI进度状态（在异步线程中不直接访问factor_progress）
-        # factor_progress.start_calculation(
-        #     total_securities=len(universe),
-        #     total_batches=(len(universe) + batch_size - 1) // batch_size
-        # )
-        
         # 分批处理以优化性能
         for i in range(0, len(universe), batch_size):
             batch = universe[i:i+batch_size]
@@ -194,9 +200,10 @@ def compute_factors(
                 specs, 
                 validation_stats,
                 batch_index=i // batch_size,
-                total_batches=(len(universe) + batch_size - 1) // batch_size,
+                total_batches=total_batches or 1,
                 processed_securities=i,
-                total_securities=len(universe)
+                total_securities=len(universe),
+                progress=progress,
             )
             
             for ts_code, values in batch_results:
@@ -222,9 +229,13 @@ def compute_factors(
             _persist_factor_rows(trade_date_str, rows_to_persist, specs)
         
         # 更新UI进度状态为完成
-        factor_progress.complete_calculation(
-            message=f"因子计算完成: 总数量={len(universe)}, 成功={validation_stats['success']}, 失败={len(universe) - validation_stats['success']}"
-        )
+        if progress:
+            try:
+                progress.complete_calculation(
+                    message=f"因子计算完成: 总数量={len(universe)}, 成功={validation_stats['success']}, 失败={len(universe) - validation_stats['success']}"
+                )
+            except Exception:  # noqa: BLE001
+                LOGGER.debug("Progress handler complete_calculation 失败", extra=LOG_EXTRA)
             
         LOGGER.info(
             "因子计算完成 总数量:%s 成功:%s 失败:%s",
@@ -239,7 +250,11 @@ def compute_factors(
     except Exception as exc:
         # 发生错误时更新UI状态
         error_message = f"因子计算过程中发生错误: {exc}"
-        factor_progress.error_occurred(error_message)
+        if progress:
+            try:
+                progress.error_occurred(error_message)
+            except Exception:  # noqa: BLE001
+                LOGGER.debug("Progress handler error_occurred 失败", extra=LOG_EXTRA)
         LOGGER.error(error_message, extra=LOG_EXTRA)
         raise
 
@@ -380,6 +395,7 @@ def _compute_batch_factors(
     total_batches: int = 1,
     processed_securities: int = 0,
     total_securities: int = 0,
+    progress: Optional[object] = None,
 ) -> List[tuple[str, Dict[str, float | None]]]:
     """批量计算多个证券的因子值，提高计算效率"""
     batch_results = []
@@ -388,13 +404,16 @@ def _compute_batch_factors(
     available_codes = _check_batch_data_availability(broker, ts_codes, trade_date, specs)
     
     # 更新UI进度状态 - 开始处理批次
-    if total_securities > 0:
-        from app.ui.progress_state import factor_progress
-        factor_progress.update_progress(
-            current_securities=processed_securities,
-            current_batch=batch_index + 1,
-            message=f"开始处理批次 {batch_index + 1}/{total_batches}"
-        )
+    if progress and total_securities > 0:
+        try:
+            progress.update_progress(
+                current_securities=processed_securities,
+                current_batch=batch_index + 1,
+                message=f"开始处理批次 {batch_index + 1}/{total_batches}",
+            )
+        except Exception:  # noqa: BLE001
+            LOGGER.debug("Progress handler update_progress 失败", extra=LOG_EXTRA)
+            progress = None
     
     for i, ts_code in enumerate(ts_codes):
         try:
@@ -434,15 +453,18 @@ def _compute_batch_factors(
                 validation_stats["skipped"] += 1
                 
             # 每处理1个证券更新一次进度，确保实时性
-            if total_securities > 0:
+            if progress and total_securities > 0:
                 current_progress = processed_securities + i + 1
                 progress_percentage = (current_progress / total_securities) * 100
-                from app.ui.progress_state import factor_progress
-                factor_progress.update_progress(
-                    current_securities=current_progress,
-                    current_batch=batch_index + 1,
-                    message=f"处理批次 {batch_index + 1}/{total_batches} - 证券 {current_progress}/{total_securities} ({progress_percentage:.1f}%)"
-                )
+                try:
+                    progress.update_progress(
+                        current_securities=current_progress,
+                        current_batch=batch_index + 1,
+                        message=f"处理批次 {batch_index + 1}/{total_batches} - 证券 {current_progress}/{total_securities} ({progress_percentage:.1f}%)",
+                    )
+                except Exception:  # noqa: BLE001
+                    LOGGER.debug("Progress handler update_progress 失败", extra=LOG_EXTRA)
+                    progress = None
         except Exception as e:
             LOGGER.error(
                 "计算因子失败 ts_code=%s err=%s",
@@ -453,16 +475,18 @@ def _compute_batch_factors(
             validation_stats["skipped"] += 1
     
     # 批次处理完成，更新最终进度
-    if total_securities > 0:
+    if progress and total_securities > 0:
         final_progress = processed_securities + len(ts_codes)
         progress_percentage = (final_progress / total_securities) * 100
-        from app.ui.progress_state import factor_progress
-        factor_progress.update_progress(
-            current_securities=final_progress,
-            current_batch=batch_index + 1,
-            message=f"批次 {batch_index + 1}/{total_batches} 处理完成 - 证券 {final_progress}/{total_securities} ({progress_percentage:.1f}%)"
-        )
-    
+        try:
+            progress.update_progress(
+                current_securities=final_progress,
+                current_batch=batch_index + 1,
+                message=f"批次 {batch_index + 1}/{total_batches} 处理完成 - 证券 {final_progress}/{total_securities} ({progress_percentage:.1f}%)",
+            )
+        except Exception:  # noqa: BLE001
+            LOGGER.debug("Progress handler update_progress 失败", extra=LOG_EXTRA)
+
     return batch_results
 
 

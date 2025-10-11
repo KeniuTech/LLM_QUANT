@@ -1,6 +1,8 @@
 """投资池与仓位概览页面。"""
 from __future__ import annotations
 
+from datetime import date, timedelta
+
 import pandas as pd
 import plotly.express as px
 import streamlit as st
@@ -106,28 +108,44 @@ def render_pool_overview() -> None:
 
     st.caption("数据来源：agent_utils、investment_pool、portfolio_positions、portfolio_trades、portfolio_snapshots。")
 
+    default_compare_a = latest_date or date.today()
+    default_compare_b = default_compare_a - timedelta(days=1)
+    if default_compare_b > default_compare_a:
+        default_compare_b = default_compare_a
+    compare_col1, compare_col2 = st.columns(2)
+    compare_date1 = compare_col1.date_input(
+        "日志对比日期 A",
+        value=default_compare_a,
+        key="pool_compare_date_a",
+    )
+    compare_date2 = compare_col2.date_input(
+        "日志对比日期 B",
+        value=default_compare_b,
+        key="pool_compare_date_b",
+    )
+
     if st.button("执行对比", type="secondary"):
         with st.spinner("执行日志对比分析中..."):
             try:
                 with db_session(read_only=True) as conn:
-                    query_date1 = f"{compare_date1.isoformat()}T00:00:00Z"  # type: ignore[name-defined]
-                    query_date2 = f"{compare_date1.isoformat()}T23:59:59Z"  # type: ignore[name-defined]
+                    query_date1 = f"{compare_date1.isoformat()}T00:00:00Z"
+                    query_date2 = f"{compare_date1.isoformat()}T23:59:59Z"
                     logs1 = conn.execute(
                         "SELECT level, COUNT(*) as count FROM run_log WHERE ts BETWEEN ? AND ? GROUP BY level",
                         (query_date1, query_date2),
                     ).fetchall()
 
-                    query_date3 = f"{compare_date2.isoformat()}T00:00:00Z"  # type: ignore[name-defined]
-                    query_date4 = f"{compare_date2.isoformat()}T23:59:59Z"  # type: ignore[name-defined]
+                    query_date3 = f"{compare_date2.isoformat()}T00:00:00Z"
+                    query_date4 = f"{compare_date2.isoformat()}T23:59:59Z"
                     logs2 = conn.execute(
                         "SELECT level, COUNT(*) as count FROM run_log WHERE ts BETWEEN ? AND ? GROUP BY level",
                         (query_date3, query_date4),
                     ).fetchall()
 
                     df1 = pd.DataFrame(logs1, columns=["level", "count"])
-                    df1["date"] = compare_date1.strftime("%Y-%m-%d")  # type: ignore[name-defined]
+                    df1["date"] = compare_date1.strftime("%Y-%m-%d")
                     df2 = pd.DataFrame(logs2, columns=["level", "count"])
-                    df2["date"] = compare_date2.strftime("%Y-%m-%d")  # type: ignore[name-defined]
+                    df2["date"] = compare_date2.strftime("%Y-%m-%d")
 
                     for df in (df1, df2):
                         for col in df.columns:
@@ -141,13 +159,13 @@ def render_pool_overview() -> None:
                         y="count",
                         color="date",
                         barmode="group",
-                        title=f"日志级别分布对比 ({compare_date1} vs {compare_date2})",  # type: ignore[name-defined]
+                        title=f"日志级别分布对比 ({compare_date1} vs {compare_date2})",
                     )
                     st.plotly_chart(fig, width='stretch')
 
                     st.write("日志统计对比：")
-                    date1_str = compare_date1.strftime("%Y%m%d")  # type: ignore[name-defined]
-                    date2_str = compare_date2.strftime("%Y%m%d")  # type: ignore[name-defined]
+                    date1_str = compare_date1.strftime("%Y%m%d")
+                    date2_str = compare_date2.strftime("%Y%m%d")
                     merged_df = df1.merge(
                         df2,
                         on="level",

@@ -44,13 +44,14 @@ def render_backtest_review() -> None:
     app_cfg = get_config()
     default_start, default_end = default_backtest_range(window_days=60)
     LOGGER.debug(
-        "回测默认参数：start=%s end=%s universe=%s target=%s stop=%s hold_days=%s",
+        "回测默认参数：start=%s end=%s universe=%s target=%s stop=%s hold_days=%s initial_capital=%s",
         default_start,
         default_end,
         "000001.SZ",
         0.035,
         -0.015,
         10,
+        get_config().portfolio.initial_capital,
         extra=LOG_EXTRA,
     )
 
@@ -59,10 +60,24 @@ def render_backtest_review() -> None:
     start_date = col1.date_input("开始日期", value=default_start, key="bt_start_date")
     end_date = col2.date_input("结束日期", value=default_end, key="bt_end_date")
     universe_text = st.text_input("股票列表（逗号分隔）", value="000001.SZ", key="bt_universe")
-    col_target, col_stop, col_hold = st.columns(3)
+    col_target, col_stop, col_hold, col_cap = st.columns(4)
     target = col_target.number_input("目标收益（例：0.035 表示 3.5%）", value=0.035, step=0.005, format="%.3f", key="bt_target")
     stop = col_stop.number_input("止损收益（例：-0.015 表示 -1.5%）", value=-0.015, step=0.005, format="%.3f", key="bt_stop")
     hold_days = col_hold.number_input("持有期（交易日）", value=10, step=1, key="bt_hold_days")
+    initial_capital = col_cap.number_input(
+        "组合初始资金",
+        value=float(app_cfg.portfolio.initial_capital),
+        step=100000.0,
+        format="%.0f",
+        key="bt_initial_capital",
+    )
+    initial_capital = max(0.0, float(initial_capital))
+    backtest_params = {
+        "target": float(target),
+        "stop": float(stop),
+        "hold_days": int(hold_days),
+        "initial_capital": initial_capital,
+    }
     structure_options = [item.value for item in GameStructure]
     selected_structure_values = st.multiselect(
         "选择博弈框架",
@@ -74,13 +89,14 @@ def render_backtest_review() -> None:
         selected_structure_values = [GameStructure.REPEATED.value]
     selected_structures = [GameStructure(value) for value in selected_structure_values]
     LOGGER.debug(
-        "当前回测表单输入：start=%s end=%s universe_text=%s target=%.3f stop=%.3f hold_days=%s",
+        "当前回测表单输入：start=%s end=%s universe_text=%s target=%.3f stop=%.3f hold_days=%s initial_capital=%.2f",
         start_date,
         end_date,
         universe_text,
         target,
         stop,
         hold_days,
+        initial_capital,
         extra=LOG_EXTRA,
     )
 
@@ -134,13 +150,14 @@ def render_backtest_review() -> None:
             try:
                 universe = [code.strip() for code in universe_text.split(',') if code.strip()]
                 LOGGER.info(
-                    "回测参数：start=%s end=%s universe=%s target=%s stop=%s hold_days=%s",
+                    "回测参数：start=%s end=%s universe=%s target=%s stop=%s hold_days=%s initial_capital=%.2f",
                     start_date,
                     end_date,
                     universe,
                     target,
                     stop,
                     hold_days,
+                    initial_capital,
                     extra=LOG_EXTRA,
                 )
                 backtest_cfg = BtConfig(
@@ -149,11 +166,7 @@ def render_backtest_review() -> None:
                     start_date=start_date,
                     end_date=end_date,
                     universe=universe,
-                    params={
-                        "target": target,
-                        "stop": stop,
-                        "hold_days": int(hold_days),
-                    },
+                    params=dict(backtest_params),
                     game_structures=selected_structures,
                 )
                 result = run_backtest(backtest_cfg, decision_callback=_decision_callback)
@@ -665,11 +678,7 @@ def render_backtest_review() -> None:
                             start_date=start_date,
                             end_date=end_date,
                             universe=universe_env,
-                            params={
-                                "target": target,
-                                "stop": stop,
-                                "hold_days": int(hold_days),
-                            },
+                            params=dict(backtest_params),
                             method=app_cfg.decision_method,
                             game_structures=selected_structures,
                         )
@@ -942,11 +951,7 @@ def render_backtest_review() -> None:
                                 start_date=start_date,
                                 end_date=end_date,
                                 universe=universe_env,
-                                params={
-                                    "target": target,
-                                    "stop": stop,
-                                    "hold_days": int(hold_days),
-                                },
+                                params=dict(backtest_params),
                                 method=app_cfg.decision_method,
                                 game_structures=selected_structures,
                             )

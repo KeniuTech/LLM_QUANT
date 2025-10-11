@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 import sqlite3
 import threading
+import time
 from collections import OrderedDict
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -577,8 +578,7 @@ class DataBroker:
         Returns:
             新闻数据列表，包含sentiment、heat、entities等字段
         """
-        # 简化实现：返回模拟数据
-        # 在实际应用中，这里应该查询新闻数据库
+        # TODO: 使用真实新闻数据库替换随机生成的占位数据
         return [
             {
                 "sentiment": np.random.uniform(-1, 1),
@@ -597,8 +597,7 @@ class DataBroker:
         Returns:
             行业代码或名称，找不到时返回None
         """
-        # 简化实现：返回模拟行业
-        # 在实际应用中，这里应该查询股票行业信息
+        # TODO: 替换为真实行业映射逻辑（当前仅为占位数据）
         industry_mapping = {
             "000001.SZ": "银行",
             "000002.SZ": "房地产",
@@ -617,8 +616,7 @@ class DataBroker:
         Returns:
             行业情绪得分，找不到时返回None
         """
-        # 简化实现：返回模拟情绪得分
-        # 在实际应用中，这里应该基于行业新闻计算情绪
+        # TODO: 接入行业情绪数据源，当前随机值仅用于占位显示
         return np.random.uniform(-1, 1)
 
     def get_industry_stocks(self, industry: str) -> List[str]:
@@ -630,8 +628,7 @@ class DataBroker:
         Returns:
             同行业股票代码列表
         """
-        # 简化实现：返回模拟股票列表
-        # 在实际应用中，这里应该查询行业股票列表
+        # TODO: 使用实际行业成分数据替换占位列表
         industry_stocks = {
             "银行": ["000001.SZ", "002142.SZ", "600036.SH"],
             "房地产": ["000002.SZ", "000402.SZ", "600048.SH"],
@@ -653,10 +650,33 @@ class DataBroker:
 
         if not _is_safe_identifier(table):
             return False
-        query = (
-            f"SELECT 1 FROM {table} WHERE ts_code = ? AND {where_clause} LIMIT 1"
-        )
-        bind_params = (ts_code, *params)
+        parsed_date = _parse_trade_date(trade_date)
+        trade_key = parsed_date.strftime("%Y%m%d") if parsed_date else str(trade_date)
+
+        if auto_refresh and parsed_date and self.check_data_availability(trade_key, {table}):
+            self._trigger_background_refresh(trade_key)
+            if hasattr(time, "sleep"):
+                time.sleep(0.5)
+
+        if table == "suspend":
+            query = (
+                "SELECT 1 FROM suspend "
+                "WHERE ts_code = ? "
+                "AND suspend_date <= ? "
+                "AND (resume_date IS NULL OR resume_date = '' OR resume_date > ?) "
+                "LIMIT 1"
+            )
+            bind_params = (ts_code, trade_key, trade_key)
+        else:
+            clauses = ["ts_code = ?"]
+            bind_params_list: List[object] = [ts_code]
+            clause_text = (where_clause or "").strip()
+            if clause_text:
+                clauses.append(clause_text)
+                bind_params_list.extend(params)
+            query = f"SELECT 1 FROM {table} WHERE {' AND '.join(clauses)} LIMIT 1"
+            bind_params = tuple(bind_params_list)
+
         try:
             with db_session(read_only=True) as conn:
                 try:
