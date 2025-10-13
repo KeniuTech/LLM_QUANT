@@ -1,46 +1,7 @@
-# 决策优化讨论记录
+# 决策优化讨论记录（已归档）
 
-## 核心目标
-- 在 `app/agents` 现有规则型与部门 LLM 协同框架上，定义“收益最大化 + 风险约束”的统一指标，用于评估提示词、温度、多智能体博弈和调用策略的优劣。
-- 借助 `app/backtest/engine.py` 的日频回测环境，构建可重复的仿真闭环，为强化学习或策略搜索提供离线训练与验证数据。
-- 通过优化高层策略（Prompt 模板、对话轮次、function 调用模式），而不是直接干预底层行情预测，使 RL 学习关注“决策流程调度”。
+原始的强化学习与决策优化笔记已整理为专题文档，详见：
 
-## 关键挑战
-- 状态空间：每轮博弈涉及市场因子、代理信号、历史行为与日志状态（`app/data/logs`）；需压缩为 RL 训练可用的紧凑向量或摘要。
-- 奖励设计：直接使用策略收益会导致梯度稀疏，可考虑收益、回撤、成交约束、信心一致性等多目标加权。
-- 数据效率：真实交易可探索次数有限，必须依赖离线仿真 + 反事实评估，或引入模型驱动的世界模型缓解分布偏移。
-- 多智能体非定常性：规则代理 + LLM 的组合策略随参数调整而漂移，需要稳定 Nash 聚合或引入对手建模。
+- `docs/principles/reinforcement_learning_tuning.md`
 
-## 建议路径
-- **数据记录**：扩展 `app/agent_utils` 写入 Prompt 版本、温度、function 调用次数、部门信号等元数据，形成 RL 可用轨迹；同时让日志文件（如 `app/data/logs/agent_20250929_0754.log`）对齐这些字段。
-- **环境封装**：在 `app/backtest/engine.py` 外层定义 `DecisionEnv`，让“动作”映射到策略配置（Prompt 选择、温度、投票权重），`step()` 调用现有引擎完成一日博弈并返回奖励。
-- **层级策略**：先做 Bandit 或 CMA-ES 等黑箱优化调参（温度、权重）建立基线，再过渡到 PPO/SAC 等连续动作 RL；提示词可以编码成可学习 embedding 或有限候选集合。
-- **博弈协同**：针对部门间权重、否决策略，引入 centralized training, decentralized execution (CTDE) 思路，共享一个 critic 评估全局奖励，actor 负责单部门参数。
-- **安全约束**：用 penalty 方法或 Lagrangian 处理仓位/风控约束，确保训练过程中遵守 `A_risk` 设定的停牌、涨跌停逻辑。
-
-## 强化学习框架
-- 状态构建：拼接市场特征（因子矩阵降维）、历史动作、日志中 LLM 置信度；必要时用 LSTM/Transformer 编码。
-- 动作定义：连续动作控制 `temperature`/`top_p`/投票权重，离散动作选择 Prompt 模板/协作模式（majority vs leader）；组合动作可分解成参数化策略。
-- 奖励函数：`收益净值提升 - λ1*回撤 - λ2*成交成本 - λ3*冲突次数`，可把 LLM 置信度一致性或 function 调用成本作为正负项。
-- 训练流程：循环“采样配置 → 回放到 BacktestEngine → 记入 Replay Buffer → 更新策略”，必要时采用离线 RL（CQL、IQL）以利用历史轨迹。
-- 评估：对比默认提示/温度设定的收益分布，统计策略稳定性、反事实收益差，并在 `app/ui/streamlit_app.py` 加入实验版本切换和可视化。
-
-## 下一步
-- 先补齐日志与数据库字段，确保能完整记录提示参数与决策结果。
-- 搭建轻量 Bandit 调参实验，验证不同提示与温度组合对回测收益的影响。
-- 设计 RL 环境接口，与现有 BacktestEngine 集成，规划训练与评估脚本。
-
-## 已完成的日志改进
-- `agent_utils` 表新增 `_telemetry` 与 `_department_telemetry` JSON 字段（存于 `utils` 列内部），记录每个部门的 provider、模型、温度、回合数、工具调用列表与 token 统计，可在 Streamlit “部门意见”详情页展开查看。
-- `app/data/logs/agent_*.log` 会追加 `telemetry` 行，保存每轮函数调用的摘要，方便离线分析提示版本与 LLM 配置对决策的影响。
-- Streamlit 侧边栏监听 `llm.metrics` 的实时事件，并使用原位组件刷新“系统监控”，避免增量追加或节流导致的失效，同时确保实时数据推送稳定。
-- 新增投资管理数据层：SQLite 中创建 `investment_pool`、`portfolio_positions`、`portfolio_trades`、`portfolio_snapshots` 四张表；`app/utils/portfolio.py` 提供访问接口，今日计划页可实时展示候选池、持仓与成交。
-- 回测引擎 `record_agent_state()` 现同步写入 `investment_pool`，将每日全局决策的置信度、部门标签与目标权重落库，作为后续提示参数调优与候选池管理的基础数据。
-- `app/backtest/decision_env.py` 引入 `DecisionEnv`，用单步 RL/Gym 风格接口封装回测：动作 → 权重映射 → 回测 → 奖励（收益 - 0.5×回撤），同时输出 NAV、交易与行动权重，方便与 Bandit/PPO 等算法对接。
-- Streamlit “回测与复盘” 页新增离线调参模块，可即点即用 DecisionEnv 对代理权重进行实验，并可视化收益、回撤、成交与权重结果，支持一键写入 `config.json` 成为新的默认权重。
-- 所有离线调参实验（单次/批量）都会存入 SQLite `tuning_results`，包含实验 ID、动作、奖励、指标与权重，便于后续分析与对比。
-
-## 下一阶段路线图
-- 在 `DecisionEnv` 中扩展动作映射（Prompt 版本、部门温度、function 调用策略等），把当前权重型动作升级为多参数协同调整。
-- 接入 Bandit/贝叶斯优化，对动作空间进行探索，并把 `portfolio_snapshots`、`portfolio_trades` 输出纳入奖励约束（收益、回撤、换手率）。
-- 构建持仓/成交写入流程的实时入口，使线上监控与离线调参共用同一数据源，支撑增量训练与策略回放。
+如需更新相关内容，请直接维护上述原理文档，此文件仅保留以兼容历史链接。

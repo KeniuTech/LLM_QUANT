@@ -1,155 +1,106 @@
-# 多智能体个人投资助理
+# 多智能体量化投资个人助理
 
-## 项目简介
+面向 A 股日线级别的多智能体投资研究平台，整合数据采集、因子工程、部门化 LLM 决策、强化学习调参与可视化展示，帮助投研团队快速搭建可落地的策略助手。
 
-本仓库提供一个面向 A 股日线级别的多智能体个人投资助理原型，覆盖数据采集、特征抽取、策略博弈、回测展示和 LLM 解释链路。代码以模块化骨架形式呈现，方便在单机环境下快速搭建端到端的量化研究和可视化决策流程。
+## 快速了解
 
-## 架构总览
+- **端到端闭环**：从行情/新闻抓取、特征存储到多智能体协同决策、回测评估与可视化一体化。
+- **多角色博弈**：主持、预测、风险、执行等角色按轮次协同，支持 LLM 与规则代理混合。
+- **强化学习调参**：`DecisionEnv` 将回测引擎包装为 RL 环境，已接入 PPO/SAC 等连续动作算法。
+- **风险优先**：风险回合可调整最终指令并记录风控证据，提供复核与告警通道。
+- **模块化扩展**：数据层、因子库、代理、Prompt、实验脚本均以独立模块维护，便于替换或二次开发。
 
-- **数据与存储层**：`app/ingest` 封装 TuShare/RSS 拉数与限频处理，`app/data/schema.py` 初始化 SQLite 表结构，所有模块通过 `app/utils/db.py` 的 `db_session` 访问 `app/data/llm_quant.db`，数据抽象层由 `app/utils/data_access.py` 的 `DataBroker` 统一提供字段查询与时间序列切片。
-- **工具与配置层**：`app/utils` 聚合配置、日志、交易日历及 provider 管理，`app/utils/config.py` 定义 LLM/部门/代理权重等全局设置。
-- **特征与策略层**：`app/features` 负责信号构建（当前为占位实现），`app/agents` 实现六类规则型代理与部门级 LLM 协同，`app/backtest/engine.py` 通过 `DataBroker` 装配特征/上下文后运行多智能体博弈并将结果写入 `agent_utils`。
-- **LLM 与协作层**：`app/llm` 提供统一的模型调用与 Prompt 构建，支持 single/majority/leader 策略，部门输出再与规则代理共同决策。
-- **可视化层**：`app/ui/streamlit_app.py` 提供今日计划、回测、设置、自检四大页签，实时读取 `agent_utils`、`run_log` 追踪决策链路。
+## 系统构成
 
-> 经典模块划分仍保留在文末《实施步骤》中，便于对照逐项推进。
+- **数据管线**（`app/ingest`, `app/utils/data_access.py`）  
+  TuShare/RSS 拉取与限频处理，`DataBroker` 统一提供行情、特征与派生字段，支持健康监控与回退。
 
-## 智能体策略速览
+- **因子与特征**（`app/features`）  
+  `compute_factors()` 负责批量计算与持久化，包含动量、估值、情绪、风险等因子，并预留增量模式与公式校验。
 
-- **动量 (`A_mom`)**：基于 `mom_20/mom_60` 的 Sigmoid 强度判定买卖梯度。
-- **价值 (`A_val`)**：组合 PE/PB/ROE 分位，低估值与高质量越倾向买入。
-- **新闻 (`A_news`)**：按新闻热度与情绪正负分配买卖权重，热度低时偏好持有。
-- **流动性 (`A_liq`)**：衡量 `liquidity_score` 与交易成本惩罚，约束加仓节奏。
-- **宏观 (`A_macro`)**：关注行业热度与相对强弱，多头动能越强，则买入级别越高。
-- **风险 (`A_risk`)**：根据 `risk_penalty` 调整信心，并在停牌/涨停/仓位限制场景下行使否决权。
+- **多智能体协作**（`app/agents`）  
+  规则代理与部门 LLM 通过 `DepartmentManager`、`ProtocolHost` 参与博弈，风险回合可否决或调整仓位。
 
-部门级智能体通过 `DepartmentManager` → `DepartmentAgent` → `department_prompt()` 的链路向 LLM 请求 JSON 化决策（动作、置信度、摘要、信号、风险），输出在 `app/agents/game.py` 中与规则代理共同参与纳什谈判或加权投票。
+- **强化学习/优化**（`app/backtest/decision_env.py`, `scripts/train_ppo.py` 等）  
+  将参数搜索、权重调节、提示版本选择统一抽象为动作，回测指标写入 `tuning_results` 便于对比。
 
-## 当前瓶颈
+- **可视化 UI**（`app/ui/streamlit_app.py`）  
+  今日计划、回测复盘、监控、自检页面提供策略轨迹、风险监控、实验结果与配置管理。
 
-- **数据获取**：`BacktestEngine.load_market_data()` 仍为空实现，规则型代理依赖外部写入的 `AgentContext.features`，缺乏统一的取数协议。
-- **角色提示**：部门 `description` 尚未注入 Prompt，代理职责依旧“写死”在 Python 逻辑中。
-- **过程记录**：缺少对“请求了哪些数据、执行了哪些 SQL、LLM 收到什么上下文”的显式追踪，不利于复盘。
-
-## 提示词驱动的改造方向
-
-1. **配置声明角色**：在 `config.json`/`DepartmentSettings` 中补充 `description` 与 `data_scope`，`department_prompt()` 拼接角色指令，实现职责以 Prompt 管理而非硬编码。
-2. **统一数据层**：新增 `DataBroker`（或同类工具）封装常用查询，代理与部门通过声明式 JSON 请求所需表/字段/窗口，由服务端执行并返回特征。
-3. **函数式工具调用**：通过 DeepSeek/OpenAI 的 function calling 暴露 `fetch_data` 工具，LLM 只需声明所需表（如 `daily`、`daily_basic`）及窗口，系统用 `DataBroker` 拉取整行数据、回传结果，形成“请求→取数→复议”闭环。
-4. **审计与前端联动**：把角色提示、数据请求与执行摘要写入 `agent_utils` 附加字段，使 Streamlit 能完整呈现“角色 → 请求 → 决策”的链条。
-
-目前部门 LLM 通过 function calling 暴露的 `fetch_data` 工具触发追加查询：模型只需按 schema 声明 `daily` / `daily_basic` 等表名与窗口，系统使用 `DataBroker` 一次性返回指定交易日的全部列，再带着查询结果进入下一轮提示，从而形成闭环。
-
-上述调整可在单个部门先行做 PoC，验证闭环能力后再推广至全部角色。
-
-## 核心技术原理
-
-- **多智能体博弈**：通过 `app/agents` 定义六类风格化代理，利用纳什谈判与加权投票在 `app/agents/game.py` 中聚合交易动作与信心水平。
-- **数据覆盖自检**：`app/ingest/tushare.py` 封装 TuShare 拉取、增量更新与覆盖统计，`app/ingest/checker.py` 提供强制补数与窗口化覆盖报告。
-- **事件驱动回测**：`app/backtest/engine.py` 构建日频回测循环，将代理决策与投资组合状态解耦，便于扩展成交撮合与绩效统计。
-- **可视化与解释**：`app/ui/streamlit_app.py` 提供四大页签（今日计划、回测与复盘、数据与设置、自检测试），结合 Plotly 图形展示和 `app/llm` 提示卡片生成器，支撑人机协作分析。
-- **统一日志与持久化**：SQLite 统一存储行情、回测与日志，配合 `DatabaseLogHandler` 在 UI/抓数流程中输出结构化运行轨迹，支持快速追踪与复盘。
-- **跨市场数据扩展**：`app/ingest/tushare.py` 追加指数、ETF/公募基金、期货、外汇、港股与美股的增量拉取逻辑，确保多资产因子与宏观代理所需的行情基础数据齐备。
-- **部门化多模型协作**：`app/agents/departments.py` 封装部门级 LLM 调度，`app/llm/client.py` 支持 single/majority/leader 策略，部门结论在 `app/agents/game.py` 与六类基础代理共同博弈，并持久化至 `agent_utils` 供 UI 展示。
-- **LLM Provider 管理**：`app/utils/config.py` 集中维护供应商的 URL、API Key、可用模型及默认参数，Streamlit UI 可视化配置，全局与部门直接在 Provider 基础上设置模型、温度与 Prompt。
-
-## LLM + 多智能体最佳实践
-
-- **强化结构化特征**：除 A 股行情外，引入资金流、因子、宏观等数据，为六类代理提供更丰富上下文。
-- **场景化 Prompt**：在 `app/llm` 中注入代理贡献、宏观状态和风险事件，让 LLM 输出的策略解释与信号一致。
-- **闭环反馈机制**：将回测或实盘的真实收益、成交等结果写回 SQLite，用于调整代理权重与 Prompt 语料。
-- **多层日志监控**：保留代理评分、决策信心、LLM 提示与 UI 操作日志，帮助定位“谁做的决策、为何失败”。
-- **人机协同流程**：在 UI 呈现代理分歧与 LLM 风险提示，分析师可调权、重跑或复核，实现人在环路的策略流程。
-
-## 环境依赖与安装
-
-建议使用 Python 3.10+，并在虚拟环境中安装依赖。
-
-```bash
-# 1. 创建并激活 Conda 环境
-conda create -n llm-quant python=3.11 -y
-conda activate llm-quant
-
-# 2. 安装项目依赖
-pip install -r requirements.txt
-
-# 3. 设置 TuShare Token
-export TUSHARE_TOKEN="<your-token>"
-```
-
-`requirements.txt` 当前涵盖运行框架所需的核心三方库：
-
-- Pandas：数据表结构与指标处理
-- Streamlit：交互式前端
-- Plotly：行情与指标可视化
-- TuShare：行情与基础面数据源
-- Requests：统一访问 Ollama / OpenAI 兼容 API
-
-### LLM 配置与测试
-
-- 通过 Provider 管理供应商连接参数（Base URL、API Key、默认温度/超时/Prompt 模板），并支持在界面内一键调用 `client.models.list()` 拉取可用模型列表，便于扩展本地 Ollama 或各类云端服务（DeepSeek、文心一言、OpenAI 等）。
-- 全局与部门配置直接选择 Provider，并根据需要覆盖模型、温度、Prompt 模板、投票策略；保存后写入 `app/data/config.json`，下次启动自动加载。
-
-Note: Ollama's `/api/chat` endpoint supports function/tool calling. The client forwards `tools` and optional `tool_choice` when the provider is configured as `ollama`, enabling function calls and tool-based workflows similar to OpenAI-compatible providers.
-- Streamlit “数据与设置” 页提供 Provider/全局/部门三栏编辑界面，保存后即时生效，并通过 `llm_config_snapshot()` 输出脱敏检查信息。
-- 支持使用环境变量注入敏感信息：`TUSHARE_TOKEN`、`LLM_API_KEY`。
+架构调用链示意可参考 `docs/architecture_call_graph.md`。
 
 ## 快速开始
 
+### 1. 环境准备
+
+- Python 3.10+（建议使用虚拟环境）
+- TuShare Token（环境变量 `TUSHARE_TOKEN`）
+- 可选：LLM 供应商 API Key（`LLM_API_KEY` 等，具体参见 `config.json` 中的 provider 定义）
+
 ```bash
-# 启动交互界面（内含数据库初始化、开机检查、样例回测入口）
+python -m venv .venv
+source .venv/bin/activate           # Windows 使用 .venv\Scripts\activate
+pip install -r requirements.txt
+
+export TUSHARE_TOKEN="your-token"   # 必填
+export LLM_API_KEY="your-api-key"   # 如需调用 LLM
+```
+
+### 2. 初始化数据与回测
+
+```bash
+# 拉取最新行情、特征或新闻（示例脚本，可按需修改参数）
+python scripts/run_ingestion_job.py --mode daily --date 2024-01-05
+
+# 运行示例决策环境，验证 RL 闭环
+python scripts/run_decision_env_example.py
+```
+
+### 3. 启动 Streamlit 应用
+
+```bash
 streamlit run app/ui/streamlit_app.py
 ```
 
-Streamlit `自检测试` 页签提供：
-- 数据库初始化快捷按钮；
-- TuShare 小范围拉取测试；
-- 一键开机检查（可自动补数并展示覆盖摘要）；
-- 股票行情可视化（自动加载近段时间价格、成交量，并展示核心指标）。
-- 开机检查带进度指示与详细日志，便于排查 TuShare 拉取问题。
+应用启动后可在侧边栏配置 LLM Provider、提示模板或监控指标；今日计划页会读取 `agent_utils`、`portfolio_*` 等表展示最新决策。
 
-`回测与复盘` 页签提供快速回测表单，可调整时间区间、股票池与参数并即时查看回测输出。
+## 典型工作流
 
-## 下一步
+1. **数据补全**：定时运行 `scripts/run_ingestion_job.py`，确保行情、基本面、新闻数据齐备。  
+2. **因子计算**：按交易日触发 `compute_factors()`（可通过脚本或定时任务），结果写入 SQLite。  
+3. **代理决策**：规则代理 + LLM 部门协商输出交易建议，风险回合进行复核。  
+4. **回测与调参**：使用 `scripts/train_ppo.py`、`scripts/run_bandit_optimization.py` 等脚本探索参数空间，成果写入 `tuning_results`。  
+5. **可视化复盘**：Streamlit 展示多版本策略表现、风险事件与日志明细，支持“一键重评估”等待办项。  
+6. **上线前验证**：沿线下回测 → 前向测试 → 影子运行的节奏推进，必要时接入外部告警。
 
-1. 在 `app/features` 和 `app/backtest` 中完善信号计算、事件驱动撮合与绩效指标输出。
-2. 丰富 `DepartmentContext`（行情快照、风险指标），让部门评估拥有更完整的上下文。
-3. 使用轻量情感分析与热度计算填充 `news`、`heat_daily` 与热点指数。
-4. 在 Streamlit 今日计划页增加“重新评估”与日志追踪能力，串联实时调度链路。
+## 自动化与实验工具
 
-## License
+- `scripts/train_ppo.py`：使用 PPO 在 `DecisionEnv` 上训练策略。  
+- `scripts/run_bandit_optimization.py`：黑箱调参示例。  
+- `scripts/apply_best_weights.py`：将实验权重写回配置。  
+- `scripts/render_architecture_diagram.py`：根据代码结构渲染架构图。  
+- `scripts/migrations/`：数据库迁移脚本与示例。
 
-本项目采用定制的 “LLM Quant Framework License v1.0”。个人使用、修改与分发需保留出处，任何商业用途须事先与版权方协商并签署付费协议。详情参见仓库根目录的 `LICENSE` 文件。
+更多示例请查看 `scripts/README` 或脚本内联说明。
 
-## 多智能体 LLM 投资流程
+## 文档索引
 
-- **部门化结构**：动量、价值、新闻、流动性、宏观、风险等代理视作独立业务部门，利用项目现有的数据/特征处理流程向每个部门提供上下文。
-- **多 LLM 协作**：每个部门内部可配置多家 LLM 提供商（如 DeepSeek、OpenAI、文心等）作为智能体助手，分别生成分析意见和风险提示；可通过多数投票、仲裁等策略确定部门结论。
-- **部门输出**：统一返回部门行动（买入/卖出/持有）、信心水平以及核心理由 (context + LLM 摘要)，当前实现会将摘要、风险提示与票权写入 `agent_utils`。
-- **跨部门协调**：沿用 `app/agents/game.py` 的纳什谈判/投票结构，将各部门的结论与六类基础代理共同建模，必要时触发冲突检测并标记复核。
-- **日志与可视化**：Streamlit 今日计划页读取 `agent_utils` 展示部门意见、投票细节与全局行动，可快速核查部门分歧与置信度。
+- 工作项总览：`docs/TODO.md`  
+- 多智能体原理：`docs/principles/multi_agent_decision.md`  
+- 强化学习与调参原理：`docs/principles/reinforcement_learning_tuning.md`  
+- 风险控制原理：`docs/principles/risk_management.md`  
+- 架构调用示意：`docs/architecture_call_graph.md`
 
-## 实施步骤
+上述文档保持与代码同步，请在功能迭代后一并更新。
 
-1. **配置扩展** (`app/utils/config.py` + `config.json`) ✅
-   - 引入 `llm_providers` 集中管理供应商参数，全局与部门直接绑定 Provider 并自定义模型/温度/Prompt，Provider 页面提供模型列表自动获取；Streamlit 提供可视化维护表单。
+## 路线图与贡献
 
-2. **部门管控器** ✅
-   - `app/agents/departments.py` 提供 `DepartmentAgent`/`DepartmentManager`，封装 Prompt 构建、多模型协商及异常回退。
+- 当前路线图统一维护在 `docs/TODO.md`。欢迎在 Issue 或 PR 中反馈新的需求与优先级。  
+- 修改代码前建议阅读 `app/utils/config.py`、`app/agents/game.py`、`app/backtest/engine.py` 了解关键路径。  
+- 提交代码请附带必要的单元测试：
 
-3. **集成决策链** ✅
-   - `app/agents/game.py` 将部门评分嵌入纳什谈判/加权投票，并对冲突设置复核标记；`app/backtest/engine.py` 将结果落库。
+```bash
+pytest
+```
 
-4. **UI 与日志**（进行中）
-   - 今日计划页展示部门意见、票权与全局策略，后续补充一键重评估、日志钻取。
-
-5. **测试与验证**（待补充）
-   - 需完善部门上下文构造与多模型调用的单元/集成测试，结合回测指标对比多 LLM 策略收益差异。
-
-
-
-TODO
-1. 在选股时，因子都已经提前算好，不需要再计算了，直接用就行。
-2. 因子计算的公式再确认下
-3. 审查整个项目的代码逻辑，从app/ui/streamlit_app.py开始，逐字逐句检查。如一些重复的安全检查可以去掉；明显果实的临时性代码请删除掉；未实现的功能请标记TODO，并给出实现思路；错误的、低效率的调用请修正；代码结构性的问题请指出并尝试修正；复杂不清晰的代码结构请尝试重构；
-4. 梳理整个项目的所有业务逻辑。针对每个业务，从业务实现角度评估代码功能是否存在问题，是否需要优化，是否需要重构。
+如有新的模块或实验脚本，请在对应文档与工作项中补充说明，确保团队成员可以快速上手。
