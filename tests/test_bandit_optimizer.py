@@ -31,10 +31,14 @@ class DummyEnv:
     def step(self, action):
         value = float(action[0])
         reward = 1.0 - abs(value - 0.7)
+        sharpe_like = reward / 0.05 if 0.05 else 0.0
+        calmar_like = reward / 0.1 if 0.1 else reward
         metrics = EpisodeMetrics(
             total_return=reward,
             max_drawdown=0.1,
             volatility=0.05,
+            sharpe_like=sharpe_like,
+            calmar_like=calmar_like,
             nav_series=[],
             trades=[],
             turnover=0.1,
@@ -49,6 +53,7 @@ class DummyEnv:
             "max_drawdown": 0.1,
             "volatility": 0.05,
             "sharpe_like": reward / 0.05,
+            "calmar_like": reward / 0.1,
             "turnover": 0.1,
             "turnover_value": 1000.0,
             "trade_count": 0.0,

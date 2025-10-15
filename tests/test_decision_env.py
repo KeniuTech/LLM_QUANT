@@ -139,10 +139,17 @@ def test_decision_env_returns_risk_metrics(monkeypatch):
 
 
 def test_default_reward_penalizes_metrics():
+    total_return = 0.1
+    max_drawdown = 0.2
+    volatility = 0.05
+    sharpe_like = total_return / volatility
+    calmar_like = total_return / max_drawdown
     metrics = EpisodeMetrics(
-        total_return=0.1,
-        max_drawdown=0.2,
-        volatility=0.05,
+        total_return=total_return,
+        max_drawdown=max_drawdown,
+        volatility=volatility,
+        sharpe_like=sharpe_like,
+        calmar_like=calmar_like,
         nav_series=[],
         trades=[],
         turnover=0.3,
@@ -152,7 +159,13 @@ def test_default_reward_penalizes_metrics():
         risk_breakdown={"foo": 2},
     )
     reward = DecisionEnv._default_reward(metrics)
-    assert reward == pytest.approx(0.1 - (0.5 * 0.2 + 0.05 * 2 + 0.1 * 0.3))
+    expected = (
+        total_return
+        + 0.1 * sharpe_like
+        + 0.05 * calmar_like
+        - (0.5 * max_drawdown + 0.05 * metrics.risk_count + 0.1 * metrics.turnover)
+    )
+    assert reward == pytest.approx(expected)
 
 
 def test_decision_env_department_controls(monkeypatch):

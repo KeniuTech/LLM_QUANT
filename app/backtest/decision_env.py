@@ -47,6 +47,8 @@ class EpisodeMetrics:
     total_return: float
     max_drawdown: float
     volatility: float
+    sharpe_like: float
+    calmar_like: float
     nav_series: List[Dict[str, float]]
     trades: List[Dict[str, object]]
     turnover: float
@@ -54,12 +56,6 @@ class EpisodeMetrics:
     trade_count: int
     risk_count: int
     risk_breakdown: Dict[str, int]
-
-    @property
-    def sharpe_like(self) -> float:
-        if self.volatility <= 1e-9:
-            return 0.0
-        return self.total_return / self.volatility
 
 
 class DecisionEnv:
@@ -123,6 +119,7 @@ class DecisionEnv:
             "volatility": 0.0,
             "turnover": 0.0,
             "sharpe_like": 0.0,
+            "calmar_like": 0.0,
             "trade_count": 0.0,
             "risk_count": 0.0,
         }
@@ -370,6 +367,8 @@ class DecisionEnv:
                 total_return=0.0,
                 max_drawdown=0.0,
                 volatility=0.0,
+                sharpe_like=0.0,
+                calmar_like=0.0,
                 nav_series=[],
                 trades=trades or [],
                 turnover=0.0,
@@ -403,6 +402,8 @@ class DecisionEnv:
             volatility = math.sqrt(variance) / base_nav
         else:
             volatility = 0.0
+        sharpe_like = total_return / volatility if abs(volatility) > 1e-9 else 0.0
+        calmar_like = total_return / max_drawdown if max_drawdown > 1e-6 else total_return
 
         turnover_value = 0.0
         turnover_ratios: List[float] = []
@@ -433,6 +434,8 @@ class DecisionEnv:
             total_return=float(total_return),
             max_drawdown=float(max_drawdown),
             volatility=volatility,
+            sharpe_like=float(sharpe_like),
+            calmar_like=float(calmar_like),
             nav_series=nav_series,
             trades=trades or [],
             turnover=float(avg_turnover_ratio),
@@ -446,8 +449,9 @@ class DecisionEnv:
     def _default_reward(metrics: EpisodeMetrics) -> float:
         risk_penalty = 0.05 * metrics.risk_count
         turnover_penalty = 0.1 * metrics.turnover
-        penalty = 0.5 * metrics.max_drawdown + risk_penalty + turnover_penalty
-        return metrics.total_return - penalty
+        drawdown_penalty = 0.5 * metrics.max_drawdown
+        bonus = 0.1 * metrics.sharpe_like + 0.05 * metrics.calmar_like
+        return metrics.total_return + bonus - (drawdown_penalty + risk_penalty + turnover_penalty)
 
     def _build_observation(
         self,
@@ -461,6 +465,7 @@ class DecisionEnv:
             "max_drawdown": metrics.max_drawdown,
             "volatility": metrics.volatility,
             "sharpe_like": metrics.sharpe_like,
+            "calmar_like": metrics.calmar_like,
             "turnover": metrics.turnover,
             "trade_count": float(metrics.trade_count),
             "risk_count": float(metrics.risk_count),
@@ -627,6 +632,8 @@ class DecisionEnv:
             total_return=0.0,
             max_drawdown=0.0,
             volatility=0.0,
+            sharpe_like=0.0,
+            calmar_like=0.0,
             nav_series=nav_series,
             trades=trades,
             turnover=0.0,

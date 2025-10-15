@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import json
 from datetime import date, datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+import numpy as np
 
 from app.agents.base import AgentContext
 from app.agents.game import Decision
@@ -40,6 +41,80 @@ _DECISION_ENV_SINGLE_RESULT_KEY = "decision_env_single_result"
 _DECISION_ENV_BATCH_RESULTS_KEY = "decision_env_batch_results"
 _DECISION_ENV_BANDIT_RESULTS_KEY = "decision_env_bandit_results"
 _DECISION_ENV_PPO_RESULTS_KEY = "decision_env_ppo_results"
+
+
+def _normalize_nav_records(records: List[Dict[str, object]]) -> pd.DataFrame:
+    """Return nav dataframe with columns trade_date (datetime) and nav (float)."""
+    if not records:
+        return pd.DataFrame(columns=["trade_date", "nav"])
+    df = pd.DataFrame(records)
+    if "trade_date" not in df.columns:
+        if "date" in df.columns:
+            df = df.rename(columns={"date": "trade_date"})
+        elif "ts" in df.columns:
+            df = df.rename(columns={"ts": "trade_date"})
+    if "nav" not in df.columns:
+        # fallback: look for value column
+        candidates = [col for col in df.columns if col not in {"trade_date", "date", "ts"}]
+        if candidates:
+            df = df.rename(columns={candidates[0]: "nav"})
+    if "trade_date" not in df.columns or "nav" not in df.columns:
+        return pd.DataFrame(columns=["trade_date", "nav"])
+    df = df.copy()
+    df["trade_date"] = pd.to_datetime(df["trade_date"], errors="coerce")
+    df["nav"] = pd.to_numeric(df["nav"], errors="coerce")
+    df = df.dropna(subset=["trade_date", "nav"]).sort_values("trade_date")
+    return df[["trade_date", "nav"]]
+
+
+def _normalize_trade_records(records: List[Dict[str, object]]) -> pd.DataFrame:
+    if not records:
+        return pd.DataFrame()
+    df = pd.DataFrame(records)
+    if "trade_date" not in df.columns:
+        for candidate in ("date", "ts", "timestamp"):
+            if candidate in df.columns:
+                df = df.rename(columns={candidate: "trade_date"})
+                break
+    if "trade_date" in df.columns:
+        df["trade_date"] = pd.to_datetime(df["trade_date"], errors="coerce")
+    return df
+
+
+def _compute_nav_metrics(nav_df: pd.DataFrame, trades_df: pd.DataFrame) -> Dict[str, object]:
+    if nav_df.empty:
+        return {
+            "total_return": None,
+            "max_drawdown": None,
+            "trade_count": len(trades_df),
+            "avg_turnover": None,
+            "risk_events": None,
+        }
+    values = nav_df["nav"].astype(float).values
+    if values.size == 0:
+        return {
+            "total_return": None,
+            "max_drawdown": None,
+            "trade_count": len(trades_df),
+            "avg_turnover": None,
+            "risk_events": None,
+        }
+    total_return = float(values[-1] / values[0] - 1.0) if values[0] != 0 else None
+    cumulative_max = np.maximum.accumulate(values)
+    drawdowns = (values - cumulative_max) / cumulative_max
+    max_drawdown = float(drawdowns.min()) if drawdowns.size else None
+    summary = {
+        "total_return": total_return,
+        "max_drawdown": max_drawdown,
+        "trade_count": int(len(trades_df)),
+        "avg_turnover": trades_df["turnover"].mean() if "turnover" in trades_df.columns and not trades_df.empty else None,
+        "risk_events": None,
+    }
+    return summary
+
+
+def _session_compare_store() -> Dict[str, Dict[str, object]]:
+    return st.session_state.setdefault("bt_compare_runs", {})
 
 def render_backtest_review() -> None:
     """渲染回测执行、调参与结果复盘页面。"""
@@ -220,8 +295,24 @@ def render_backtest_review() -> None:
                     }
                 )
                 update_dashboard_sidebar(metrics)
-                st.session_state["backtest_last_result"] = {"nav_records": result.nav_series, "trades": result.trades}
-                st.json(st.session_state["backtest_last_result"])
+                nav_df = _normalize_nav_records(result.nav_series)
+                trades_df = _normalize_trade_records(result.trades)
+                summary = _compute_nav_metrics(nav_df, trades_df)
+                summary["risk_events"] = len(result.risk_events or [])
+                st.session_state["backtest_last_result"] = {
+                    "nav_records": nav_df.to_dict(orient="records"),
+                    "trades": trades_df.to_dict(orient="records"),
+                    "risk_events": result.risk_events or [],
+                }
+                st.session_state["backtest_last_summary"] = summary
+                st.session_state["backtest_last_config"] = {
+                    "start_date": start_date.isoformat(),
+                    "end_date": end_date.isoformat(),
+                    "universe": universe,
+                    "params": dict(backtest_params),
+                    "structures": selected_structures,
+                    "name": backtest_cfg.name,
+                }
             except Exception as exc:  # noqa: BLE001
                 LOGGER.exception("回测执行失败", extra=LOG_EXTRA)
                 status_box.update(label="回测执行失败", state="error")
@@ -229,16 +320,81 @@ def render_backtest_review() -> None:
 
         last_result = st.session_state.get("backtest_last_result")
         if last_result:
+            last_summary = st.session_state.get("backtest_last_summary", {})
+            last_config = st.session_state.get("backtest_last_config", {})
             st.markdown("#### 最近回测输出")
-            st.json(last_result)
+            nav_preview = _normalize_nav_records(last_result.get("nav_records", []))
+            if not nav_preview.empty:
+                import plotly.graph_objects as go
+
+                fig_last = go.Figure()
+                fig_last.add_trace(
+                    go.Scatter(
+                        x=nav_preview["trade_date"],
+                        y=nav_preview["nav"],
+                        mode="lines",
+                        name="NAV",
+                    )
+                )
+                fig_last.update_layout(height=260, margin=dict(l=10, r=10, t=30, b=10))
+                st.plotly_chart(fig_last, width="stretch")
+
+            metric_cols = st.columns(4)
+            metric_cols[0].metric("总收益", f"{(last_summary.get('total_return') or 0.0)*100:.2f}%", delta=None)
+            metric_cols[1].metric("最大回撤", f"{(last_summary.get('max_drawdown') or 0.0)*100:.2f}%")
+            metric_cols[2].metric("交易数", last_summary.get("trade_count", 0))
+            metric_cols[3].metric("风险事件", last_summary.get("risk_events", 0))
+
+            default_label = (
+                f"{last_config.get('name', '临时实验')} | {last_config.get('start_date', '')}~{last_config.get('end_date', '')}"
+            ).strip(" |~")
+            save_col, button_col = st.columns([4, 1])
+            save_label = save_col.text_input(
+                "保存至实验对比（可编辑标签）",
+                value=default_label or f"实验_{datetime.now().strftime('%H%M%S')}",
+                key="bt_save_label",
+            )
+            if button_col.button("保存", key="bt_save_button"):
+                label = save_label.strip() or f"实验_{datetime.now().strftime('%H%M%S')}"
+                store = _session_compare_store()
+                store[label] = {
+                    "cfg_id": f"session::{label}",
+                    "nav": nav_preview.to_dict(orient="records"),
+                    "summary": dict(last_summary),
+                    "config": dict(last_config),
+                    "risk_events": last_result.get("risk_events", []),
+                }
+                st.success(f"已保存实验：{label}")
+            with st.expander("最近回测详情", expanded=False):
+                st.json(
+                    {
+                        "config": last_config,
+                        "summary": last_summary,
+                        "trades": last_result.get("trades", [])[:50],
+                    }
+                )
 
         st.divider()
-        # ADD: Comparison view for multiple backtest configurations
-        st.caption("从历史回测配置中选择多个进行净值曲线与指标对比。")
+        st.caption("从历史回测配置或本页保存的实验中选择多个进行净值曲线与指标对比。")
         normalize_to_one = st.checkbox("归一化到 1 起点", value=True, key="bt_cmp_normalize")
         use_log_y = st.checkbox("对数坐标", value=False, key="bt_cmp_log_y")
         metric_options = ["总收益", "最大回撤", "交易数", "平均换手", "风险事件"]
         selected_metrics = st.multiselect("显示指标列", metric_options, default=metric_options, key="bt_cmp_metrics")
+
+        session_store = _session_compare_store()
+        if session_store:
+            with st.expander("会话实验管理", expanded=False):
+                st.write("会话实验仅保存在当前浏览器窗口中，可选择删除以保持列表精简。")
+                removal_choices = st.multiselect(
+                    "选择要删除的会话实验",
+                    list(session_store.keys()),
+                    key="bt_cmp_remove_runs",
+                )
+                if st.button("删除选中实验", key="bt_cmp_remove_button") and removal_choices:
+                    for label in removal_choices:
+                        session_store.pop(label, None)
+                    st.success("已删除选中的会话实验。")
+
         try:
             with db_session(read_only=True) as conn:
                 cfg_rows = conn.execute(
@@ -247,186 +403,223 @@ def render_backtest_review() -> None:
         except Exception:  # noqa: BLE001
             LOGGER.exception("读取 bt_config 失败", extra=LOG_EXTRA)
             cfg_rows = []
-        cfg_options = [f"{row['id']} | {row['name']}" for row in cfg_rows]
-        selected_labels = st.multiselect("选择配置", cfg_options, default=cfg_options[:2], key="bt_cmp_configs")
-        selected_ids = [label.split(" | ")[0].strip() for label in selected_labels]
-        nav_df = pd.DataFrame()
-        rpt_df = pd.DataFrame()
-        risk_df = pd.DataFrame()
-        if selected_ids:
-            try:
-                with db_session(read_only=True) as conn:
-                    nav_df = pd.read_sql_query(
-                        "SELECT cfg_id, trade_date, nav FROM bt_nav WHERE cfg_id IN (%s)" % (",".join(["?"]*len(selected_ids))),
-                        conn,
-                        params=tuple(selected_ids),
-                    )
-                    rpt_df = pd.read_sql_query(
-                        "SELECT cfg_id, summary FROM bt_report WHERE cfg_id IN (%s)" % (",".join(["?"]*len(selected_ids))),
-                        conn,
-                        params=tuple(selected_ids),
-                    )
-                    risk_df = pd.read_sql_query(
-                        "SELECT cfg_id, trade_date, ts_code, reason, action, target_weight, confidence, metadata "
-                        "FROM bt_risk_events WHERE cfg_id IN (%s)" % (",".join(["?"]*len(selected_ids))),
-                        conn,
-                        params=tuple(selected_ids),
-                    )
-            except Exception:  # noqa: BLE001
-                LOGGER.exception("读取回测结果失败", extra=LOG_EXTRA)
-                st.error("读取回测结果失败")
-                nav_df = pd.DataFrame()
-                rpt_df = pd.DataFrame()
-                risk_df = pd.DataFrame()
-            start_filter: Optional[date] = None
-            end_filter: Optional[date] = None
-            if not nav_df.empty:
+
+        option_map: Dict[str, Tuple[str, object]] = {}
+        option_labels: List[str] = []
+
+        for label in session_store.keys():
+            option_label = f"[会话] {label}"
+            option_labels.append(option_label)
+            option_map[option_label] = ("session", label)
+
+        for row in cfg_rows:
+            option_label = f"[DB] {row['id']} | {row['name']}"
+            option_labels.append(option_label)
+            option_map[option_label] = ("db", row["id"])
+
+        if not option_labels:
+            st.info("暂无可对比的回测实验，请先执行回测或保存实验。")
+        else:
+            default_selection = option_labels[:2]
+            selected_labels = st.multiselect(
+                "选择实验配置",
+                option_labels,
+                default=default_selection,
+                key="bt_cmp_configs",
+            )
+
+            selected_db_ids = [option_map[label][1] for label in selected_labels if option_map[label][0] == "db"]
+            selected_session_labels = [option_map[label][1] for label in selected_labels if option_map[label][0] == "session"]
+
+            nav_frames: List[pd.DataFrame] = []
+            metrics_rows: List[Dict[str, object]] = []
+            risk_frames: List[pd.DataFrame] = []
+
+            if selected_db_ids:
                 try:
-                    nav_df["trade_date"] = pd.to_datetime(nav_df["trade_date"], errors="coerce")
-                    # ADD: date window filter
-                    overall_min = pd.to_datetime(nav_df["trade_date"].min()).date()
-                    overall_max = pd.to_datetime(nav_df["trade_date"].max()).date()
-                    col_d1, col_d2 = st.columns(2)
-                    start_filter = col_d1.date_input("起始日期", value=overall_min, key="bt_cmp_start")
-                    end_filter = col_d2.date_input("结束日期", value=overall_max, key="bt_cmp_end")
-                    if start_filter > end_filter:
-                        start_filter, end_filter = end_filter, start_filter
-                    mask = (nav_df["trade_date"].dt.date >= start_filter) & (nav_df["trade_date"].dt.date <= end_filter)
-                    nav_df = nav_df.loc[mask]
-                    pivot = nav_df.pivot_table(index="trade_date", columns="cfg_id", values="nav")
-                    if normalize_to_one:
-                        pivot = pivot.apply(lambda s: s / s.dropna().iloc[0] if s.dropna().size else s)
-                    import plotly.graph_objects as go
-                    fig = go.Figure()
-                    for col in pivot.columns:
-                        fig.add_trace(go.Scatter(x=pivot.index, y=pivot[col], mode="lines", name=str(col)))
-                    fig.update_layout(height=300, margin=dict(l=10, r=10, t=30, b=10))
-                    if use_log_y:
-                        fig.update_yaxes(type="log")
-                    st.plotly_chart(fig, width='stretch')
-                    # ADD: export pivot
-                    try:
-                        csv_buf = pivot.reset_index()
-                        csv_buf.columns = ["trade_date"] + [str(c) for c in pivot.columns]
-                        st.download_button(
-                            "下载曲线(CSV)",
-                            data=csv_buf.to_csv(index=False),
-                            file_name="bt_nav_compare.csv",
-                            mime="text/csv",
-                            key="dl_nav_compare",
+                    with db_session(read_only=True) as conn:
+                        db_nav = pd.read_sql_query(
+                            "SELECT cfg_id, trade_date, nav FROM bt_nav WHERE cfg_id IN (%s)" % (",".join(["?"] * len(selected_db_ids))),
+                            conn,
+                            params=tuple(selected_db_ids),
                         )
-                    except Exception:
-                        pass
-                except Exception:  # noqa: BLE001
-                    LOGGER.debug("绘制对比曲线失败", extra=LOG_EXTRA)
-            if not rpt_df.empty:
-                try:
-                    metrics_rows: List[Dict[str, object]] = []
-                    for _, row in rpt_df.iterrows():
-                        cfg_id = row["cfg_id"]
+                        db_rpt = pd.read_sql_query(
+                            "SELECT cfg_id, summary FROM bt_report WHERE cfg_id IN (%s)" % (",".join(["?"] * len(selected_db_ids))),
+                            conn,
+                            params=tuple(selected_db_ids),
+                        )
+                        db_risk = pd.read_sql_query(
+                            "SELECT cfg_id, trade_date, ts_code, reason, action, target_weight, confidence, metadata "
+                            "FROM bt_risk_events WHERE cfg_id IN (%s)" % (",".join(["?"] * len(selected_db_ids))),
+                            conn,
+                            params=tuple(selected_db_ids),
+                        )
+                    if not db_nav.empty:
+                        db_nav["trade_date"] = pd.to_datetime(db_nav["trade_date"], errors="coerce")
+                        nav_frames.append(db_nav)
+                    if not db_risk.empty:
+                        db_risk["trade_date"] = pd.to_datetime(db_risk["trade_date"], errors="coerce")
+                        risk_frames.append(db_risk)
+                    for _, row in db_rpt.iterrows():
                         try:
                             summary = json.loads(row["summary"]) if isinstance(row["summary"], str) else (row["summary"] or {})
                         except json.JSONDecodeError:
                             summary = {}
-                        record = {
-                            "cfg_id": cfg_id,
-                            "总收益": summary.get("total_return"),
-                            "最大回撤": summary.get("max_drawdown"),
-                            "交易数": summary.get("trade_count"),
-                            "平均换手": summary.get("avg_turnover"),
-                            "风险事件": summary.get("risk_events"),
-                            "风险分布": json.dumps(summary.get("risk_breakdown"), ensure_ascii=False)
-                            if summary.get("risk_breakdown")
-                            else None,
-                            "缺失字段": json.dumps(summary.get("missing_field_counts"), ensure_ascii=False)
-                            if summary.get("missing_field_counts")
-                            else None,
-                            "派生字段": json.dumps(summary.get("derived_field_counts"), ensure_ascii=False)
-                            if summary.get("derived_field_counts")
-                            else None,
-                        }
-                        metrics_rows.append({k: v for k, v in record.items() if (k == "cfg_id" or k in selected_metrics)})
-                    if metrics_rows:
-                        dfm = pd.DataFrame(metrics_rows)
-                        st.dataframe(dfm, hide_index=True, width='stretch')
-                        try:
-                            st.download_button(
-                                "下载指标(CSV)",
-                                data=dfm.to_csv(index=False),
-                                file_name="bt_metrics_compare.csv",
-                                mime="text/csv",
-                                key="dl_metrics_compare",
-                            )
-                        except Exception:
-                            pass
-                except Exception:  # noqa: BLE001
-                    LOGGER.debug("渲染指标表失败", extra=LOG_EXTRA)
-            if not risk_df.empty:
-                try:
-                    risk_df["trade_date"] = pd.to_datetime(risk_df["trade_date"], errors="coerce")
-                    risk_df = risk_df.dropna(subset=["trade_date"])
-                    if start_filter is None or end_filter is None:
-                        start_filter = pd.to_datetime(risk_df["trade_date"].min()).date()
-                        end_filter = pd.to_datetime(risk_df["trade_date"].max()).date()
-                    risk_df = risk_df[
-                        (risk_df["trade_date"].dt.date >= start_filter)
-                        & (risk_df["trade_date"].dt.date <= end_filter)
-                    ]
-                    parsed_cols: List[Dict[str, object]] = []
-                    for _, row in risk_df.iterrows():
-                        try:
-                            metadata = json.loads(row["metadata"]) if isinstance(row["metadata"], str) else (row["metadata"] or {})
-                        except json.JSONDecodeError:
-                            metadata = {}
-                        assessment = metadata.get("risk_assessment") or {}
-                        parsed_cols.append(
+                        metrics_rows.append(
                             {
                                 "cfg_id": row["cfg_id"],
-                                "trade_date": row["trade_date"].date().isoformat(),
-                                "ts_code": row["ts_code"],
-                                "reason": row["reason"],
-                                "action": row["action"],
-                                "target_weight": row["target_weight"],
-                                "confidence": row["confidence"],
-                                "risk_status": assessment.get("status"),
-                                "recommended_action": assessment.get("recommended_action"),
-                                "execution_status": metadata.get("execution_status"),
-                                "metadata": metadata,
+                                "总收益": summary.get("total_return"),
+                                "最大回撤": summary.get("max_drawdown"),
+                                "交易数": summary.get("trade_count"),
+                                "平均换手": summary.get("avg_turnover"),
+                                "风险事件": summary.get("risk_events"),
+                                "风险分布": json.dumps(summary.get("risk_breakdown"), ensure_ascii=False)
+                                if summary.get("risk_breakdown")
+                                else None,
+                                "缺失字段": json.dumps(summary.get("missing_field_counts"), ensure_ascii=False)
+                                if summary.get("missing_field_counts")
+                                else None,
+                                "派生字段": json.dumps(summary.get("derived_field_counts"), ensure_ascii=False)
+                                if summary.get("derived_field_counts")
+                                else None,
+                                "参数": json.dumps(summary.get("config_params"), ensure_ascii=False)
+                                if summary.get("config_params")
+                                else None,
+                                "备注": summary.get("note"),
                             }
                         )
-                    risk_detail_df = pd.DataFrame(parsed_cols)
-                    with st.expander("风险事件明细", expanded=False):
-                        st.dataframe(risk_detail_df.drop(columns=["metadata"], errors="ignore"), hide_index=True, width='stretch')
+                except Exception:  # noqa: BLE001
+                    LOGGER.exception("读取回测结果失败", extra=LOG_EXTRA)
+                    st.error("读取数据库中的回测结果失败，详见日志。")
+
+            for label in selected_session_labels:
+                data = session_store.get(label)
+                if not data:
+                    continue
+                nav_df_session = _normalize_nav_records(data.get("nav", []))
+                if not nav_df_session.empty:
+                    nav_df_session = nav_df_session.assign(cfg_id=data.get("cfg_id"))
+                    nav_frames.append(nav_df_session)
+                summary = data.get("summary", {})
+                metrics_rows.append(
+                    {
+                        "cfg_id": data.get("cfg_id"),
+                        "总收益": summary.get("total_return"),
+                        "最大回撤": summary.get("max_drawdown"),
+                        "交易数": summary.get("trade_count"),
+                        "平均换手": summary.get("avg_turnover"),
+                        "风险事件": summary.get("risk_events"),
+                        "参数": json.dumps(data.get("config", {}).get("params"), ensure_ascii=False)
+                        if data.get("config", {}).get("params")
+                        else None,
+                        "备注": json.dumps(
+                            {
+                                "structures": data.get("config", {}).get("structures"),
+                                "universe_size": len(data.get("config", {}).get("universe", [])),
+                            },
+                            ensure_ascii=False,
+                        ),
+                    }
+                )
+                risk_events = data.get("risk_events") or []
+                if risk_events:
+                    risk_df_session = pd.DataFrame(risk_events)
+                    if not risk_df_session.empty:
+                        if "trade_date" in risk_df_session.columns:
+                            risk_df_session["trade_date"] = pd.to_datetime(risk_df_session["trade_date"], errors="coerce")
+                        risk_df_session = risk_df_session.assign(cfg_id=data.get("cfg_id"))
+                        risk_frames.append(risk_df_session)
+
+            if not selected_labels:
+                st.info("请选择至少一个实验进行对比。")
+            else:
+                nav_df = pd.concat(nav_frames, ignore_index=True) if nav_frames else pd.DataFrame()
+                if not nav_df.empty:
+                    nav_df = nav_df.dropna(subset=["trade_date", "nav"])
+                    if not nav_df.empty:
+                        overall_min = nav_df["trade_date"].min().date()
+                        overall_max = nav_df["trade_date"].max().date()
+                        col_d1, col_d2 = st.columns(2)
+                        start_filter = col_d1.date_input("起始日期", value=overall_min, key="bt_cmp_start")
+                        end_filter = col_d2.date_input("结束日期", value=overall_max, key="bt_cmp_end")
+                        if start_filter > end_filter:
+                            start_filter, end_filter = end_filter, start_filter
+                        mask = (nav_df["trade_date"].dt.date >= start_filter) & (nav_df["trade_date"].dt.date <= end_filter)
+                        nav_df = nav_df.loc[mask]
+                        pivot = nav_df.pivot_table(index="trade_date", columns="cfg_id", values="nav")
+                        if normalize_to_one:
+                            pivot = pivot.apply(lambda s: s / s.dropna().iloc[0] if s.dropna().size else s)
+                        import plotly.graph_objects as go
+
+                        fig = go.Figure()
+                        for col in pivot.columns:
+                            fig.add_trace(go.Scatter(x=pivot.index, y=pivot[col], mode="lines", name=str(col)))
+                        fig.update_layout(height=320, margin=dict(l=10, r=10, t=30, b=10))
+                        if use_log_y:
+                            fig.update_yaxes(type="log")
+                        st.plotly_chart(fig, width="stretch")
                         try:
+                            csv_buf = pivot.reset_index()
+                            csv_buf.columns = ["trade_date"] + [str(c) for c in pivot.columns]
                             st.download_button(
-                                "下载风险事件(CSV)",
-                                data=risk_detail_df.to_csv(index=False),
-                                file_name="bt_risk_events.csv",
+                                "下载曲线(CSV)",
+                                data=csv_buf.to_csv(index=False),
+                                file_name="bt_nav_compare.csv",
                                 mime="text/csv",
-                                key="dl_risk_events",
+                                key="dl_nav_compare",
                             )
                         except Exception:
                             pass
-                        agg = risk_detail_df.groupby(["cfg_id", "reason", "risk_status"], dropna=False).size().reset_index(name="count")
-                        st.dataframe(agg, hide_index=True, width='stretch')
+
+                metric_df = pd.DataFrame(metrics_rows)
+                if not metric_df.empty:
+                    display_cols = ["cfg_id"] + [col for col in selected_metrics if col in metric_df.columns]
+                    additional_cols = [col for col in metric_df.columns if col not in display_cols]
+                    metric_df = metric_df.loc[:, display_cols + additional_cols]
+                    st.dataframe(metric_df, hide_index=True, width="stretch")
+                    try:
+                        st.download_button(
+                            "下载指标(CSV)",
+                            data=metric_df.to_csv(index=False),
+                            file_name="bt_metrics_compare.csv",
+                            mime="text/csv",
+                            key="dl_metrics_compare",
+                        )
+                    except Exception:
+                        pass
+
+                risk_df = pd.concat(risk_frames, ignore_index=True) if risk_frames else pd.DataFrame()
+                if not risk_df.empty:
+                    st.caption("风险事件详情（按 cfg_id 聚合）。")
+                    st.dataframe(risk_df, hide_index=True, width="stretch")
+                    try:
+                        st.download_button(
+                            "下载风险事件(CSV)",
+                            data=risk_df.to_csv(index=False),
+                            file_name="bt_risk_events.csv",
+                            mime="text/csv",
+                            key="dl_risk_events",
+                        )
+                    except Exception:
+                        pass
+                    if {"cfg_id", "reason"}.issubset(risk_df.columns):
+                        group_cols = [col for col in ["cfg_id", "reason", "risk_status"] if col in risk_df.columns]
+                        agg = risk_df.groupby(group_cols, dropna=False).size().reset_index(name="count")
+                        st.dataframe(agg, hide_index=True, width="stretch")
                         try:
                             if not agg.empty:
                                 agg_fig = px.bar(
                                     agg,
-                                    x="reason",
+                                    x="reason" if "reason" in agg.columns else agg.columns[1],
                                     y="count",
-                                    color="risk_status",
-                                    facet_col="cfg_id",
+                                    color="risk_status" if "risk_status" in agg.columns else None,
+                                    facet_col="cfg_id" if "cfg_id" in agg.columns else None,
                                     title="风险事件分布",
                                 )
                                 agg_fig.update_layout(height=320, margin=dict(l=10, r=10, t=40, b=20))
                                 st.plotly_chart(agg_fig, width="stretch")
                         except Exception:  # noqa: BLE001
                             LOGGER.debug("绘制风险事件分布失败", extra=LOG_EXTRA)
-                except Exception:  # noqa: BLE001
-                    LOGGER.debug("渲染风险事件失败", extra=LOG_EXTRA)
-        else:
-            st.info("请选择至少一个配置进行对比。")
 
 
 
@@ -741,6 +934,8 @@ def render_backtest_review() -> None:
                                     "总收益": episode.metrics.total_return,
                                     "最大回撤": episode.metrics.max_drawdown,
                                     "波动率": episode.metrics.volatility,
+                                    "Sharpe": episode.metrics.sharpe_like,
+                                    "Calmar": episode.metrics.calmar_like,
                                     "权重": json.dumps(episode.weights or {}, ensure_ascii=False),
                                     "部门控制": json.dumps(episode.department_controls or {}, ensure_ascii=False),
                                 }
@@ -756,6 +951,12 @@ def render_backtest_review() -> None:
                                 "action": best_episode.action if best_episode else None,
                                 "resolved_action": best_episode.resolved_action if best_episode else None,
                                 "weights": best_episode.weights if best_episode else None,
+                                "metrics": {
+                                    "total_return": best_episode.metrics.total_return if best_episode else None,
+                                    "sharpe_like": best_episode.metrics.sharpe_like if best_episode else None,
+                                    "calmar_like": best_episode.metrics.calmar_like if best_episode else None,
+                                    "max_drawdown": best_episode.metrics.max_drawdown if best_episode else None,
+                                } if best_episode else None,
                                 "department_controls": best_episode.department_controls if best_episode else None,
                             },
                             "experiment_id": config.experiment_id,
@@ -781,6 +982,13 @@ def render_backtest_review() -> None:
                     col_best1.json(best_payload.get("action") or {})
                     col_best2.write("参数值：")
                     col_best2.json(best_payload.get("resolved_action") or {})
+                    metrics_payload = best_payload.get("metrics") or {}
+                    if metrics_payload:
+                        col_m1, col_m2, col_m3 = st.columns(3)
+                        col_m1.metric("总收益", f"{metrics_payload.get('total_return', 0.0):+.4f}")
+                        col_m2.metric("Sharpe", f"{metrics_payload.get('sharpe_like', 0.0):.3f}")
+                        col_m3.metric("Calmar", f"{metrics_payload.get('calmar_like', 0.0):.3f}")
+                        st.caption(f"最大回撤：{metrics_payload.get('max_drawdown', 0.0):.3f}")
                     weights_payload = best_payload.get("weights") or {}
                     if weights_payload:
                         st.write("对应代理权重：")

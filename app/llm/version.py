@@ -80,9 +80,13 @@ class TemplateVersionManager:
         self._versions: Dict[str, Dict[str, TemplateVersion]] = {}
         self._active_versions: Dict[str, str] = {}
 
-    def add_version(self, template: PromptTemplate, version: str,
-                   metadata: Optional[Dict[str, Any]] = None,
-                   activate: bool = False) -> TemplateVersion:
+    def add_version(
+        self,
+        template: PromptTemplate,
+        version: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        activate: bool = False,
+    ) -> TemplateVersion:
         """Add a new template version."""
         if template.id not in self._versions:
             self._versions[template.id] = {}
@@ -110,6 +114,14 @@ class TemplateVersionManager:
     def list_versions(self, template_id: str) -> List[TemplateVersion]:
         """List all versions of a template."""
         return list(self._versions.get(template_id, {}).values())
+
+    def list_template_ids(self) -> List[str]:
+        """Return template IDs currently tracked by the version manager."""
+        return list(self._versions.keys())
+
+    def list_version_details(self, template_id: str) -> List[TemplateVersion]:
+        """Alias for list_versions to expose structured version records."""
+        return self.list_versions(template_id)
 
     def get_active_version(self, template_id: str) -> Optional[TemplateVersion]:
         """Get the active version of a template."""
@@ -179,3 +191,10 @@ class TemplateVersionManager:
         active_version = data.get("active_version")
         if active_version:
             self.activate_version(template_id, active_version)
+
+    def update_metadata(self, template_id: str, version: str, metadata: Dict[str, Any]) -> None:
+        """Update metadata for a specific template version."""
+        version_obj = self.get_version(template_id, version)
+        if version_obj is None:
+            raise ValueError(f"Version {version} not found for template {template_id}")
+        version_obj.metadata = metadata or {}

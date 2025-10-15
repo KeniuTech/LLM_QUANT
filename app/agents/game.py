@@ -176,6 +176,13 @@ def decide(
         ts_code=context.ts_code,
         trade_date=context.trade_date,
     )
+    briefing_round = host.start_round(
+        host_trace,
+        agenda="situation_briefing",
+        structure=GameStructure.SIGNALING,
+    )
+    host.handle_message(briefing_round, _host_briefing_message(context))
+    host.finalize_round(briefing_round)
     department_round: Optional[RoundSummary] = None
     risk_round: Optional[RoundSummary] = None
     execution_round: Optional[RoundSummary] = None
@@ -224,6 +231,19 @@ def decide(
     filtered_utilities = {action: utilities[action] for action in feas_actions}
     hold_scores = utilities.get(AgentAction.HOLD, {})
     norm_weights = weight_map(raw_weights)
+    prediction_round = host.start_round(
+        host_trace,
+        agenda="prediction_alignment",
+        structure=GameStructure.REPEATED,
+    )
+    prediction_message, prediction_summary = _prediction_summary_message(filtered_utilities, norm_weights)
+    host.handle_message(prediction_round, prediction_message)
+    host.finalize_round(prediction_round)
+    if prediction_summary:
+        belief_updates["prediction_summary"] = BeliefUpdate(
+            belief=prediction_summary,
+            rationale="Aggregated utilities shared during alignment round.",
+        )
 
     if method == "vote":
         action, confidence = vote(filtered_utilities, norm_weights)
@@ -339,6 +359,22 @@ def decide(
         department_votes,
     )
     belief_revision = revise_beliefs(belief_updates, exec_action)
+    if belief_revision.conflicts:
+        risk_round = host.ensure_round(
+            host_trace,
+            agenda="conflict_resolution",
+            structure=GameStructure.CUSTOM,
+        )
+        conflict_message = DialogueMessage(
+            sender="protocol_host",
+            role=DialogueRole.HOST,
+            message_type=MessageType.COUNTER,
+            content="检测到关键冲突，需要后续回合复核。",
+            annotations={"conflicts": belief_revision.conflicts},
+        )
+        host.handle_message(risk_round, conflict_message)
+        risk_round.notes.setdefault("conflicts", belief_revision.conflicts)
+        host.finalize_round(risk_round)
     execution_round.notes.setdefault("consensus_action", belief_revision.consensus_action.value)
     execution_round.notes.setdefault("consensus_confidence", belief_revision.consensus_confidence)
     if belief_revision.conflicts:
@@ -411,6 +447,73 @@ def _department_conflict_flag(votes: Mapping[str, float]) -> bool:
         if len(sorted_votes) >= 2 and (sorted_votes[0] - sorted_votes[1]) < total * 0.1:
             return True
     return False
+
+
+def _host_briefing_message(context: AgentContext) -> DialogueMessage:
+    features = getattr(context, "features", {}) or {}
+    close = features.get("close") or features.get("daily.close")
+    pct_chg = features.get("pct_chg") or features.get("daily.pct_chg")
+    snapshot = getattr(context, "market_snapshot", {}) or {}
+    index_brief = snapshot.get("index_change")
+    lines = [
+        f"标的 {context.ts_code}",
+        f"交易日 {context.trade_date}",
+    ]
+    if close is not None:
+        lines.append(f"最新收盘价：{close}")
+    if pct_chg is not None:
+        lines.append(f"涨跌幅：{pct_chg}")
+    if index_brief:
+        lines.append(f"市场概览：{index_brief}")
+    content = "；".join(str(line) for line in lines)
+    return DialogueMessage(
+        sender="protocol_host",
+        role=DialogueRole.HOST,
+        message_type=MessageType.META,
+        content=content,
+    )
+
+
+def _prediction_summary_message(
+    utilities: Mapping[AgentAction, Mapping[str, float]],
+    weights: Mapping[str, float],
+) -> Tuple[DialogueMessage, Dict[str, object]]:
+    if not utilities:
+        message = DialogueMessage(
+            sender="protocol_host",
+            role=DialogueRole.PREDICTION,
+            message_type=MessageType.META,
+            content="暂无可用的部门或代理评分，默认进入 HOLD 讨论。",
+        )
+        return message, {}
+    aggregates: Dict[AgentAction, float] = {}
+    for action, agent_scores in utilities.items():
+        aggregates[action] = sum(weights.get(agent, 0.0) * score for agent, score in agent_scores.items())
+    ranked = sorted(aggregates.items(), key=lambda item: item[1], reverse=True)
+    summary_lines = []
+    for action, score in ranked[:3]:
+        summary_lines.append(f"{action.value}: {score:.3f}")
+    content = "预测合意度：" + " ｜ ".join(summary_lines)
+    total_score = sum(max(score, 0.0) for _, score in ranked)
+    confidence = 0.0
+    if total_score > 0 and ranked:
+        confidence = max(ranked[0][1], 0.0) / total_score
+    annotations = {
+        "aggregates": {action.value: score for action, score in aggregates.items()},
+    }
+    message = DialogueMessage(
+        sender="protocol_host",
+        role=DialogueRole.PREDICTION,
+        message_type=MessageType.META,
+        content=content,
+        confidence=confidence,
+        annotations=annotations,
+    )
+    summary = {
+        "aggregates": {action.value: aggregates[action] for action in ACTIONS if action in aggregates},
+        "confidence": confidence,
+    }
+    return message, summary
 
 
 def _department_message(code: str, decision: DepartmentDecision) -> DialogueMessage:

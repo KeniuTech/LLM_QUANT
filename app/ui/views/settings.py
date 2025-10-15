@@ -1,6 +1,7 @@
 """系统设置相关视图。"""
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
@@ -10,6 +11,8 @@ from requests.exceptions import RequestException
 import streamlit as st
 
 from app.llm.client import llm_config_snapshot
+from app.llm.metrics import snapshot as llm_metrics_snapshot
+from app.llm.templates import TemplateRegistry
 from app.utils.config import (
     ALLOWED_LLM_STRATEGIES,
     DEFAULT_LLM_BASE_URLS,
@@ -471,6 +474,239 @@ def render_llm_settings() -> None:
     else:
         dept_rows = dept_editor
 
+    st.divider()
+    st.markdown("##### 提示模板治理")
+    template_ids = TemplateRegistry.list_template_ids()
+    if not template_ids:
+        st.info("尚未注册任何提示模板。")
+    else:
+        template_id = st.selectbox(
+            "选择模板",
+            template_ids,
+            key="prompt_template_select",
+        )
+        version_details = TemplateRegistry.list_version_details(template_id)
+        raw_versions = TemplateRegistry.list_versions(template_id)
+        active_version = None
+        if version_details:
+            for detail in version_details:
+                if detail.get("is_active"):
+                    active_version = detail["version"]
+                    break
+            if active_version is None:
+                active_version = version_details[0]["version"]
+        usage_snapshot = llm_metrics_snapshot()
+        template_usage = usage_snapshot.get("template_usage", {}).get(template_id, {})
+
+        table_rows: List[Dict[str, object]] = []
+        for detail in version_details:
+            metadata_preview = detail.get("metadata") or {}
+            table_rows.append(
+                {
+                    "版本": detail["version"],
+                    "创建时间": detail.get("created_at") or "-",
+                    "激活": "是" if detail.get("is_active") else "否",
+                    "元数据": json.dumps(metadata_preview, ensure_ascii=False, default=str) if metadata_preview else "{}",
+                }
+            )
+        if table_rows:
+            st.dataframe(pd.DataFrame(table_rows), hide_index=True, width="stretch")
+
+        version_options = [row["版本"] for row in table_rows] if table_rows else []
+        if not version_options:
+            st.info("当前模板尚未创建版本，建议通过配置文件或 API 注册。")
+        else:
+            try:
+                default_idx = version_options.index(active_version or version_options[0])
+            except ValueError:
+                default_idx = 0
+            selected_version = st.selectbox(
+                "查看版本",
+                version_options,
+                index=default_idx,
+                key=f"{template_id}_version_select",
+            )
+            selected_detail = next(
+                (detail for detail in version_details if detail["version"] == selected_version),
+                {"metadata": {}},
+            )
+            usage_cols = st.columns(3)
+            usage_cols[0].metric("累计调用", int(template_usage.get("total_calls", 0)))
+            version_usage = (template_usage.get("versions") or {}).get(selected_version, {})
+            usage_cols[1].metric("版本调用", int(version_usage.get("calls", 0)))
+            usage_cols[2].metric(
+                "Prompt Tokens",
+                int(version_usage.get("prompt_tokens", 0)),
+            )
+
+            template_obj = TemplateRegistry.get(template_id, version=selected_version)
+            if template_obj:
+                with st.expander("模板内容预览", expanded=False):
+                    st.write(f"名称：{template_obj.name}")
+                    st.write(f"描述：{template_obj.description or '-'}")
+                    st.write(f"变量：{', '.join(template_obj.variables) if template_obj.variables else '无'}")
+                    st.code(template_obj.template, language="markdown")
+
+            metadata_str = json.dumps(selected_detail.get("metadata") or {}, ensure_ascii=False, indent=2, default=str)
+            metadata_input = st.text_area(
+                "版本元数据（JSON）",
+                value=metadata_str,
+                height=200,
+                key=f"{template_id}_{selected_version}_metadata",
+            )
+            meta_buttons = st.columns(3)
+            enable_version_actions = bool(raw_versions)
+            if meta_buttons[0].button(
+                "保存元数据",
+                key=f"{template_id}_{selected_version}_save_metadata",
+                disabled=not enable_version_actions,
+            ):
+                try:
+                    new_metadata = json.loads(metadata_input or "{}")
+                except json.JSONDecodeError as exc:
+                    st.error(f"元数据格式错误：{exc}")
+                else:
+                    try:
+                        TemplateRegistry.update_version_metadata(template_id, selected_version, new_metadata)
+                        st.success("元数据已更新。")
+                        st.rerun()
+                    except Exception as exc:  # noqa: BLE001
+                        st.error(f"更新元数据失败：{exc}")
+
+            if meta_buttons[1].button(
+                "设为激活版本",
+                key=f"{template_id}_{selected_version}_activate",
+                disabled=(selected_version == active_version) or not enable_version_actions,
+            ):
+                try:
+                    TemplateRegistry.activate_version(template_id, selected_version)
+                    st.success(f"{template_id} 已切换至版本 {selected_version}。")
+                    st.rerun()
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"切换版本失败：{exc}")
+
+            export_payload = TemplateRegistry.export_versions(template_id) if enable_version_actions else None
+            meta_buttons[2].download_button(
+                "导出版本 JSON",
+                data=export_payload or "",
+                file_name=f"{template_id}_versions.json",
+                mime="application/json",
+                key=f"{template_id}_download_versions",
+                disabled=not export_payload,
+            )
+
+    st.divider()
+    st.markdown("##### 部门遥测可视化")
+    telemetry_limit = st.slider(
+        "遥测查询条数",
+        min_value=50,
+        max_value=500,
+        value=200,
+        step=50,
+        help="限制查询 agent_utils 表中的最新记录数量。",
+        key="telemetry_limit",
+    )
+    telemetry_rows: List[Dict[str, object]] = []
+    try:
+        with db_session(read_only=True) as conn:
+            raw_rows = conn.execute(
+                """
+                SELECT trade_date, ts_code, agent, utils
+                FROM agent_utils
+                ORDER BY trade_date DESC, ts_code
+                LIMIT ?
+                """,
+                (telemetry_limit,),
+            ).fetchall()
+    except Exception:  # noqa: BLE001
+        LOGGER.exception("读取 agent_utils 遥测失败", extra=LOG_EXTRA)
+        raw_rows = []
+
+    for row in raw_rows:
+        trade_date = row["trade_date"]
+        ts_code = row["ts_code"]
+        agent = row["agent"]
+        try:
+            utils_payload = json.loads(row["utils"] or "{}")
+        except json.JSONDecodeError:
+            utils_payload = {}
+
+        if agent == "global":
+            telemetry_map = utils_payload.get("_department_telemetry") or {}
+            for dept_code, payload in telemetry_map.items():
+                if not isinstance(payload, dict):
+                    payload = {"value": payload}
+                record = {
+                    "trade_date": trade_date,
+                    "ts_code": ts_code,
+                    "agent": agent,
+                    "department": dept_code,
+                    "source": "global",
+                    "telemetry": json.dumps(payload, ensure_ascii=False, default=str),
+                }
+                for key, value in payload.items():
+                    if isinstance(value, (int, float, bool, str)):
+                        record.setdefault(key, value)
+                telemetry_rows.append(record)
+        elif agent.startswith("dept_"):
+            dept_code = agent.split("dept_", 1)[-1]
+            payload = utils_payload.get("_telemetry") or {}
+            if not isinstance(payload, dict):
+                payload = {"value": payload}
+            record = {
+                "trade_date": trade_date,
+                "ts_code": ts_code,
+                "agent": agent,
+                "department": dept_code,
+                "source": "department",
+                "telemetry": json.dumps(payload, ensure_ascii=False, default=str),
+            }
+            for key, value in payload.items():
+                if isinstance(value, (int, float, bool, str)):
+                    record.setdefault(key, value)
+            telemetry_rows.append(record)
+
+    if not telemetry_rows:
+        st.info("未找到遥测记录，可先运行部门评估流程。")
+    else:
+        telemetry_df = pd.DataFrame(telemetry_rows)
+        telemetry_df["trade_date"] = telemetry_df["trade_date"].astype(str)
+        trade_dates = sorted(telemetry_df["trade_date"].unique(), reverse=True)
+        selected_trade_date = st.selectbox(
+            "交易日",
+            trade_dates,
+            index=0,
+            key="telemetry_trade_date",
+        )
+        filtered_df = telemetry_df[telemetry_df["trade_date"] == selected_trade_date]
+        departments = sorted(filtered_df["department"].dropna().unique())
+        selected_departments = st.multiselect(
+            "部门过滤",
+            departments,
+            default=departments,
+            key="telemetry_departments",
+        )
+        if selected_departments:
+            filtered_df = filtered_df[filtered_df["department"].isin(selected_departments)]
+        numeric_columns = [
+            col
+            for col in filtered_df.columns
+            if col not in {"trade_date", "ts_code", "agent", "department", "source", "telemetry"}
+            and pd.api.types.is_numeric_dtype(filtered_df[col])
+        ]
+        metric_cols = st.columns(min(3, max(1, len(numeric_columns))))
+        for idx, column in enumerate(numeric_columns[: len(metric_cols)]):
+            column_series = filtered_df[column].dropna()
+            value = column_series.mean() if not column_series.empty else 0.0
+            metric_cols[idx].metric(f"{column} 均值", f"{value:.2f}")
+        st.dataframe(filtered_df, hide_index=True, width="stretch")
+        st.download_button(
+            "下载遥测 CSV",
+            data=filtered_df.to_csv(index=False),
+            file_name=f"telemetry_{selected_trade_date}.csv",
+            mime="text/csv",
+            key="telemetry_download",
+        )
     col_reset, col_save = st.columns([1, 1])
 
     if col_save.button("保存部门配置"):

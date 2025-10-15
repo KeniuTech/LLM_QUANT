@@ -1,6 +1,7 @@
 """Simple runtime metrics collector for LLM calls."""
 from __future__ import annotations
 
+import copy
 import logging
 from collections import deque
 from dataclasses import dataclass, field
@@ -19,6 +20,7 @@ class _Metrics:
     decision_action_counts: Dict[str, int] = field(default_factory=dict)
     total_latency: float = 0.0
     latency_samples: Deque[float] = field(default_factory=lambda: deque(maxlen=200))
+    template_usage: Dict[str, Dict[str, object]] = field(default_factory=dict)
 
 
 _METRICS = _Metrics()
@@ -78,6 +80,7 @@ def snapshot(reset: bool = False) -> Dict[str, object]:
                 else 0.0
             ),
             "latency_samples": list(_METRICS.latency_samples),
+            "template_usage": copy.deepcopy(_METRICS.template_usage),
         }
         if reset:
             _METRICS.total_calls = 0
@@ -89,6 +92,7 @@ def snapshot(reset: bool = False) -> Dict[str, object]:
             _METRICS.decisions.clear()
             _METRICS.total_latency = 0.0
             _METRICS.latency_samples.clear()
+            _METRICS.template_usage.clear()
         return data
 
 
@@ -125,6 +129,38 @@ def record_decision(
         _METRICS.decision_action_counts[action] = (
             _METRICS.decision_action_counts.get(action, 0) + 1
         )
+    _notify_listeners()
+
+
+def record_template_usage(
+    template_id: str,
+    *,
+    version: Optional[str],
+    prompt_tokens: Optional[int] = None,
+    completion_tokens: Optional[int] = None,
+) -> None:
+    """Record usage statistics for a specific prompt template."""
+
+    if not template_id:
+        return
+    label = template_id.strip()
+    version_label = version or "active"
+    with _LOCK:
+        entry = _METRICS.template_usage.setdefault(
+            label,
+            {"total_calls": 0, "versions": {}},
+        )
+        entry["total_calls"] = int(entry.get("total_calls", 0)) + 1
+        versions = entry.setdefault("versions", {})
+        version_entry = versions.setdefault(
+            version_label,
+            {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0},
+        )
+        version_entry["calls"] = int(version_entry.get("calls", 0)) + 1
+        if prompt_tokens:
+            version_entry["prompt_tokens"] = int(version_entry.get("prompt_tokens", 0)) + int(prompt_tokens)
+        if completion_tokens:
+            version_entry["completion_tokens"] = int(version_entry.get("completion_tokens", 0)) + int(completion_tokens)
     _notify_listeners()
 
 

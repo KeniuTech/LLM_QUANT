@@ -22,7 +22,7 @@ from app.utils.config import (
     LLMEndpoint,
     get_config,
 )
-from app.llm.metrics import record_call
+from app.llm.metrics import record_call, record_template_usage
 from app.utils.logging import get_logger
 
 LOGGER = get_logger(__name__)
@@ -332,10 +332,12 @@ def run_llm(
         context = None
 
     # Apply template if specified
+    applied_template_version: Optional[str] = None
     if template_id:
         template = TemplateRegistry.get(template_id)
         if not template:
             raise ValueError(f"Template {template_id} not found")
+        applied_template_version = TemplateRegistry.get_active_version(template_id)
         vars_dict = template_vars or {}
         if isinstance(prompt, str):
             vars_dict["prompt"] = prompt
@@ -356,6 +358,11 @@ def run_llm(
     if context:
         context.add_message(Message(role="assistant", content=response))
 
+    if template_id:
+        record_template_usage(
+            template_id,
+            version=applied_template_version,
+        )
     return response
 
 

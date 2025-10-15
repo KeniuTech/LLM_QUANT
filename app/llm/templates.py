@@ -200,11 +200,62 @@ class TemplateRegistry:
         return list(collected.values())
 
     @classmethod
+    def list_template_ids(cls) -> List[str]:
+        """Return all known template IDs in sorted order."""
+        ids = set(cls._templates.keys())
+        manager = cls._manager()
+        ids.update(manager.list_template_ids())
+        return sorted(ids)
+
+    @classmethod
     def list_versions(cls, template_id: str) -> List[str]:
         """List available version labels for a template."""
 
         manager = cls._manager()
         return [ver.version for ver in manager.list_versions(template_id)]
+
+    @classmethod
+    def list_version_details(cls, template_id: str) -> List[Dict[str, Any]]:
+        """Return detailed information for each version of a template."""
+
+        manager = cls._manager()
+        versions = manager.list_version_details(template_id)
+        details: List[Dict[str, Any]] = []
+        for entry in versions:
+            details.append(
+                {
+                    "version": entry.version,
+                    "created_at": entry.created_at,
+                    "is_active": entry.is_active,
+                    "metadata": dict(entry.metadata or {}),
+                }
+            )
+        if not details and template_id in cls._templates:
+            details.append(
+                {
+                    "version": cls._default_version_label,
+                    "created_at": None,
+                    "is_active": True,
+                    "metadata": {},
+                }
+            )
+        return details
+
+    @classmethod
+    def update_version_metadata(cls, template_id: str, version: str, metadata: Dict[str, Any]) -> None:
+        """Update metadata for a template version."""
+
+        manager = cls._manager()
+        manager.update_metadata(template_id, version, metadata)
+
+    @classmethod
+    def export_versions(cls, template_id: str) -> Optional[str]:
+        """Export template versions for backup."""
+
+        manager = cls._manager()
+        if not manager.list_versions(template_id):
+            return None
+        return manager.export_versions(template_id)
 
     @classmethod
     def load_from_json(cls, json_str: str) -> None:
