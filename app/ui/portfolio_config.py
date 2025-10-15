@@ -146,7 +146,7 @@ def render_portfolio_config() -> None:
         
         st.bar_chart(
             positions_df.set_index("股票")["持仓比例"],
-            use_container_width=True
+            width="stretch"
         )
         
     with col2:
@@ -158,5 +158,5 @@ def render_portfolio_config() -> None:
         
         st.bar_chart(
             sectors_df.set_index("行业")["敞口"],
-            use_container_width=True
+            width="stretch"
         )

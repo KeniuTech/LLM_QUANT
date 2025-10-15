@@ -13,8 +13,10 @@ import streamlit as st
 from app.backtest.engine import BacktestEngine, PortfolioState, BtConfig
 from app.utils.portfolio import (
     InvestmentCandidate,
-    get_candidate_pool,
+    PortfolioPosition,
     get_portfolio_settings_snapshot,
+    list_investment_pool,
+    list_positions,
 )
 from app.utils.db import db_session
 
@@ -40,6 +42,48 @@ def _parse_trade_date(trade_date: str | int | date) -> date:
         return datetime.strptime(value, "%Y%m%d").date()
     except ValueError as exc:
         raise ValueError(f"无法解析交易日：{trade_date}") from exc
+
+
+def _resolve_trade_date_variants(trade_date: str | int | date) -> List[str]:
+    """Return possible string representations for the given trade date."""
+    variants: List[str] = []
+    str_val = str(trade_date).strip()
+    if str_val:
+        variants.append(str_val)
+    try:
+        dt = _parse_trade_date(trade_date)
+    except ValueError:
+        dt = None
+    if dt is not None:
+        variants.extend(
+            [
+                dt.strftime("%Y%m%d"),
+                dt.isoformat(),
+            ]
+        )
+    # 保持顺序同时去重
+    seen = set()
+    unique_variants: List[str] = []
+    for item in variants:
+        if item and item not in seen:
+            unique_variants.append(item)
+            seen.add(item)
+    return unique_variants
+
+
+def _load_candidate_records(
+    trade_date: str | int | date,
+) -> tuple[List[InvestmentCandidate], Optional[str], bool]:
+    """Load candidate pool records trying multiple trade date representations."""
+    variants = _resolve_trade_date_variants(trade_date)
+    for variant in variants:
+        records = list_investment_pool(trade_date=variant)
+        if records:
+            return records, variant, False
+    latest_records = list_investment_pool()
+    if latest_records:
+        return latest_records, latest_records[0].trade_date, True
+    return [], None, False
 
 
 def _fetch_agent_actions(trade_date: str, symbols: List[str]) -> Dict[str, Dict[str, Optional[str]]]:
@@ -205,31 +249,40 @@ def render_today_plan() -> None:
             """,
             (trade_date,),
         ).fetchall()
-    symbols = [row["ts_code"] for row in code_rows]
+    agent_symbols = [row["ts_code"] for row in code_rows]
 
-    candidate_records, fallback_used = get_candidate_pool(trade_date=trade_date)
+    candidate_records, candidate_data_date, candidate_fallback = _load_candidate_records(trade_date)
     if candidate_records:
-        message = (
-            f"候选池包含 {len(candidate_records)} 个标的："
-            + "、".join(item.ts_code for item in candidate_records[:12])
-            + ("…" if len(candidate_records) > 12 else "")
+        preview_codes = "、".join(item.ts_code for item in candidate_records[:12])
+        if len(candidate_records) > 12:
+            preview_codes += "…"
+        source_note = ""
+        if candidate_data_date and candidate_data_date != trade_date:
+            source_note = f"（基于 {candidate_data_date} 数据）"
+        elif candidate_fallback:
+            source_note = "（使用最近候选池）"
+        st.caption(
+            f"候选池包含 {len(candidate_records)} 个标的：{preview_codes}{source_note}"
         )
-        if fallback_used:
-            message += "（使用最新候选池）"
-        st.caption(message)
-
-    if candidate_records:
-        candidate_codes = [item.ts_code for item in candidate_records]
-        symbols = list(dict.fromkeys(candidate_codes + symbols))
     else:
-        st.caption("所选日期暂无候选池数据，仍可查看代理决策记录。")
+        st.caption("所选日期暂无候选池数据，仍可查看代理决策记录或触发重评估。")
+
+    candidate_codes = [item.ts_code for item in candidate_records]
+    positions = list_positions(active_only=True)
+    position_map: Dict[str, PortfolioPosition] = {pos.ts_code: pos for pos in positions}
+    position_codes = [pos.ts_code for pos in positions]
+
+    symbols = list(
+        dict.fromkeys(candidate_codes + agent_symbols + position_codes)
+    )
 
     with actions_col:
-        metrics_cols = st.columns(2)
-        metrics_cols[0].metric("标的数量", len(symbols))
+        metrics_cols = st.columns(3)
+        metrics_cols[0].metric("已产出决策数", len(agent_symbols))
         metrics_cols[1].metric("候选池标的", len(candidate_records))
-        st.caption("一键触发策略重评估（包含当前交易日的所有标的）。")
-        if st.button("一键重评估全部", type="primary", use_container_width=True):
+        metrics_cols[2].metric("当前持仓", len(position_codes))
+        st.caption("对当前交易日所有标的触发策略重评估。")
+        if st.button("一键重评估全部", type="primary", width="stretch"):
             with st.spinner("正在对所有标的进行重评估，请稍候..."):
                 try:
                     trade_date_obj = _parse_trade_date(trade_date)
@@ -251,87 +304,117 @@ def render_today_plan() -> None:
                     LOGGER.exception("一键重评估失败", extra=LOG_EXTRA)
                     st.error(f"一键重评估执行过程中发生错误：{exc}")
 
-    detail_tab, assistant_tab = st.tabs(["标的详情", "投资助理模式"])
-    with assistant_tab:
-        _render_today_plan_assistant_view(trade_date, candidate_records)
+    overview_tab, detail_tab = st.tabs(["组合总览", "标的详情"])
+    with overview_tab:
+        _render_today_plan_assistant_view(
+            trade_date,
+            candidate_records,
+            candidate_data_date,
+            candidate_fallback,
+            positions,
+        )
 
     with detail_tab:
         if not symbols:
             st.info("所选交易日暂无 agent_utils 记录。")
         else:
-            _render_today_plan_symbol_view(trade_date, symbols, query, candidate_records)
+            _render_today_plan_symbol_view(
+                trade_date,
+                symbols,
+                query,
+                candidate_records,
+                position_map,
+            )
 
 
 def _render_today_plan_assistant_view(
     trade_date: str | int | date,
     candidate_records: List[InvestmentCandidate],
+    candidate_data_date: Optional[str],
+    fallback_used: bool,
+    positions: List[PortfolioPosition],
 ) -> None:
-    # 确保日期格式为字符串
-    if isinstance(trade_date, date):
-        trade_date = trade_date.strftime("%Y%m%d")
-    st.info("已开启投资助理模式：以下内容为组合级（去标的）建议，不包含任何具体标的代码。")
-    try:
-        candidates = candidate_records or list_investment_pool(trade_date=trade_date)
-        if candidates:
-            scores = [float(item.score or 0.0) for item in candidates]
-            statuses = [item.status or "UNKNOWN" for item in candidates]
-            tags: List[str] = []
-            rationales: List[str] = []
-            for item in candidates:
-                if getattr(item, "tags", None):
-                    tags.extend(item.tags)
-                if getattr(item, "rationale", None):
-                    rationales.append(str(item.rationale))
-            cnt = Counter(statuses)
-            tag_cnt = Counter(tags)
-            st.subheader("候选池聚合概览（已匿名化）")
-            col_a, col_b, col_c = st.columns(3)
-            col_a.metric("候选数", f"{len(candidates)}")
-            col_b.metric("平均评分", f"{np.mean(scores):.3f}" if scores else "-")
-            col_c.metric("中位评分", f"{np.median(scores):.3f}" if scores else "-")
+    display_date = candidate_data_date or str(trade_date)
+    st.info("组合总览聚焦候选池与仓位概况，用于快速判断今日是否需要调整策略。")
+    if fallback_used and candidate_data_date and candidate_data_date != str(trade_date):
+        st.caption(f"候选池数据来自 {candidate_data_date}（最近可用日期）。")
+    elif candidate_data_date and candidate_data_date != str(trade_date):
+        st.caption(f"候选池数据基于 {candidate_data_date}。")
 
-            st.write("状态分布：")
-            st.json(dict(cnt))
+    candidates = candidate_records
+    if not candidates:
+        st.warning("尚未生成候选池，请先运行回测/评估流程或触发上方的一键重评估。")
+        return
 
-            if tag_cnt:
-                st.write("常见标签（示例）：")
-                st.json(dict(tag_cnt.most_common(10)))
+    scores = [float(item.score or 0.0) for item in candidates]
+    statuses = [item.status or "UNKNOWN" for item in candidates]
+    tags: List[str] = []
+    rationales: List[str] = []
+    for item in candidates:
+        if getattr(item, "tags", None):
+            tags.extend(item.tags)
+        if getattr(item, "rationale", None):
+            rationales.append(str(item.rationale))
 
-            if rationales:
-                st.write("汇总理由（节选，不含代码）：")
-                seen = set()
-                excerpts = []
-                for rationale in rationales:
-                    text = rationale.strip()
-                    if text and text not in seen:
-                        seen.add(text)
-                        excerpts.append(text)
-                    if len(excerpts) >= 3:
-                        break
-                for idx, excerpt in enumerate(excerpts, start=1):
-                    st.markdown(f"**理由 {idx}:** {excerpt}")
+    cnt = Counter(statuses)
+    tag_cnt = Counter(tags)
 
-            avg_score = float(np.mean(scores)) if scores else 0.0
-            suggest_pct = max(0.0, min(0.3, 0.10 + (avg_score - 0.5) * 0.2))
-            st.subheader("组合级建议（不指定标的）")
-            st.write(
-                f"基于候选池平均评分 {avg_score:.3f}，建议今日用于新增买入的现金比例约为 {suggest_pct:.0%}。"
-            )
-            st.write(
-                "建议分配思路：在候选池中挑选若干得分较高的标的按目标权重等比例分配，或以分批买入的方式分摊入场时点。"
-            )
-            if st.button("生成组合级操作建议（仅输出，不执行）"):
-                st.success("已生成组合级建议（仅供参考）。")
-                st.write({
-                    "候选数": len(candidates),
-                    "平均评分": avg_score,
-                    "建议新增买入比例": f"{suggest_pct:.0%}",
-                })
-        else:
-            st.info("所选交易日暂无候选投资池数据。")
-    except Exception:  # noqa: BLE001
-        LOGGER.exception("加载候选池聚合信息失败", extra=LOG_EXTRA)
-        st.error("加载候选池数据时发生错误。")
+    col_a, col_b, col_c = st.columns(3)
+    col_a.metric("候选数", f"{len(candidates)}")
+    col_b.metric("平均评分", f"{np.mean(scores):.3f}" if scores else "-")
+    col_c.metric("中位评分", f"{np.median(scores):.3f}" if scores else "-")
+
+    if positions:
+        total_market_value = sum(float(pos.market_value or 0.0) for pos in positions)
+        position_cols = st.columns(3)
+        position_cols[0].metric("持仓数", len(positions))
+        position_cols[1].metric(
+            "持仓总市值",
+            f"{total_market_value:,.0f}" if total_market_value else "-",
+        )
+        exposure = sum(float(pos.target_weight or 0.0) for pos in positions)
+        position_cols[2].metric("目标权重合计", f"{exposure:.0%}" if exposure else "-")
+
+    st.write("状态分布：")
+    st.json(dict(cnt))
+
+    if tag_cnt:
+        st.write("常见标签（示例）：")
+        st.json(dict(tag_cnt.most_common(10)))
+
+    if rationales:
+        st.write("汇总理由（节选，不含代码）：")
+        seen = set()
+        excerpts = []
+        for rationale in rationales:
+            text = rationale.strip()
+            if text and text not in seen:
+                seen.add(text)
+                excerpts.append(text)
+            if len(excerpts) >= 3:
+                break
+        for idx, excerpt in enumerate(excerpts, start=1):
+            st.markdown(f"**理由 {idx}:** {excerpt}")
+
+    avg_score = float(np.mean(scores)) if scores else 0.0
+    suggest_pct = max(0.0, min(0.3, 0.10 + (avg_score - 0.5) * 0.2))
+    st.subheader("组合级建议（不指定标的）")
+    st.write(
+        f"基于候选池平均评分 {avg_score:.3f}，建议今日用于新增买入的现金比例约为 {suggest_pct:.0%}。"
+    )
+    st.write(
+        "建议分配思路：在候选池中挑选若干得分较高的标的按目标权重等比例分配，或以分批买入的方式分摊入场时点。"
+    )
+    if st.button("生成组合级操作建议（仅输出，不执行）"):
+        st.success("已生成组合级建议（仅供参考）。")
+        st.write(
+            {
+                "候选数": len(candidates),
+                "平均评分": avg_score,
+                "建议新增买入比例": f"{suggest_pct:.0%}",
+                "候选数据日期": display_date,
+            }
+        )
 
 
 def _render_today_plan_symbol_view(
@@ -339,6 +422,7 @@ def _render_today_plan_symbol_view(
     symbols: List[str],
     query_params: Dict[str, List[str]],
     candidate_records: List[InvestmentCandidate],
+    position_map: Dict[str, PortfolioPosition],
 ) -> None:
     default_ts = query_params.get("code", [symbols[0]])[0]
     try:
@@ -363,12 +447,9 @@ def _render_today_plan_symbol_view(
             (trade_date, ts_code),
         ).fetchall()
 
-    if not rows:
-        st.info("未查询到详细决策记录，稍后再试。")
-        return
-
     candidate_map = {item.ts_code: item for item in candidate_records}
     candidate_info = candidate_map.get(ts_code)
+    position_info = position_map.get(ts_code)
     if candidate_info:
         info_cols = st.columns(4)
         info_cols[0].metric("候选评分", f"{(candidate_info.score or 0):.3f}")
@@ -377,6 +458,30 @@ def _render_today_plan_symbol_view(
         info_cols[3].metric("行业", candidate_info.industry or "-")
         if candidate_info.rationale:
             st.caption(f"候选理由：{candidate_info.rationale}")
+    if position_info:
+        pos_cols = st.columns(4)
+        pos_cols[0].metric("持仓数量", f"{position_info.quantity:.0f}")
+        pos_cols[1].metric(
+            "成本价",
+            f"{position_info.cost_price:.2f}",
+        )
+        market_price = position_info.market_price
+        pos_cols[2].metric("市价", f"{market_price:.2f}" if market_price else "-")
+        pnl = (position_info.unrealized_pnl or 0.0) + (position_info.realized_pnl or 0.0)
+        pos_cols[3].metric("累计盈亏", f"{pnl:,.0f}")
+        if position_info.target_weight is not None:
+            st.caption(f"目标权重：{position_info.target_weight:.0%}")
+
+    _render_today_plan_reevaluation_controls(
+        trade_date,
+        ts_code,
+        batch_symbols,
+        add_divider=False,
+    )
+
+    if not rows:
+        st.info("该标的尚未生成部门/代理决策，可尝试触发重评估。")
+        return
 
     try:
         feasible_actions = json.loads(rows[0]["feasible"] or "[]")
@@ -685,11 +790,19 @@ def _render_today_plan_symbol_view(
     st.divider()
     st.info("投资池与仓位概览已移至单独页面。请在侧边或页面导航中选择“投资池/仓位”以查看详细信息。")
 
-    st.divider()
+def _render_today_plan_reevaluation_controls(
+    trade_date: str | int | date,
+    ts_code: str,
+    batch_symbols: List[str],
+    *,
+    add_divider: bool = True,
+) -> None:
+    if add_divider:
+        st.divider()
     st.subheader("策略重评估")
     st.caption("对当前选中的交易日与标的，立即触发一次策略评估并回写 agent_utils。")
     cols_re = st.columns([1, 1])
-    if cols_re[0].button("对该标的重评估", key="reevaluate_current_symbol"):
+    if cols_re[0].button("对该标的重评估", key=f"reevaluate_{ts_code}"):
         with st.spinner("正在重评估..."):
             try:
                 trade_date_obj = _parse_trade_date(trade_date)
@@ -713,7 +826,12 @@ def _render_today_plan_symbol_view(
             except Exception as exc:  # noqa: BLE001
                 LOGGER.exception("重评估失败", extra=LOG_EXTRA)
                 st.error(f"重评估失败：{exc}")
-    if cols_re[1].button("批量重评估（所选）", key="reevaluate_batch", disabled=not batch_symbols):
+    disabled = not batch_symbols
+    if cols_re[1].button(
+        "批量重评估（所选）",
+        key="reevaluate_batch_symbols",
+        disabled=disabled,
+    ):
         with st.spinner("批量重评估执行中..."):
             try:
                 trade_date_obj = _parse_trade_date(trade_date)

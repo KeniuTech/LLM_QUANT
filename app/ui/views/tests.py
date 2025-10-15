@@ -1,9 +1,11 @@
 """自检测试视图。"""
 from __future__ import annotations
 
+from collections import Counter
 from datetime import date
 
 import streamlit as st
+import pandas as pd
 
 from app.data.schema import initialize_database
 from app.ingest.checker import run_boot_check
@@ -11,6 +13,7 @@ from app.ingest.tushare import FetchJob, run_ingestion
 from app.llm.client import llm_config_snapshot, run_llm
 from app.utils import alerts
 from app.utils.config import get_config, save_config
+from app.utils.data_quality import run_data_quality_checks
 
 from app.ui.shared import LOGGER, LOG_EXTRA
 from app.ui.views.dashboard import update_dashboard_sidebar
@@ -202,3 +205,50 @@ def render_tests() -> None:
                 LOGGER.info("LLM 测试成功", extra=LOG_EXTRA)
                 st.success("LLM 调用成功，以下为返回内容：")
                 st.write(response)
+
+    st.divider()
+    st.subheader("数据质量验证")
+    st.write("快速检查候选池、策略评估、持仓快照与新闻数据的更新情况。")
+    dq_window = int(
+        st.number_input(
+            "数据更新窗口（天）",
+            min_value=3,
+            max_value=60,
+            value=7,
+            step=1,
+            help="用于判断数据是否过期的时间窗口。",
+        )
+    )
+    if st.button("运行数据质量验证"):
+        LOGGER.info("执行数据质量验证 window_days=%s", dq_window, extra=LOG_EXTRA)
+        with st.spinner("正在执行数据质量检查..."):
+            results = run_data_quality_checks(window_days=dq_window)
+
+        level_counts = Counter(item.severity for item in results)
+        metric_cols = st.columns(3)
+        metric_cols[0].metric("错误", level_counts.get("ERROR", 0))
+        metric_cols[1].metric("警告", level_counts.get("WARN", 0))
+        metric_cols[2].metric("提示", level_counts.get("INFO", 0))
+
+        if not results:
+            st.info("未返回任何检查结果。")
+        else:
+            df = pd.DataFrame(
+                [
+                    {
+                        "检查项": item.check,
+                        "级别": item.severity,
+                        "说明": item.detail,
+                        "附加信息": item.extras or {},
+                    }
+                    for item in results
+                ]
+            )
+            st.dataframe(df, hide_index=True, width="stretch")
+            with st.expander("导出检查结果", expanded=False):
+                st.download_button(
+                    "下载 CSV",
+                    data=df.to_csv(index=False),
+                    file_name="data_quality_results.csv",
+                    mime="text/csv",
+                )
