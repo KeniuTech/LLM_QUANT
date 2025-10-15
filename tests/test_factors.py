@@ -12,6 +12,7 @@ from app.features.factors import (
     FactorResult,
     FactorSpec,
     compute_factor_range,
+    compute_factors_incremental,
     compute_factors,
     _valuation_score,
     _volume_ratio_score,
@@ -181,6 +182,25 @@ def test_compute_factors_skip_existing(isolated_db):
     compute_factors(trade_day)
     skipped = compute_factors(trade_day, skip_existing=True)
     assert skipped == []
+
+
+def test_compute_factors_incremental(isolated_db):
+    ts_code = "000001.SZ"
+    latest_day = date(2025, 2, 10)
+    _populate_sample_data(ts_code, latest_day)
+
+    first_day = latest_day - timedelta(days=5)
+    compute_factors(first_day)
+
+    summary = compute_factors_incremental(max_trading_days=3)
+    trade_dates = summary["trade_dates"]
+    assert trade_dates
+    assert trade_dates[0] > first_day
+    assert summary["count"] > 0
+
+    # No new dates should return empty result
+    summary_again = compute_factors_incremental(max_trading_days=3)
+    assert summary_again["count"] == 0
 
 
 def test_compute_factor_range_filters_universe(isolated_db):

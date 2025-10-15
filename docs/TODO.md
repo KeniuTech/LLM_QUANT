@@ -77,6 +77,6 @@
 
 | 工作项 | 状态 | 说明 |
 | --- | --- | --- |
-| 全量代码审查 | ⏳ | 自 `app/ui/streamlit_app.py` 起逐模块审查，剔除重复安全检查与临时代码。 |
-| TODO 标记治理 | ⏳ | 为未实现功能补充 TODO 与实现思路，并清理过期逻辑。 |
+| 全量代码审查 | 🔄 | 已制定 `docs/architecture/code_review_checklist.md`，按 checklist 推进模块审查。 |
+| TODO 标记治理 | 🔄 | 新增 `scripts/todo_report.py` 支撑定期扫描，待梳理遗留项目。 |
 | 业务逻辑体检 | ⏳ | 梳理业务链路，识别需要重构或优化的模块。 |

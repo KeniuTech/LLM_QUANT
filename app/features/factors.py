@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, date, timezone
+from datetime import datetime, date, timezone, timedelta
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
 
 from app.core.indicators import momentum, rolling_mean, volatility
@@ -297,6 +297,69 @@ def compute_factor_range(
     return aggregated
 
 
+def compute_factors_incremental(
+    *,
+    factors: Iterable[FactorSpec] = DEFAULT_FACTORS,
+    ts_codes: Optional[Sequence[str]] = None,
+    skip_existing: bool = True,
+    max_trading_days: Optional[int] = 5,
+) -> Dict[str, object]:
+    """增量计算因子（从最新一条因子记录之后开始）。
+
+    Args:
+        factors: 需要计算的因子列表。
+        ts_codes: 限定计算的证券池。
+        skip_existing: 是否跳过已存在数据。
+        max_trading_days: 限制本次计算的交易日数量（按交易日计数）。
+
+    Returns:
+        包含起止日期、参与交易日及计算结果的字典。
+    """
+
+    initialize_database()
+    codes_tuple = None
+    if ts_codes:
+        normalized = [
+            code.strip().upper()
+            for code in ts_codes
+            if isinstance(code, str) and code.strip()
+        ]
+        codes_tuple = tuple(dict.fromkeys(normalized)) or None
+
+    last_date_str = _latest_factor_trade_date()
+    trade_dates = _list_trade_dates_after(last_date_str, codes_tuple, max_trading_days)
+    if not trade_dates:
+        LOGGER.info("未发现新的交易日需要计算因子（latest=%s）", last_date_str, extra=LOG_EXTRA)
+        return {
+            "start": None,
+            "end": None,
+            "trade_dates": [],
+            "results": [],
+            "count": 0,
+        }
+
+    aggregated_results: List[FactorResult] = []
+    for trade_date_str in trade_dates:
+        trade_day = datetime.strptime(trade_date_str, "%Y%m%d").date()
+        aggregated_results.extend(
+            compute_factors(
+                trade_day,
+                factors,
+                ts_codes=codes_tuple,
+                skip_existing=skip_existing,
+            )
+        )
+
+    trading_dates = [datetime.strptime(item, "%Y%m%d").date() for item in trade_dates]
+    return {
+        "start": trading_dates[0],
+        "end": trading_dates[-1],
+        "trade_dates": trading_dates,
+        "results": aggregated_results,
+        "count": len(aggregated_results),
+    }
+
+
 def _load_universe(trade_date: str, allowed: Optional[set[str]] = None) -> List[str]:
     query = "SELECT ts_code FROM daily WHERE trade_date = ? ORDER BY ts_code"
     with db_session(read_only=True) as conn:
@@ -383,6 +446,43 @@ def _list_trade_dates(
     with db_session(read_only=True) as conn:
         rows = conn.execute(query, params).fetchall()
     return [row["trade_date"] for row in rows if row["trade_date"]]
+
+
+def _list_trade_dates_after(
+    last_trade_date: Optional[str],
+    allowed: Optional[Sequence[str]],
+    limit: Optional[int],
+) -> List[str]:
+    params: List[object] = []
+    where_clauses: List[str] = []
+    if last_trade_date:
+        where_clauses.append("trade_date > ?")
+        params.append(last_trade_date)
+    base_query = "SELECT DISTINCT trade_date FROM daily"
+    if allowed:
+        placeholders = ", ".join("?" for _ in allowed)
+        where_clauses.append(f"ts_code IN ({placeholders})")
+        params.extend(allowed)
+    if where_clauses:
+        base_query += " WHERE " + " AND ".join(where_clauses)
+    base_query += " ORDER BY trade_date"
+    if limit is not None and limit > 0:
+        base_query += f" LIMIT {int(limit)}"
+    with db_session(read_only=True) as conn:
+        rows = conn.execute(base_query, params).fetchall()
+    return [row["trade_date"] for row in rows if row["trade_date"]]
+
+
+def _latest_factor_trade_date() -> Optional[str]:
+    with db_session(read_only=True) as conn:
+        try:
+            row = conn.execute("SELECT MAX(trade_date) AS max_trade_date FROM factors").fetchone()
+        except sqlite3.OperationalError:
+            return None
+    value = row["max_trade_date"] if row else None
+    if not value:
+        return None
+    return str(value)
 
 
 def _compute_batch_factors(
