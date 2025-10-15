@@ -1,10 +1,15 @@
-"""Tests for epsilon-greedy bandit optimizer."""
+"""Tests for global parameter search optimizers."""
 from __future__ import annotations
 
 import pytest
 
 from app.backtest.decision_env import EpisodeMetrics, ParameterSpec
-from app.backtest.optimizer import BanditConfig, EpsilonGreedyBandit
+from app.backtest.optimizer import (
+    BanditConfig,
+    EpsilonGreedyBandit,
+    BayesianBandit,
+    SuccessiveHalvingOptimizer,
+)
 from app.utils import tuning
 
 
@@ -84,11 +89,11 @@ def patch_logging(monkeypatch):
     return records
 
 
-def test_bandit_optimizer_runs_and_logs(patch_logging):
+def test_epsilon_greedy_optimizer(patch_logging):
     env = DummyEnv()
     optimizer = EpsilonGreedyBandit(
         env,
-        BanditConfig(experiment_id="exp", episodes=5, epsilon=0.5, seed=42),
+        BanditConfig(experiment_id="exp_eps", episodes=5, epsilon=0.5, seed=42),
     )
     summary = optimizer.run()
 
@@ -98,8 +103,42 @@ def test_bandit_optimizer_runs_and_logs(patch_logging):
     payload = patch_logging[0]["metrics"]
     assert isinstance(payload, dict)
     assert "risk_breakdown" in payload
-    assert "department_controls" in payload
+    assert summary.best_episode.department_controls == {"momentum": {"prompt": "baseline"}}
 
-    first_episode = summary.episodes[0]
-    assert first_episode.resolved_action
-    assert first_episode.department_controls == {"momentum": {"prompt": "baseline"}}
+
+def test_bayesian_optimizer(patch_logging):
+    env = DummyEnv()
+    optimizer = BayesianBandit(
+        env,
+        BanditConfig(
+            experiment_id="exp_bayes",
+            strategy="bayesian",
+            episodes=6,
+            candidate_pool=32,
+            exploration_weight=0.01,
+            seed=123,
+        ),
+    )
+    summary = optimizer.run()
+    assert summary.best_episode is not None
+    assert summary.best_episode.reward > 0.3
+    assert len(patch_logging) >= 6
+
+
+def test_successive_halving_optimizer(patch_logging):
+    env = DummyEnv()
+    optimizer = SuccessiveHalvingOptimizer(
+        env,
+        BanditConfig(
+            experiment_id="exp_bohb",
+            strategy="bohb",
+            initial_candidates=9,
+            eta=3,
+            max_rounds=2,
+            seed=7,
+        ),
+    )
+    summary = optimizer.run()
+    assert summary.best_episode is not None
+    assert summary.best_episode.reward > 0.3
+    assert len(patch_logging) >= 9

@@ -638,6 +638,17 @@ def render_backtest_review() -> None:
             help="可选：为本次调参记录一个策略名称或备注。",
         )
 
+        strategy_choice = st.selectbox(
+            "搜索策略",
+            ["epsilon_greedy", "bayesian", "bohb"],
+            format_func=lambda x: {
+                "epsilon_greedy": "Epsilon-Greedy",
+                "bayesian": "贝叶斯优化",
+                "bohb": "BOHB/Successive Halving",
+            }.get(x, x),
+            key="decision_env_search_strategy",
+        )
+
         agent_objects = default_agents()
         agent_names = [agent.name for agent in agent_objects]
         if not agent_names:
@@ -841,34 +852,11 @@ def render_backtest_review() -> None:
             )
             
             st.divider()
-            st.subheader("自动探索（epsilon-greedy）")
-            col_ep, col_eps, col_seed = st.columns([1, 1, 1])
-            bandit_episodes = int(
-                col_ep.number_input(
-                    "迭代次数",
-                    min_value=1,
-                    max_value=200,
-                    value=10,
-                    step=1,
-                    key="decision_env_bandit_episodes",
-                    help="探索的回合数，越大越充分但耗时越久。",
-                )
-            )
-            bandit_epsilon = float(
-                col_eps.slider(
-                    "探索比例 ε",
-                    min_value=0.0,
-                    max_value=1.0,
-                    value=0.2,
-                    step=0.05,
-                    key="decision_env_bandit_epsilon",
-                    help="ε 越大，随机探索概率越高。",
-                )
-            )
-            seed_text = col_seed.text_input(
+            st.subheader("全局参数搜索")
+            seed_text = st.text_input(
                 "随机种子（可选）",
                 value="",
-                key="decision_env_bandit_seed",
+                key="decision_env_search_seed",
                 help="填写整数可复现实验，不填写则随机。",
             ).strip()
             bandit_seed = None
@@ -879,7 +867,113 @@ def render_backtest_review() -> None:
                     st.warning("随机种子需为整数，已忽略该值。")
                     bandit_seed = None
 
-            run_bandit = st.button("执行自动探索", key="run_decision_env_bandit")
+            if strategy_choice == "epsilon_greedy":
+                col_ep, col_eps = st.columns([1, 1])
+                bandit_episodes = int(
+                    col_ep.number_input(
+                        "迭代次数",
+                        min_value=1,
+                        max_value=200,
+                        value=10,
+                        step=1,
+                        key="decision_env_bandit_episodes",
+                        help="探索的回合数，越大越充分但耗时越久。",
+                    )
+                )
+                bandit_epsilon = float(
+                    col_eps.slider(
+                        "探索比例 ε",
+                        min_value=0.0,
+                        max_value=1.0,
+                        value=0.2,
+                        step=0.05,
+                        key="decision_env_bandit_epsilon",
+                        help="ε 越大，随机探索概率越高。",
+                    )
+                )
+                bayes_iterations = bandit_episodes
+                bayes_pool = 128
+                bayes_explore = 0.01
+                bohb_initial = 27
+                bohb_eta = 3
+                bohb_rounds = 3
+            elif strategy_choice == "bayesian":
+                col_ep, col_pool, col_xi = st.columns(3)
+                bayes_iterations = int(
+                    col_ep.number_input(
+                        "迭代次数",
+                        min_value=3,
+                        max_value=200,
+                        value=15,
+                        step=1,
+                        key="decision_env_bayes_iterations",
+                    )
+                )
+                bayes_pool = int(
+                    col_pool.number_input(
+                        "候选采样数",
+                        min_value=16,
+                        max_value=1024,
+                        value=128,
+                        step=16,
+                        key="decision_env_bayes_pool",
+                    )
+                )
+                bayes_explore = float(
+                    col_xi.number_input(
+                        "探索权重 ξ",
+                        min_value=0.0,
+                        max_value=0.5,
+                        value=0.01,
+                        step=0.01,
+                        format="%.3f",
+                        key="decision_env_bayes_xi",
+                    )
+                )
+                bandit_episodes = bayes_iterations
+                bandit_epsilon = 0.0
+                bohb_initial = 27
+                bohb_eta = 3
+                bohb_rounds = 3
+            else:  # bohb
+                col_init, col_eta, col_rounds = st.columns(3)
+                bohb_initial = int(
+                    col_init.number_input(
+                        "初始候选数",
+                        min_value=3,
+                        max_value=243,
+                        value=27,
+                        step=3,
+                        key="decision_env_bohb_initial",
+                    )
+                )
+                bohb_eta = int(
+                    col_eta.number_input(
+                        "压缩因子 η",
+                        min_value=2,
+                        max_value=6,
+                        value=3,
+                        step=1,
+                        key="decision_env_bohb_eta",
+                    )
+                )
+                bohb_rounds = int(
+                    col_rounds.number_input(
+                        "最大轮次",
+                        min_value=1,
+                        max_value=6,
+                        value=3,
+                        step=1,
+                        key="decision_env_bohb_rounds",
+                    )
+                )
+                bandit_episodes = bohb_initial
+                bandit_epsilon = 0.0
+                bayes_iterations = bandit_episodes
+                bayes_pool = 128
+                bayes_explore = 0.01
+
+            run_bandit = st.button("执行参数搜索", key="run_decision_env_bandit")
             if run_bandit:
                 if not specs:
                     st.warning("请至少配置一个动作维度再执行探索。")
@@ -912,14 +1006,25 @@ def render_backtest_review() -> None:
                             baseline_weights=baseline_weights,
                             disable_departments=disable_departments,
                         )
+                        search_strategy = strategy_choice
                         config = BanditConfig(
                             experiment_id=experiment_id or f"bandit_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-                            strategy=strategy_label or "DecisionEnv",
+                            strategy=strategy_label or search_strategy,
                             episodes=bandit_episodes,
                             epsilon=bandit_epsilon,
                             seed=bandit_seed,
+                            exploration_weight=bayes_explore,
+                            candidate_pool=bayes_pool,
+                            initial_candidates=bohb_initial,
+                            eta=bohb_eta,
+                            max_rounds=bohb_rounds,
                         )
-                        bandit = EpsilonGreedyBandit(env, config)
+                        if search_strategy == "bayesian":
+                            bandit = BayesianBandit(env, config)
+                        elif search_strategy == "bohb":
+                            bandit = SuccessiveHalvingOptimizer(env, config)
+                        else:
+                            bandit = EpsilonGreedyBandit(env, config)
                         with st.spinner("自动探索进行中，请稍候..."):
                             summary = bandit.run()
 
