@@ -41,7 +41,9 @@ def main() -> None:
     initialize_database()
 
     cfg = get_config()
-    if cfg.auto_update_data:
+    # 仅在首次运行时执行自动数据更新，避免 Streamlit 每次重跑都触发该逻辑
+    AUTO_UPDATE_FLAG = "auto_update_has_run"
+    if cfg.auto_update_data and not st.session_state.get(AUTO_UPDATE_FLAG):
         LOGGER.info("检测到自动更新数据选项已启用，开始执行数据拉取", extra=LOG_EXTRA)
         try:
             with st.spinner("正在自动更新数据..."):
@@ -66,6 +68,8 @@ def main() -> None:
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("自动数据更新失败", extra=LOG_EXTRA)
             st.error(f"❌ 自动数据更新失败：{exc}")
+        finally:
+            st.session_state[AUTO_UPDATE_FLAG] = True
 
     render_global_dashboard()
 
