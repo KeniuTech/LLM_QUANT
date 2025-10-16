@@ -5,11 +5,12 @@ import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, date, timezone, timedelta
-from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
+from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple, Union
 
 from app.core.indicators import momentum, rolling_mean, volatility
 from app.data.schema import initialize_database
 from app.utils.data_access import DataBroker
+from app.utils.feature_snapshots import FeatureSnapshotService
 from app.utils.db import db_session
 from app.utils.logging import get_logger
 # 导入扩展因子模块
@@ -29,6 +30,18 @@ except ImportError:  # pragma: no cover - optional dependency
 LOGGER = get_logger(__name__)
 LOG_EXTRA = {"stage": "factor_compute"}
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+_LATEST_BASE_FIELDS: List[str] = [
+    "daily_basic.pe",
+    "daily_basic.pb",
+    "daily_basic.ps",
+    "daily_basic.turnover_rate",
+    "daily_basic.volume_ratio",
+    "daily.close",
+    "daily.amount",
+    "daily.vol",
+    "daily_basic.dv_ratio",
+]
 
 
 @dataclass
@@ -502,6 +515,14 @@ def _compute_batch_factors(
     
     # 批次化数据可用性检查
     available_codes = _check_batch_data_availability(broker, ts_codes, trade_date, specs)
+
+    snapshot_service = FeatureSnapshotService(broker)
+    latest_snapshot = snapshot_service.load_latest(
+        trade_date,
+        _LATEST_BASE_FIELDS,
+        list(available_codes),
+        auto_refresh=False,
+    )
     
     # 更新UI进度状态 - 开始处理批次
     if progress and total_securities > 0:
@@ -523,7 +544,13 @@ def _compute_batch_factors(
                 continue
                 
             # 计算因子值
-            values = _compute_security_factors(broker, ts_code, trade_date, specs)
+            values = _compute_security_factors(
+                broker,
+                ts_code,
+                trade_date,
+                specs,
+                latest_fields=latest_snapshot.get(ts_code),
+            )
             
             if values:
                 # 检测并处理异常值
@@ -660,7 +687,7 @@ def _check_batch_data_availability(
     
     # 使用DataBroker的批次化获取最新字段数据
     required_fields = ["daily.close", "daily_basic.turnover_rate"]
-    batch_fields_data = broker.fetch_batch_latest(sufficient_codes, trade_date, required_fields)
+    batch_fields_data = broker.fetch_batch_latest(list(sufficient_codes), trade_date, required_fields)
     
     # 检查每个证券的必需字段
     for ts_code in sufficient_codes:
@@ -753,6 +780,8 @@ def _compute_security_factors(
     ts_code: str,
     trade_date: str,
     specs: Sequence[FactorSpec],
+    *,
+    latest_fields: Optional[Mapping[str, object]] = None,
 ) -> Dict[str, float | None]:
     """计算单个证券的因子值
     
@@ -823,21 +852,14 @@ def _compute_security_factors(
     )
 
     # 获取最新字段值
-    latest_fields = broker.fetch_latest(
-        ts_code,
-        trade_date,
-        [
-            "daily_basic.pe",
-            "daily_basic.pb",
-            "daily_basic.ps",
-            "daily_basic.turnover_rate",
-            "daily_basic.volume_ratio",
-            "daily.close",
-            "daily.amount",
-            "daily.vol",
-            "daily_basic.dv_ratio",  # 股息率用于扩展因子
-        ],
-    )
+    if latest_fields is None:
+        latest_fields = broker.fetch_latest(
+            ts_code,
+            trade_date,
+            _LATEST_BASE_FIELDS,
+        )
+    else:
+        latest_fields = dict(latest_fields)
 
     # 计算各个因子值
     results: Dict[str, float | None] = {}

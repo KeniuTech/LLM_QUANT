@@ -11,40 +11,26 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any, Callable, ClassVar, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
-from .config import get_config
 import types
+from .config import get_config
 from .db import db_session
 from .logging import get_logger
 from app.core.indicators import momentum, normalize, rolling_mean, volatility
 from app.utils.db_query import BrokerQueryEngine
 from app.utils import alerts
+from app.ingest.coverage import collect_data_coverage as _collect_coverage, ensure_data_coverage as _ensure_coverage
 
-# 延迟导入，避免循环依赖
-collect_data_coverage = None
-ensure_data_coverage = None
-initialize_database = None
+try:
+    from app.data.schema import initialize_database
+except ImportError:
+    def initialize_database():
+        """Fallback stub used when the real initializer cannot be imported.
 
-# 在模块加载时尝试导入
-if collect_data_coverage is None or ensure_data_coverage is None:
-    try:
-        from app.ingest.tushare import collect_data_coverage, ensure_data_coverage
-    except ImportError:
-        # 导入失败时，在实际使用时会报错
-        pass
-
-if initialize_database is None:
-    try:
-        from app.data.schema import initialize_database
-    except ImportError:
-        # 导入失败时，提供一个空实现
-        def initialize_database():
-            """Fallback stub used when the real initializer cannot be imported.
-
-            Return a lightweight object with the attributes callers expect
-            (executed, skipped, missing_tables) so code that calls
-            `initialize_database()` can safely inspect the result.
-            """
-            return types.SimpleNamespace(executed=0, skipped=True, missing_tables=[])
+        Return a lightweight object with the attributes callers expect
+        (executed, skipped, missing_tables) so code that calls
+        `initialize_database()` can safely inspect the result.
+        """
+        return types.SimpleNamespace(executed=0, skipped=True, missing_tables=[])
 
 LOGGER = get_logger(__name__)
 LOG_EXTRA = {"stage": "data_broker"}
@@ -54,6 +40,27 @@ _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 def _is_safe_identifier(name: str) -> bool:
     return bool(_IDENTIFIER_RE.match(name))
+
+
+def _default_coverage_runner(start: date, end: date) -> None:
+    if _ensure_coverage is None:
+        LOGGER.debug("默认补数函数不可用，跳过自动补数", extra=LOG_EXTRA)
+        return
+    _ensure_coverage(
+        start,
+        end,
+        include_limits=False,
+        include_extended=False,
+        force=False,
+        progress_hook=None,
+    )
+
+
+def _default_coverage_collector(start: date, end: date) -> Dict[str, Dict[str, object]]:
+    if _collect_coverage is None:
+        LOGGER.debug("默认覆盖统计函数不可用，返回空结果", extra=LOG_EXTRA)
+        return {}
+    return _collect_coverage(start, end)
 
 
 def _safe_split(path: str) -> Tuple[str, str] | None:
@@ -197,6 +204,8 @@ class DataBroker:
     enable_cache: bool = True
     latest_cache_size: int = 256
     series_cache_size: int = 512
+    coverage_runner: Callable[[date, date], None] = field(default=_default_coverage_runner)
+    coverage_collector: Callable[[date, date], Dict[str, Dict[str, object]]] = field(default=_default_coverage_collector)
     _latest_cache: OrderedDict = field(init=False, repr=False)
     _series_cache: OrderedDict = field(init=False, repr=False)
     # 补数相关状态管理
@@ -1234,14 +1243,13 @@ class DataBroker:
                     return False
             
             # 收集数据覆盖情况
-            if collect_data_coverage is None:
-                LOGGER.error("collect_data_coverage 函数不可用，请检查导入配置", extra=LOG_EXTRA)
+            if self.coverage_collector is None:
+                LOGGER.debug("未配置覆盖统计函数，无法判断是否需要补数", extra=LOG_EXTRA)
                 return False
-            
-            coverage = collect_data_coverage(
-                date.fromisoformat(start_date[:4] + '-' + start_date[4:6] + '-' + start_date[6:8]),
-                date.fromisoformat(end_date[:4] + '-' + end_date[4:6] + '-' + end_date[6:8])
-            )
+
+            start_d = datetime.strptime(start_date, "%Y%m%d").date()
+            end_d = datetime.strptime(end_date, "%Y%m%d").date()
+            coverage = self.coverage_collector(start_d, end_d)
             
             # 保存到缓存
             coverage['timestamp'] = time.time() if hasattr(time, 'time') else 0
@@ -1285,18 +1293,14 @@ class DataBroker:
                 LOGGER.info("开始后台数据补数: %s 至 %s", start_date, end_date, extra=LOG_EXTRA)
                 
                 # 执行补数
-                if ensure_data_coverage is None:
-                    LOGGER.error("ensure_data_coverage 函数不可用，请检查导入配置", extra=LOG_EXTRA)
+                if self.coverage_runner is None:
+                    LOGGER.debug("未配置覆盖补数函数，跳过自动补数", extra=LOG_EXTRA)
                     with self._refresh_lock:
                         self._refresh_in_progress[refresh_key] = False
+                        self._refresh_callbacks.pop(refresh_key, None)
                     return
-                
-                ensure_data_coverage(
-                    start_date,
-                    end_date,
-                    force=False,
-                    progress_hook=None
-                )
+
+                self.coverage_runner(start_date, end_date)
                 
                 LOGGER.info("后台数据补数完成: %s 至 %s", start_date, end_date, extra=LOG_EXTRA)
                 
@@ -1661,13 +1665,11 @@ class DataBroker:
             start_d = date.fromisoformat(start.strftime('%Y-%m-%d'))
             end_d = date.fromisoformat(end.strftime('%Y-%m-%d'))
             
-            # 收集数据覆盖情况
-            if collect_data_coverage is None:
-                LOGGER.error("collect_data_coverage 函数不可用，请检查导入配置", extra=LOG_EXTRA)
+            if self.coverage_collector is None:
+                LOGGER.debug("未配置覆盖统计函数，返回空覆盖结果", extra=LOG_EXTRA)
                 return {}
-            
-            coverage = collect_data_coverage(start_d, end_d)
-            return coverage
+
+            return self.coverage_collector(start_d, end_d)
         except Exception as exc:
             LOGGER.exception("获取数据覆盖情况失败: %s", exc, extra=LOG_EXTRA)
             return {}

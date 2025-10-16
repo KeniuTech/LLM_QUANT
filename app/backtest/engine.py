@@ -17,6 +17,7 @@ from app.llm.metrics import record_decision as metrics_record_decision
 from app.agents.registry import default_agents
 from app.data.schema import initialize_database
 from app.utils.data_access import DataBroker
+from app.utils.feature_snapshots import FeatureSnapshotService
 from app.utils.config import PortfolioSettings, get_config
 from app.utils.db import db_session
 from app.utils.logging import get_logger
@@ -176,18 +177,35 @@ class BacktestEngine:
         trade_date_str = trade_date.strftime("%Y%m%d")
         feature_map: Dict[str, Dict[str, Any]] = {}
         universe = self.cfg.universe or []
+
+        snapshot_service = FeatureSnapshotService(self.data_broker)
+        batch_latest = snapshot_service.load_latest(
+            trade_date_str,
+            self.required_fields,
+            universe,
+            auto_refresh=False,
+        )
+
         for ts_code in universe:
-            scope_values = self.data_broker.fetch_latest(
-                ts_code,
-                trade_date_str,
-                self.required_fields,
-                auto_refresh=False  # 避免回测时触发自动补数
-            )
+            scope_values = dict(batch_latest.get(ts_code) or {})
             missing_fields = [
                 field
                 for field in self.required_fields
                 if scope_values.get(field) is None
             ]
+            if missing_fields:
+                fallback = self.data_broker.fetch_latest(
+                    ts_code,
+                    trade_date_str,
+                    missing_fields,
+                    auto_refresh=False,
+                )
+                scope_values.update({k: v for k, v in fallback.items() if v is not None})
+                missing_fields = [
+                    field
+                    for field in self.required_fields
+                    if scope_values.get(field) is None
+                ]
             derived_fields: List[str] = []
             if missing_fields:
                 LOGGER.debug(

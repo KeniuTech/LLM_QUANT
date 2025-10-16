@@ -79,4 +79,4 @@
 | --- | --- | --- |
 | 全量代码审查 | 🔄 | 已制定 `docs/architecture/code_review_checklist.md`，按 checklist 推进模块审查。 |
 | TODO 标记治理 | 🔄 | 新增 `scripts/todo_report.py` 支撑定期扫描，待梳理遗留项目。 |
-| 业务逻辑体检 | ⏳ | 梳理业务链路，识别需要重构或优化的模块。 |
+| 业务逻辑体检 | ✅ | 梳理业务链路完成，已拆分采集/覆盖/决策模块；详见 docs/architecture/business_logic_healthcheck.md。 |
