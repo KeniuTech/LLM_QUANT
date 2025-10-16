@@ -16,7 +16,7 @@ from app.ingest.checker import run_boot_check
 from app.ingest.rss import ingest_configured_rss
 from app.ui.portfolio_config import render_portfolio_config
 from app.ui.progress_state import render_factor_progress
-from app.ui.shared import LOGGER, LOG_EXTRA
+from app.ui.shared import LOGGER, LOG_EXTRA, render_tuning_backtest_hints
 from app.ui.views import (
     render_backtest_review,
     render_config_overview,
@@ -30,9 +30,11 @@ from app.ui.views import (
     render_tests,
     render_today_plan,
     render_factor_calculation,
+    render_tuning_lab,
 )
 from app.utils.config import get_config
 
+from app.ui.navigation import TOP_NAV_STATE_KEY
 
 def main() -> None:
     LOGGER.info("初始化 Streamlit UI", extra=LOG_EXTRA)
@@ -74,14 +76,24 @@ def main() -> None:
     render_global_dashboard()
 
     # --- 顶部导航（第三方组件 streamlit-option-menu） ---
-    top_labels = ["今日计划", "投资池/仓位", "回测与复盘", "行情可视化", "日志钻取", "数据与设置", "自检测试"]
+    top_labels = ["今日计划", "投资池/仓位", "回测与复盘", "实验调参", "行情可视化", "日志钻取", "数据与设置", "自检测试"]
+    if TOP_NAV_STATE_KEY not in st.session_state:
+        st.session_state[TOP_NAV_STATE_KEY] = top_labels[0]
+    try:
+        default_index = top_labels.index(st.session_state[TOP_NAV_STATE_KEY])
+    except ValueError:
+        default_index = 0
     selected_top = option_menu(
         menu_title=None,
         options=top_labels,
-        icons=["calendar", "briefcase", "bar-chart", "activity", "file-text", "gear", "bug"],
+        icons=["calendar", "briefcase", "bar-chart", "cpu", "activity", "file-text", "gear", "bug"],
         orientation="horizontal",
+        default_index=default_index,
     )
+    st.session_state[TOP_NAV_STATE_KEY] = selected_top
     LOGGER.debug("Top menu selected: %s", selected_top, extra=LOG_EXTRA)
+
+    render_tuning_backtest_hints(selected_top)
 
     # --- 仅渲染当前选中页（懒加载） ---
     if selected_top == "今日计划":
@@ -106,6 +118,9 @@ def main() -> None:
             render_stock_evaluation()
         else:
             render_factor_calculation()
+
+    elif selected_top == "实验调参":
+        render_tuning_lab()
 
     elif selected_top == "行情可视化":
         render_market_visualization()

@@ -12,21 +12,15 @@ import numpy as np
 
 from app.agents.base import AgentContext
 from app.agents.game import Decision
-from app.agents.registry import default_agents
 from app.agents.protocols import GameStructure
-from app.backtest.decision_env import DecisionEnv, ParameterSpec
-from app.backtest.optimizer import BanditConfig, EpsilonGreedyBandit
-from app.rl import TORCH_AVAILABLE, DecisionEnvAdapter, PPOConfig, train_ppo
 from app.backtest.engine import BacktestEngine, PortfolioState, BtConfig, run_backtest
 from app.ingest.checker import run_boot_check
 from app.ingest.tushare import run_ingestion
 from app.llm.client import run_llm
 from app.llm.metrics import reset as reset_llm_metrics
 from app.llm.metrics import snapshot as snapshot_llm_metrics
-from app.llm.templates import TemplateRegistry
 from app.utils import alerts
 from app.utils.config import get_config, save_config
-from app.utils.tuning import log_tuning_result
 from app.utils.portfolio import (
     get_candidate_pool,
     get_portfolio_settings_snapshot,
@@ -206,7 +200,7 @@ def render_backtest_review() -> None:
         extra=LOG_EXTRA,
     )
 
-    tab_backtest, tab_rl = st.tabs(["回测验证", "强化学习调参"])
+    tab_backtest, tab_tuning = st.tabs(["回测复盘", "实验调参"])
 
     with tab_backtest:
         st.markdown("#### 回测执行")

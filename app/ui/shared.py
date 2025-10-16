@@ -8,6 +8,7 @@ import streamlit as st
 
 from app.utils.db import db_session
 from app.utils.logging import get_logger
+from app.ui.navigation import navigate_top_menu
 
 LOGGER = get_logger(__name__)
 LOG_EXTRA = {"stage": "ui"}
@@ -63,3 +64,16 @@ def default_backtest_range(window_days: int = 60) -> tuple[date, date]:
     if start > latest:
         start = latest
     return start, latest
+
+
+def render_tuning_backtest_hints(current_label: Optional[str] = None) -> None:
+    """Render navigation shortcuts that keep tuning and backtest flows connected."""
+    key_tag = (current_label or "global").replace("/", "_")
+    hint_box = st.container()
+    with hint_box:
+        col_go_bt, col_go_tune, col_text = st.columns([1, 1, 3])
+        if col_go_bt.button("回测与复盘", key=f"hint_nav_backtest_{key_tag}"):
+            navigate_top_menu("回测与复盘")
+        if col_go_tune.button("实验调参", key=f"hint_nav_tuning_{key_tag}"):
+            navigate_top_menu("实验调参")
+        col_text.caption("提示：调参完成后记得回测验证，回测发现问题也可随时跳回调参实验。")
