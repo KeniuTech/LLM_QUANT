@@ -508,25 +508,19 @@ class DecisionEnv:
         return self._last_action
 
     def _clear_portfolio_records(self) -> None:
-        start = self._template_cfg.start_date.isoformat()
-        end = self._template_cfg.end_date.isoformat()
+        cfg_id = self._template_cfg.id or "decision_env"
         try:
             with db_session() as conn:
-                conn.execute("DELETE FROM portfolio_positions")
-                conn.execute(
-                    "DELETE FROM portfolio_snapshots WHERE trade_date BETWEEN ? AND ?",
-                    (start, end),
-                )
-                conn.execute(
-                    "DELETE FROM portfolio_trades WHERE trade_date BETWEEN ? AND ?",
-                    (start, end),
-                )
+                conn.execute("DELETE FROM bt_portfolio_positions WHERE cfg_id = ?", (cfg_id,))
+                conn.execute("DELETE FROM bt_portfolio_snapshots WHERE cfg_id = ?", (cfg_id,))
+                conn.execute("DELETE FROM bt_portfolio_trades WHERE cfg_id = ?", (cfg_id,))
         except Exception:  # noqa: BLE001
             LOGGER.exception("清理投资组合记录失败", extra=LOG_EXTRA)
 
     def _fetch_portfolio_records(self) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         start = self._template_cfg.start_date.isoformat()
         end = self._template_cfg.end_date.isoformat()
+        cfg_id = self._template_cfg.id or "decision_env"
         snapshots: List[Dict[str, Any]] = []
         trades: List[Dict[str, Any]] = []
         try:
@@ -535,20 +529,20 @@ class DecisionEnv:
                     """
                     SELECT trade_date, total_value, cash, invested_value,
                            unrealized_pnl, realized_pnl, net_flow, exposure, metadata
-                    FROM portfolio_snapshots
-                    WHERE trade_date BETWEEN ? AND ?
+                    FROM bt_portfolio_snapshots
+                    WHERE cfg_id = ? AND trade_date BETWEEN ? AND ?
                     ORDER BY trade_date
                     """,
-                    (start, end),
+                    (cfg_id, start, end),
                 ).fetchall()
                 trade_rows = conn.execute(
                     """
                     SELECT id, trade_date, ts_code, action, quantity, price, fee, source, metadata
-                    FROM portfolio_trades
-                    WHERE trade_date BETWEEN ? AND ?
+                    FROM bt_portfolio_trades
+                    WHERE cfg_id = ? AND trade_date BETWEEN ? AND ?
                     ORDER BY trade_date, id
                     """,
-                    (start, end),
+                    (cfg_id, start, end),
                 ).fetchall()
         except Exception:  # noqa: BLE001
             LOGGER.exception("读取投资组合记录失败", extra=LOG_EXTRA)

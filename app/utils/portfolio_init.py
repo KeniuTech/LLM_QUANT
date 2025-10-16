@@ -130,6 +130,61 @@ SCHEMA_STATEMENTS = [
         metadata TEXT  -- JSON object
     );
     """,
+    
+    # 回测组合快照表
+    """
+    CREATE TABLE IF NOT EXISTS bt_portfolio_snapshots (
+        cfg_id TEXT,
+        trade_date TEXT,
+        total_value REAL,
+        cash REAL,
+        invested_value REAL,
+        unrealized_pnl REAL,
+        realized_pnl REAL,
+        net_flow REAL,
+        exposure REAL,
+        metadata TEXT,
+        PRIMARY KEY (cfg_id, trade_date)
+    );
+    """,
+    
+    # 回测持仓表
+    """
+    CREATE TABLE IF NOT EXISTS bt_portfolio_positions (
+        cfg_id TEXT,
+        trade_date TEXT,
+        ts_code TEXT,
+        opened_date TEXT,
+        closed_date TEXT,
+        quantity REAL,
+        cost_price REAL,
+        market_price REAL,
+        market_value REAL,
+        realized_pnl REAL,
+        unrealized_pnl REAL,
+        target_weight REAL,
+        status TEXT,
+        notes TEXT,
+        metadata TEXT,
+        PRIMARY KEY (cfg_id, trade_date, ts_code)
+    );
+    """,
+    
+    # 回测交易表
+    """
+    CREATE TABLE IF NOT EXISTS bt_portfolio_trades (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cfg_id TEXT NOT NULL,
+        trade_date TEXT NOT NULL,
+        ts_code TEXT NOT NULL,
+        action TEXT NOT NULL,
+        quantity REAL NOT NULL,
+        price REAL NOT NULL,
+        fee REAL DEFAULT 0,
+        source TEXT,
+        metadata TEXT
+    );
+    """,
 ]
 
 

@@ -436,6 +436,55 @@ SCHEMA_STATEMENTS: Iterable[str] = (
     );
     """,
     """
+    CREATE TABLE IF NOT EXISTS bt_portfolio_snapshots (
+      cfg_id TEXT,
+      trade_date TEXT,
+      total_value REAL,
+      cash REAL,
+      invested_value REAL,
+      unrealized_pnl REAL,
+      realized_pnl REAL,
+      net_flow REAL,
+      exposure REAL,
+      metadata TEXT,
+      PRIMARY KEY (cfg_id, trade_date)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS bt_portfolio_positions (
+      cfg_id TEXT,
+      trade_date TEXT,
+      ts_code TEXT,
+      opened_date TEXT,
+      closed_date TEXT,
+      quantity REAL,
+      cost_price REAL,
+      market_price REAL,
+      market_value REAL,
+      realized_pnl REAL,
+      unrealized_pnl REAL,
+      target_weight REAL,
+      status TEXT,
+      notes TEXT,
+      metadata TEXT,
+      PRIMARY KEY (cfg_id, trade_date, ts_code)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS bt_portfolio_trades (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cfg_id TEXT NOT NULL,
+      trade_date TEXT NOT NULL,
+      ts_code TEXT NOT NULL,
+      action TEXT NOT NULL,
+      quantity REAL NOT NULL,
+      price REAL NOT NULL,
+      fee REAL DEFAULT 0,
+      source TEXT,
+      metadata TEXT
+    );
+    """,
+    """
     CREATE TABLE IF NOT EXISTS run_log (
       ts TEXT PRIMARY KEY,
       stage TEXT,
@@ -569,6 +618,9 @@ REQUIRED_TABLES = (
     "bt_risk_events",
     "bt_nav",
     "bt_report",
+    "bt_portfolio_snapshots",
+    "bt_portfolio_positions",
+    "bt_portfolio_trades",
     "run_log",
     "agent_utils",
     "alloc_log",
