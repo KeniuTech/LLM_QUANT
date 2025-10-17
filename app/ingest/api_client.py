@@ -391,12 +391,14 @@ _TABLE_SCHEMAS: Dict[str, str] = {
         CREATE TABLE IF NOT EXISTS suspend (
             ts_code TEXT,
             suspend_date TEXT,
+            trade_date TEXT,
             resume_date TEXT,
             suspend_type TEXT,
             ann_date TEXT,
             suspend_timing TEXT,
             resume_timing TEXT,
             reason TEXT,
+            reason_type TEXT,
             PRIMARY KEY (ts_code, suspend_date)
         );
     """,
@@ -660,12 +662,14 @@ _TABLE_COLUMNS: Dict[str, List[str]] = {
     "suspend": [
         "ts_code",
         "suspend_date",
+        "trade_date",
         "resume_date",
         "suspend_type",
         "ann_date",
         "suspend_timing",
         "resume_timing",
         "reason",
+        "reason_type",
     ],
     "trade_calendar": [
         "exchange",
@@ -1089,18 +1093,61 @@ def fetch_suspensions(
     if df.empty:
         return []
 
-    merged = df.rename(
-        columns={
-            "ann_date": "ann_date",
-            "suspend_date": "suspend_date",
-            "resume_date": "resume_date",
-            "suspend_type": "suspend_type",
-        }
-    )
+    merged = df.copy()
+
+    if "suspend_reason" in merged.columns and "reason" not in merged.columns:
+        merged["reason"] = merged["suspend_reason"]
+
+    if "trade_date" in merged.columns:
+        merged["trade_date"] = merged["trade_date"].apply(
+            lambda x: None
+            if pd.isna(x) or str(x).strip() == ""
+            else str(x).strip()
+        )
+        merged["suspend_date"] = merged["trade_date"]
+    elif "suspend_date" in merged.columns:
+        merged["suspend_date"] = merged["suspend_date"].apply(
+            lambda x: None
+            if pd.isna(x) or str(x).strip() == ""
+            else str(x).strip()
+        )
+        merged["trade_date"] = merged["suspend_date"]
+    else:
+        merged["suspend_date"] = None
+        merged["trade_date"] = None
+
+    if "resume_date" in merged.columns:
+        merged["resume_date"] = merged["resume_date"].apply(
+            lambda x: None
+            if pd.isna(x) or str(x).strip() == ""
+            else str(x).strip()
+        )
+
+    if "reason" in merged.columns:
+        merged["reason"] = merged["reason"].apply(
+            lambda x: None
+            if pd.isna(x) or str(x).strip() == ""
+            else str(x).strip()
+        )
+
+    if "reason_type" not in merged.columns:
+        merged["reason_type"] = None
+    else:
+        merged["reason_type"] = merged["reason_type"].apply(
+            lambda x: None
+            if pd.isna(x) or str(x).strip() == ""
+            else str(x).strip()
+        )
+
+    merged = merged[merged["suspend_date"].notna()]
+    if merged.empty:
+        return []
+
     if skip_existing:
         existing = _existing_suspend_dates(start_str, end_str, ts_code=ts_code)
         if existing:
-            merged = merged[~merged["suspend_date"].isin(existing)]
+            suspend_series = merged["suspend_date"].astype(str).str.strip()
+            merged = merged[~suspend_series.isin(existing)]
     missing_cols = [col for col in _TABLE_COLUMNS["suspend"] if col not in merged.columns]
     for column in missing_cols:
         merged[column] = None
@@ -1222,7 +1269,35 @@ def fetch_index_weight(start: date, end: date, index_code: str) -> Iterable[Dict
         {"index_code": index_code, "start_date": start_str, "end_date": end_str},
         limit=4000,
     )
-    return _df_to_records(df, _TABLE_COLUMNS["index_weight"])
+    if df is not None and not df.empty:
+        if "ts_code" not in df.columns and "con_code" in df.columns:
+            df = df.rename(columns={"con_code": "ts_code"})
+    records = _df_to_records(df, _TABLE_COLUMNS["index_weight"])
+    cleaned: List[Dict] = []
+    dropped = 0
+    for row in records:
+        ts_code = str(row.get("ts_code") or "").strip()
+        trade_date = str(row.get("trade_date") or "").strip()
+        if not ts_code or not trade_date:
+            dropped += 1
+            LOGGER.debug(
+                "忽略缺少成分编码的指数权重记录 index_code=%s raw=%s",
+                index_code,
+                row,
+                extra=LOG_EXTRA,
+            )
+            continue
+        row["ts_code"] = ts_code
+        row["trade_date"] = trade_date
+        cleaned.append(row)
+    if dropped:
+        LOGGER.warning(
+            "指数权重数据存在缺失成分编码的记录，已忽略 %d 条 index_code=%s",
+            dropped,
+            index_code,
+            extra=LOG_EXTRA,
+        )
+    return cleaned
 
 
 def fetch_fund_basic(market: Optional[str] = None) -> Iterable[Dict]:
@@ -1384,4 +1459,3 @@ __all__ = [
     "_record_exists",
     "_existing_suspend_dates",
 ]
-
