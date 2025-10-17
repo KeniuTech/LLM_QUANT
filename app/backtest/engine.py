@@ -153,10 +153,20 @@ class BacktestEngine:
             "daily_basic.volume_ratio",
             "stk_limit.up_limit",
             "stk_limit.down_limit",
+            "factors.mom_5",
             "factors.mom_20",
             "factors.mom_60",
             "factors.volat_20",
             "factors.turn_20",
+            "factors.turn_5",
+            "factors.val_pe_score",
+            "factors.val_pb_score",
+            "factors.volume_ratio_score",
+            "factors.val_multiscore",
+            "factors.risk_penalty",
+            "factors.sent_momentum",
+            "factors.sent_market",
+            "factors.sent_divergence",
         }
         selected_structures = (
             cfg.game_structures

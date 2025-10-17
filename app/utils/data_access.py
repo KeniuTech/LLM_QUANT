@@ -1645,7 +1645,7 @@ class DataBroker:
 
     def get_data_coverage(self, start_date: str, end_date: str) -> Dict:
         """获取指定日期范围内的数据覆盖情况。
-        
+
         Args:
             start_date: 开始日期（格式：YYYYMMDD）
             end_date: 结束日期（格式：YYYYMMDD）
@@ -1673,6 +1673,18 @@ class DataBroker:
         except Exception as exc:
             LOGGER.exception("获取数据覆盖情况失败: %s", exc, extra=LOG_EXTRA)
             return {}
+
+    def evaluate_data_quality(
+        self,
+        *,
+        window_days: int = 7,
+        top_issues: int = 5,
+    ) -> "DataQualitySummary":
+        """Run data-quality checks and return a scored summary."""
+
+        from app.utils.data_quality import evaluate_data_quality as _evaluate
+
+        return _evaluate(window_days=window_days, top_issues=top_issues)
 
     def _resolve_column(self, table: str, column: str) -> Optional[str]:
         columns = self._get_table_columns(table)

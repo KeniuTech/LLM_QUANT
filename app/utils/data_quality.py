@@ -1,9 +1,9 @@
 """Utility helpers for performing lightweight data quality checks."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Sequence
 
 from app.utils.db import db_session
 from app.utils.logging import get_logger
@@ -20,6 +20,30 @@ class DataQualityResult:
     severity: Severity
     detail: str
     extras: Optional[Dict[str, object]] = None
+
+
+@dataclass
+class DataQualitySummary:
+    window_days: int
+    score: float
+    total_checks: int
+    severity_counts: Dict[Severity, int] = field(default_factory=dict)
+    blocking: List[DataQualityResult] = field(default_factory=list)
+    warnings: List[DataQualityResult] = field(default_factory=list)
+    informational: List[DataQualityResult] = field(default_factory=list)
+
+    @property
+    def has_blockers(self) -> bool:
+        return bool(self.blocking)
+
+    def as_dict(self) -> Dict[str, object]:
+        return {
+            "window_days": self.window_days,
+            "score": self.score,
+            "total_checks": self.total_checks,
+            "severity_counts": dict(self.severity_counts),
+            "has_blockers": self.has_blockers,
+        }
 
 
 def _parse_date(value: object) -> Optional[date]:
@@ -366,3 +390,60 @@ def run_data_quality_checks(*, window_days: int = 7) -> List[DataQualityResult]:
         )
 
     return results
+
+
+def summarize_data_quality(
+    results: Sequence[DataQualityResult],
+    *,
+    window_days: int,
+    top_issues: int = 5,
+) -> DataQualitySummary:
+    """Aggregate quality checks into a normalized score and severity summary."""
+
+    severity_buckets: Dict[str, List[DataQualityResult]] = {}
+    for result in results:
+        severity = (result.severity or "INFO").upper()
+        severity_buckets.setdefault(severity, []).append(result)
+
+    counts = {severity: len(items) for severity, items in severity_buckets.items()}
+    if not results:
+        return DataQualitySummary(
+            window_days=window_days,
+            score=100.0,
+            total_checks=0,
+            severity_counts=counts,
+        )
+
+    weights = {"ERROR": 5.0, "WARN": 2.0, "INFO": 0.0}
+    penalty = 0.0
+    for result in results:
+        severity = (result.severity or "INFO").upper()
+        penalty += weights.get(severity, 2.0)
+    max_weight = max(weights.values(), default=1.0)
+    max_penalty = max(1.0, len(results) * max_weight)
+    score = max(0.0, 100.0 - (penalty / max_penalty) * 100.0)
+
+    return DataQualitySummary(
+        window_days=window_days,
+        score=round(score, 2),
+        total_checks=len(results),
+        severity_counts=counts,
+        blocking=severity_buckets.get("ERROR", [])[:top_issues],
+        warnings=severity_buckets.get("WARN", [])[:top_issues],
+        informational=severity_buckets.get("INFO", [])[:top_issues],
+    )
+
+
+def evaluate_data_quality(
+    *,
+    window_days: int = 7,
+    top_issues: int = 5,
+) -> DataQualitySummary:
+    """Run quality checks and return a scored summary."""
+
+    results = run_data_quality_checks(window_days=window_days)
+    return summarize_data_quality(
+        results,
+        window_days=window_days,
+        top_issues=top_issues,
+    )

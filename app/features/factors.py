@@ -126,6 +126,7 @@ def compute_factors(
     ts_codes: Optional[Sequence[str]] = None,
     skip_existing: bool = False,
     batch_size: int = 100,
+    persist: bool = True,
 ) -> List[FactorResult]:
     """Calculate and persist factor values for the requested date.
 
@@ -139,6 +140,7 @@ def compute_factors(
         ts_codes: 可选，限制计算的证券代码列表
         skip_existing: 是否跳过已存在的因子值
         batch_size: 批处理大小，用于优化性能
+        persist: 是否写入数据库（False 时仅计算返回结果）
     
     Returns:
         因子计算结果列表
@@ -238,8 +240,15 @@ def compute_factors(
                     extra=LOG_EXTRA,
                 )
 
-        if rows_to_persist:
+        if persist and rows_to_persist:
             _persist_factor_rows(trade_date_str, rows_to_persist, specs)
+        elif not persist:
+            LOGGER.debug(
+                "因子干跑完成，未写入数据库 trade_date=%s universe=%s",
+                trade_date_str,
+                len(universe),
+                extra=LOG_EXTRA,
+            )
         
         # 更新UI进度状态为完成
         if progress:
@@ -279,8 +288,18 @@ def compute_factor_range(
     factors: Iterable[FactorSpec] = DEFAULT_FACTORS,
     ts_codes: Optional[Sequence[str]] = None,
     skip_existing: bool = True,
+    persist: bool = True,
 ) -> List[FactorResult]:
-    """Compute factors for all trading days within ``[start, end]`` inclusive."""
+    """Compute factors for all trading days within ``[start, end]`` inclusive.
+
+    Args:
+        start: 开始日期
+        end: 结束日期
+        factors: 参与计算的因子列表
+        ts_codes: 限定的股票池
+        skip_existing: 是否跳过已有记录
+        persist: 是否写入数据库（False 表示仅返回计算结果）
+    """
 
     if end < start:
         raise ValueError("end date must not precede start date")
@@ -305,6 +324,7 @@ def compute_factor_range(
                 factors,
                 ts_codes=allowed,
                 skip_existing=skip_existing,
+                persist=persist,
             )
         )
     return aggregated
@@ -316,6 +336,7 @@ def compute_factors_incremental(
     ts_codes: Optional[Sequence[str]] = None,
     skip_existing: bool = True,
     max_trading_days: Optional[int] = 5,
+    persist: bool = True,
 ) -> Dict[str, object]:
     """增量计算因子（从最新一条因子记录之后开始）。
 
@@ -324,6 +345,7 @@ def compute_factors_incremental(
         ts_codes: 限定计算的证券池。
         skip_existing: 是否跳过已存在数据。
         max_trading_days: 限制本次计算的交易日数量（按交易日计数）。
+        persist: 是否写入数据库。False 表示仅计算返回结果
 
     Returns:
         包含起止日期、参与交易日及计算结果的字典。
@@ -360,6 +382,7 @@ def compute_factors_incremental(
                 factors,
                 ts_codes=codes_tuple,
                 skip_existing=skip_existing,
+                persist=persist,
             )
         )
 
