@@ -18,11 +18,11 @@
 
 | 工作项 | 状态 | 说明 |
 | --- | --- | --- |
-| DecisionEnv 扩展 | 🔄 | Episode 指标新增 Sharpe/Calmar，奖励函数引入风险惩罚；继续覆盖提示版本、function 策略等。 |
+| DecisionEnv 扩展 | ✅ | Episode 指标现已包含 Sharpe/Calmar，奖励函数集成风险惩罚并覆写提示版本、function 策略等部门控制。 |
 | 强化学习基线 | ✅ | PPO/SAC 等连续动作算法已接入并形成实验基线。 |
-| 奖励与评估体系 | 🔄 | 决策环境奖励已纳入风险/Turnover/Sharpe-Calmar，待接入成交与资金曲线指标。 |
-| 实时持仓链路 | ⏳ | 建立线上持仓/成交写入与离线调参与监控共享的数据源。 |
-| 全局参数搜索 | 🔄 | 已上线 epsilon-greedy 调参与指标输出，后续补充贝叶斯优化 / BOHB。 |
+| 奖励与评估体系 | ✅ | 决策环境奖励结合风险/Turnover/Sharpe-Calmar，并同步输出成交与资金曲线指标。 |
+| 实时持仓链路 | ✅ | 新增 `app/utils/portfolio_sync.py`，回测与实时持仓、成交数据统一写入 `portfolio_*` 表供离线调参与监控共享。 |
+| 全局参数搜索 | ✅ | epsilon-greedy + 高斯过程贝叶斯优化 + BOHB 继任者已落地，输出全量调参与指标。 |
 
 ## 多智能体协同与 LLM
 
