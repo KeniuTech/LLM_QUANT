@@ -117,3 +117,26 @@ def test_backtest_engine_applies_risk_adjusted_execution(monkeypatch):
     assert not state.holdings
     assert not result.trades
     assert result.nav_series[0]["nav"] == pytest.approx(100_000.0)
+
+
+def test_decide_records_suspension_risk_round():
+    agents = default_agents()
+    context = _make_context({"is_suspended": True})
+
+    decision = decide(
+        context,
+        agents,
+        weights={agent.name: 1.0 for agent in agents},
+        department_manager=None,
+    )
+
+    assert decision.requires_review is True
+    assert decision.risk_assessment
+    assert decision.risk_assessment.status == "blocked"
+    assert decision.risk_assessment.reason == "suspended"
+
+    risk_rounds = [summary for summary in decision.rounds if summary.agenda == "risk_review"]
+    assert risk_rounds
+    notes = risk_rounds[0].notes
+    assert notes.get("status") == "blocked"
+    assert notes.get("reason") == "suspended"

@@ -59,6 +59,43 @@ class PortfolioSettings:
 
 
 @dataclass
+class AlertChannelSettings:
+    """Configuration for external alert delivery channels."""
+
+    key: str
+    kind: str = "webhook"
+    url: str = ""
+    enabled: bool = True
+    level: str = "warning"
+    tags: List[str] = field(default_factory=list)
+    headers: Dict[str, str] = field(default_factory=dict)
+    timeout: float = 3.0
+    method: str = "POST"
+    template: str = ""
+    signing_secret: Optional[str] = None
+    cooldown_seconds: float = 0.0
+    extra_params: Dict[str, object] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, object]:
+        payload: Dict[str, object] = {
+            "kind": self.kind,
+            "url": self.url,
+            "enabled": self.enabled,
+            "level": self.level,
+            "tags": list(self.tags),
+            "headers": dict(self.headers),
+            "timeout": self.timeout,
+            "method": self.method,
+            "template": self.template,
+            "cooldown_seconds": self.cooldown_seconds,
+            "extra_params": dict(self.extra_params),
+        }
+        if self.signing_secret:
+            payload["signing_secret"] = self.signing_secret
+        return payload
+
+
+@dataclass
 class AgentWeights:
     """Default weighting for decision agents."""
 
@@ -528,6 +565,7 @@ class AppConfig:
     llm_cost: LLMCostSettings = field(default_factory=LLMCostSettings)
     departments: Dict[str, DepartmentSettings] = field(default_factory=_default_departments)
     portfolio: PortfolioSettings = field(default_factory=PortfolioSettings)
+    alert_channels: Dict[str, AlertChannelSettings] = field(default_factory=dict)
 
     def resolve_llm(self, route: Optional[str] = None) -> LLMConfig:
         return self.llm
@@ -633,6 +671,52 @@ def _load_from_file(cfg: AppConfig) -> None:
             max_sector_exposure=_float_value(limits_payload, "max_sector_exposure", current.max_sector_exposure),
         )
         cfg.portfolio = updated_portfolio
+
+    alert_channels_payload = payload.get("alert_channels")
+    if isinstance(alert_channels_payload, dict):
+        channels: Dict[str, AlertChannelSettings] = {}
+        for key, data in alert_channels_payload.items():
+            if not isinstance(data, dict):
+                continue
+            normalized_key = str(key)
+            raw_tags = data.get("tags")
+            tags: List[str] = []
+            if isinstance(raw_tags, list):
+                tags = [
+                    str(tag).strip()
+                    for tag in raw_tags
+                    if isinstance(tag, str) and tag.strip()
+                ]
+            headers: Dict[str, str] = {}
+            raw_headers = data.get("headers")
+            if isinstance(raw_headers, Mapping):
+                headers = {
+                    str(h_key): str(h_val)
+                    for h_key, h_val in raw_headers.items()
+                    if h_key is not None
+                }
+            extra_params: Dict[str, object] = {}
+            raw_extra = data.get("extra_params")
+            if isinstance(raw_extra, Mapping):
+                extra_params = dict(raw_extra)
+            channel = AlertChannelSettings(
+                key=normalized_key,
+                kind=str(data.get("kind") or "webhook"),
+                url=str(data.get("url") or ""),
+                enabled=bool(data.get("enabled", True)),
+                level=str(data.get("level") or "warning"),
+                tags=tags,
+                headers=headers,
+                timeout=float(data.get("timeout", 3.0) or 3.0),
+                method=str(data.get("method") or "POST").upper(),
+                template=str(data.get("template") or ""),
+                signing_secret=str(data.get("signing_secret")) if data.get("signing_secret") else None,
+                cooldown_seconds=float(data.get("cooldown_seconds", 0.0) or 0.0),
+                extra_params=extra_params,
+            )
+            if channel.url:
+                channels[channel.key] = channel
+        cfg.alert_channels = channels
 
     cost_payload = payload.get("llm_cost")
     if isinstance(cost_payload, dict):
@@ -865,6 +949,10 @@ def save_config(cfg: AppConfig | None = None) -> None:
                 "max_sector_exposure": cfg.portfolio.max_sector_exposure,
             },
         },
+        "alert_channels": {
+            name: channel.to_dict()
+            for name, channel in cfg.alert_channels.items()
+        },
         "llm": {
             "strategy": cfg.llm.strategy if cfg.llm.strategy in ALLOWED_LLM_STRATEGIES else "single",
             "majority_threshold": cfg.llm.majority_threshold,
@@ -918,6 +1006,13 @@ def save_config(cfg: AppConfig | None = None) -> None:
         LOGGER.info("配置已写入：%s", path)
     except OSError:
         LOGGER.exception("配置写入失败：%s", path)
+        return
+
+    try:
+        from app.utils import alerts as _alerts  # 延迟导入以避免循环
+        _alerts.configure_channels(cfg.alert_channels)
+    except Exception:  # noqa: BLE001
+        LOGGER.debug("更新告警通道失败", exc_info=True)
 
 
 def _load_env_defaults(cfg: AppConfig) -> None:
@@ -935,11 +1030,33 @@ def _load_env_defaults(cfg: AppConfig) -> None:
         if provider_cfg:
             provider_cfg.api_key = sanitized
 
+    webhook = os.getenv("LLM_QUANT_ALERT_WEBHOOK")
+    if webhook:
+        key = "env_webhook"
+        channel = AlertChannelSettings(
+            key=key,
+            kind="webhook",
+            url=webhook.strip(),
+            headers={"Content-Type": "application/json"},
+            enabled=True,
+            level=str(os.getenv("LLM_QUANT_ALERT_LEVEL", "warning") or "warning"),
+        )
+        tags_raw = os.getenv("LLM_QUANT_ALERT_TAGS")
+        if tags_raw:
+            channel.tags = [tag.strip() for tag in tags_raw.split(",") if tag.strip()]
+        cfg.alert_channels[key] = channel
+
     cfg.sync_runtime_llm()
 
 
 _load_from_file(CONFIG)
 _load_env_defaults(CONFIG)
+
+try:
+    from app.utils import alerts as _alerts_module  # 延迟导入避免循环依赖
+    _alerts_module.configure_channels(CONFIG.alert_channels)
+except Exception:  # noqa: BLE001
+    LOGGER.debug("初始化告警通道失败", exc_info=True)
 
 
 def get_config() -> AppConfig:

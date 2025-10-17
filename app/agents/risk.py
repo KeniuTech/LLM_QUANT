@@ -49,6 +49,8 @@ class RiskAgent(Agent):
     def feasible(self, context: AgentContext, action: AgentAction) -> bool:
         if action is AgentAction.SELL:
             return True
+        if context.features.get("is_blacklisted", False) and action not in (AgentAction.SELL, AgentAction.HOLD):
+            return False
         if context.features.get("is_suspended", False):
             return False
         if context.features.get("limit_up", False) and action not in (AgentAction.SELL, AgentAction.HOLD):
@@ -72,6 +74,15 @@ class RiskAgent(Agent):
                 reason="suspended",
                 recommended_action=AgentAction.HOLD,
                 notes={"trigger": "is_suspended"},
+            )
+
+        if bool(features.get("is_blacklisted")):
+            fallback = AgentAction.SELL if decision_action is AgentAction.SELL else AgentAction.HOLD
+            return RiskRecommendation(
+                status="blocked",
+                reason="blacklist",
+                recommended_action=fallback,
+                notes={"trigger": "is_blacklisted"},
             )
 
         if bool(features.get("limit_up")) and decision_action in {

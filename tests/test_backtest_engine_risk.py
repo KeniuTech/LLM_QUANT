@@ -8,7 +8,7 @@ import pytest
 import json
 
 from app.agents.base import AgentAction, AgentContext
-from app.agents.game import Decision
+from app.agents.game import Decision, RiskAssessment
 from app.backtest.engine import (
     BacktestEngine,
     BacktestResult,
@@ -18,6 +18,7 @@ from app.backtest.engine import (
 )
 from app.data.schema import initialize_database
 from app.utils.config import DataPaths, get_config
+from app.utils import alerts
 from app.utils.db import db_session
 
 
@@ -119,6 +120,79 @@ def test_buy_blocked_by_limit_up_records_risk():
     assert not result.trades
     assert result.risk_events
     assert result.risk_events[0]["reason"] == "limit_up"
+
+
+def test_position_limit_triggers_risk_event_and_adjusts_execution():
+    alerts.clear_warnings()
+    engine = _engine_with_params(
+        {
+            "max_position_weight": 0.3,
+            "fee_rate": 0.0,
+            "slippage_bps": 0.0,
+            "max_daily_turnover_ratio": 1.0,
+        }
+    )
+    state = PortfolioState(cash=100_000.0)
+    result = BacktestResult()
+    context = _make_context(100.0, {"position_limit": True})
+    decision = _make_decision(AgentAction.BUY_L, target_weight=0.4)
+    decision.risk_assessment = RiskAssessment(
+        status="pending_review",
+        reason="position_limit",
+        recommended_action=AgentAction.BUY_S,
+        notes={"trigger": "position_limit"},
+    )
+
+    engine._apply_portfolio_updates(
+        date(2025, 1, 10),
+        state,
+        [("000001.SZ", context, decision)],
+        result,
+    )
+
+    assert not result.trades, "position limit should block execution despite adjustment"
+    assert result.risk_events
+    event_with_status = next(
+        (event for event in result.risk_events if event.get("risk_status")),
+        None,
+    )
+    assert event_with_status is not None
+    assert event_with_status["reason"] == "position_limit"
+    assert event_with_status.get("risk_status") == "pending_review"
+    warning_messages = [item["message"] for item in alerts.get_warnings()]
+    assert any("风险提示" in msg for msg in warning_messages)
+    alerts.clear_warnings()
+
+
+def test_blacklist_blocks_execution_and_warns():
+    alerts.clear_warnings()
+    engine = _engine_with_params({})
+    state = PortfolioState(cash=50_000.0)
+    result = BacktestResult()
+    context = _make_context(100.0, {"is_blacklisted": True})
+    decision = _make_decision(AgentAction.BUY_M, target_weight=0.2)
+    decision.risk_assessment = RiskAssessment(
+        status="blocked",
+        reason="blacklist",
+        recommended_action=AgentAction.HOLD,
+        notes={"trigger": "is_blacklisted"},
+    )
+
+    engine._apply_portfolio_updates(
+        date(2025, 1, 10),
+        state,
+        [("000001.SZ", context, decision)],
+        result,
+    )
+
+    assert not result.trades
+    assert result.risk_events
+    event = result.risk_events[0]
+    assert event["reason"] == "blacklist"
+    assert event.get("risk_status") == "blocked"
+    warning_messages = [item["message"] for item in alerts.get_warnings()]
+    assert any("风险阻断" in msg for msg in warning_messages)
+    alerts.clear_warnings()
 
 
 def test_sell_applies_slippage_and_fee():

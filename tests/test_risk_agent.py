@@ -41,6 +41,23 @@ def test_risk_agent_pending_on_conflict() -> None:
     assert recommendation.reason == "conflict_threshold"
 
 
+def test_risk_agent_blocks_on_blacklist() -> None:
+    agent = RiskAgent()
+    context = _make_context(is_blacklisted=True)
+    recommendation = agent.assess(context, AgentAction.BUY_M, conflict_flag=False)
+    assert recommendation.status == "blocked"
+    assert recommendation.reason == "blacklist"
+    assert recommendation.recommended_action == AgentAction.HOLD
+
+
+def test_blacklist_constraints_buy_feasibility() -> None:
+    agent = RiskAgent()
+    context = _make_context(is_blacklisted=True)
+    assert agent.feasible(context, AgentAction.SELL) is True
+    assert agent.feasible(context, AgentAction.HOLD) is True
+    assert agent.feasible(context, AgentAction.BUY_S) is False
+
+
 def test_evaluate_risk_external_alerts() -> None:
     agent = RiskAgent()
     context = AgentContext(

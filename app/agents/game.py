@@ -660,6 +660,7 @@ def _risk_review_message(reason: str) -> str:
         "risk_penalty_extreme": "风险评分极高，建议暂停加仓",
         "risk_penalty_high": "风险评分偏高，建议复核",
         "external_alert": "外部风险告警触发复核",
+        "blacklist": "标的命中黑名单，禁止交易",
     }
     return mapping.get(reason, "触发风险复核，需人工确认")
 

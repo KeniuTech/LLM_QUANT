@@ -698,6 +698,7 @@ class BacktestEngine:
             action_override: Optional[AgentAction] = None,
             target_weight_override: Optional[float] = None,
         ) -> None:
+            reason_str = str(reason)
             payload = {
                 "trade_date": trade_date_str,
                 "ts_code": ts_code,
@@ -708,21 +709,43 @@ class BacktestEngine:
                     else decision.target_weight
                 ),
                 "confidence": decision.confidence,
-                "reason": reason,
+                "reason": reason_str,
             }
             if extra:
                 payload.update(extra)
             risk_events.append(payload)
-            risk_meta = payload.get("risk_assessment") if isinstance(payload.get("risk_assessment"), dict) else extra.get("risk_assessment") if extra else None
-            status = None
+            risk_meta = None
+            if isinstance(payload.get("risk_assessment"), dict):
+                risk_meta = payload.get("risk_assessment")
+            elif extra and isinstance(extra.get("risk_assessment"), dict):
+                risk_meta = extra.get("risk_assessment")
+            status: Optional[str] = None
             if isinstance(risk_meta, dict):
-                status = risk_meta.get("status")
+                status = str(risk_meta.get("status") or "")
+                payload.setdefault("risk_status", status)
             if status == "blocked":
                 try:
+                    message = f"{ts_code} 风险阻断: {reason_str}"
                     alerts.add_warning(
                         "backtest_risk",
-                        f"{ts_code} 风险阻断: {reason}",
+                        message,
                         detail=json.dumps(payload, ensure_ascii=False),
+                        level="error",
+                        tags=["risk", reason_str, status],
+                        payload=payload,
+                    )
+                except Exception:  # noqa: BLE001
+                    LOGGER.debug("记录风险告警失败", extra=LOG_EXTRA)
+            elif status and status != "ok":
+                try:
+                    message = f"{ts_code} 风险提示: {reason_str}"
+                    alerts.add_warning(
+                        "backtest_risk",
+                        message,
+                        detail=json.dumps(payload, ensure_ascii=False),
+                        level="warning",
+                        tags=["risk", reason_str, status],
+                        payload=payload,
                     )
                 except Exception:  # noqa: BLE001
                     LOGGER.debug("记录风险告警失败", extra=LOG_EXTRA)
