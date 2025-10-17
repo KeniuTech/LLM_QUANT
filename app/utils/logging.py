@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import sqlite3
 import sys
 from datetime import datetime
@@ -53,7 +52,7 @@ def _build_formatter() -> logging.Formatter:
 
 def setup_logging(
     *,
-    level: int = logging.INFO,
+    level: Optional[int] = None,
     console_level: Optional[int] = None,
     file_level: Optional[int] = None,
     db_level: Optional[int] = None,
@@ -64,19 +63,24 @@ def setup_logging(
     if _IS_CONFIGURED:
         return logging.getLogger()
 
-    env_level = os.getenv("LLM_QUANT_LOG_LEVEL")
-    if env_level is None:
-        level = logging.DEBUG
-    else:
-        try:
-            level = getattr(logging, env_level.upper())
-        except AttributeError:
-            logging.getLogger(_LOGGER_NAME).warning(
-                "非法的日志级别 %s，回退到 DEBUG", env_level
-            )
-            level = logging.DEBUG
-
     cfg = get_config()
+    resolved_level = logging.DEBUG
+    level_name = getattr(cfg, "log_level", None)
+    if isinstance(level_name, str) and level_name.strip():
+        normalized_name = level_name.strip()
+        try:
+            resolved_level = getattr(logging, normalized_name.upper())
+        except AttributeError:
+            try:
+                resolved_level = int(normalized_name)
+            except (TypeError, ValueError):
+                logging.getLogger(_LOGGER_NAME).warning(
+                    "非法的日志级别 %s，回退到 DEBUG", normalized_name
+                )
+                resolved_level = logging.DEBUG
+    elif level is not None:
+        resolved_level = int(level)
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
     log_dir: Path = cfg.data_paths.root / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -84,28 +88,27 @@ def setup_logging(
     conversation_logfile = log_dir / f"agent_{timestamp}.log"
 
     root = logging.getLogger()
-    root.setLevel(level)
+    root.setLevel(resolved_level)
     root.handlers.clear()
 
     formatter = _build_formatter()
 
     console_handler = logging.StreamHandler(stream=sys.stdout)
-    console_handler.setLevel(console_level or level)
+    console_handler.setLevel(console_level if console_level is not None else resolved_level)
     console_handler.setFormatter(formatter)
     root.addHandler(console_handler)
 
     file_handler = logging.FileHandler(logfile, encoding="utf-8")
-    file_handler.setLevel(file_level or level)
+    file_handler.setLevel(file_level if file_level is not None else resolved_level)
     file_handler.setFormatter(formatter)
     root.addHandler(file_handler)
 
-    db_handler = DatabaseLogHandler(level=db_level or level)
+    db_handler = DatabaseLogHandler(level=db_level if db_level is not None else resolved_level)
     db_handler.setFormatter(formatter)
     root.addHandler(db_handler)
 
     _IS_CONFIGURED = True
 
-    cfg = get_config()
     root.info(
         "日志系统初始化完成",
         extra={
@@ -115,15 +118,16 @@ def setup_logging(
                 "force_refresh": cfg.force_refresh,
                 "data_root": str(cfg.data_paths.root),
                 "logfile": str(logfile),
+                "log_level": getattr(cfg, "log_level", resolved_level),
             },
         },
     )
     conversation_logger = logging.getLogger(_CONVERSATION_LOGGER_NAME)
-    conversation_logger.setLevel(level)
+    conversation_logger.setLevel(resolved_level)
     conversation_logger.handlers.clear()
     conversation_logger.propagate = False
     conv_handler = logging.FileHandler(conversation_logfile, encoding="utf-8")
-    conv_handler.setLevel(level)
+    conv_handler.setLevel(resolved_level)
     conv_handler.setFormatter(formatter)
     conversation_logger.addHandler(conv_handler)
 

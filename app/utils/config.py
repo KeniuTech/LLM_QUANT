@@ -553,6 +553,7 @@ class AppConfig:
     """User configurable settings persisted in a simple structure."""
 
     tushare_token: Optional[str] = None
+    log_level: str = "DEBUG"
     rss_sources: Dict[str, object] = field(default_factory=_default_rss_sources)
     decision_method: str = "nash"
     data_paths: DataPaths = field(default_factory=DataPaths)
@@ -625,6 +626,9 @@ def _load_from_file(cfg: AppConfig) -> None:
         cfg.force_refresh = bool(payload.get("force_refresh"))
     if "auto_update_data" in payload:
         cfg.auto_update_data = bool(payload.get("auto_update_data"))
+    log_level_raw = payload.get("log_level")
+    if isinstance(log_level_raw, str) and log_level_raw.strip():
+        cfg.log_level = log_level_raw.strip()
     if "decision_method" in payload:
         cfg.decision_method = str(payload.get("decision_method") or cfg.decision_method)
 
@@ -934,6 +938,7 @@ def save_config(cfg: AppConfig | None = None) -> None:
     path = cfg.data_paths.config_file
     payload = {
         "tushare_token": cfg.tushare_token,
+        "log_level": cfg.log_level,
         "force_refresh": cfg.force_refresh,
         "auto_update_data": cfg.auto_update_data,
         "decision_method": cfg.decision_method,
@@ -1021,6 +1026,10 @@ def _load_env_defaults(cfg: AppConfig) -> None:
     token = os.getenv("TUSHARE_TOKEN")
     if token:
         cfg.tushare_token = token.strip()
+
+    log_level_env = os.getenv("LLM_QUANT_LOG_LEVEL")
+    if log_level_env:
+        cfg.log_level = log_level_env.strip()
 
     api_key = os.getenv("LLM_API_KEY")
     if api_key:
