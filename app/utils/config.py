@@ -113,24 +113,40 @@ DEFAULT_LLM_MODEL_OPTIONS: Dict[str, Dict[str, object]] = {
         "base_url": "http://localhost:11434",
         "temperature": 0.2,
         "timeout": 30.0,
+        "rate_limit_per_minute": 120,
+        "rate_limit_burst": 40,
+        "cache_enabled": True,
+        "cache_ttl_seconds": 120,
     },
     "openai": {
         "models": ["gpt-4o-mini", "gpt-4.1-mini", "gpt-3.5-turbo"],
         "base_url": "https://api.openai.com",
         "temperature": 0.2,
         "timeout": 30.0,
+        "rate_limit_per_minute": 60,
+        "rate_limit_burst": 30,
+        "cache_enabled": True,
+        "cache_ttl_seconds": 180,
     },
     "deepseek": {
         "models": ["deepseek-chat", "deepseek-coder"],
         "base_url": "https://api.deepseek.com",
         "temperature": 0.2,
         "timeout": 45.0,
+        "rate_limit_per_minute": 45,
+        "rate_limit_burst": 20,
+        "cache_enabled": True,
+        "cache_ttl_seconds": 240,
     },
     "wenxin": {
         "models": ["ERNIE-Speed", "ERNIE-Bot"],
         "base_url": "https://aip.baidubce.com",
         "temperature": 0.2,
         "timeout": 60.0,
+        "rate_limit_per_minute": 30,
+        "rate_limit_burst": 15,
+        "cache_enabled": True,
+        "cache_ttl_seconds": 300,
     },
 }
 
@@ -173,6 +189,10 @@ class LLMProvider:
     prompt_template: str = ""
     enabled: bool = True
     mode: str = "openai"  # openai 或 ollama
+    rate_limit_per_minute: int = 60
+    rate_limit_burst: int = 30
+    cache_enabled: bool = True
+    cache_ttl_seconds: int = 180
 
     def to_dict(self) -> Dict[str, object]:
         return {
@@ -186,6 +206,10 @@ class LLMProvider:
             "prompt_template": self.prompt_template,
             "enabled": self.enabled,
             "mode": self.mode,
+            "rate_limit_per_minute": self.rate_limit_per_minute,
+            "rate_limit_burst": self.rate_limit_burst,
+            "cache_enabled": self.cache_enabled,
+            "cache_ttl_seconds": self.cache_ttl_seconds,
         }
 
 
@@ -291,6 +315,10 @@ def _default_llm_providers() -> Dict[str, LLMProvider]:
             default_temperature=float(meta.get("temperature", DEFAULT_LLM_TEMPERATURES.get(provider, 0.2))),
             default_timeout=float(meta.get("timeout", DEFAULT_LLM_TIMEOUTS.get(provider, 30.0))),
             mode=mode,
+            rate_limit_per_minute=int(meta.get("rate_limit_per_minute", 60) or 0),
+            rate_limit_burst=int(meta.get("rate_limit_burst", meta.get("rate_limit_per_minute", 60)) or 0),
+            cache_enabled=bool(meta.get("cache_enabled", True)),
+            cache_ttl_seconds=int(meta.get("cache_ttl_seconds", 180) or 0),
         )
     return providers
 
@@ -619,6 +647,7 @@ def _load_from_file(cfg: AppConfig) -> None:
         for key, data in providers_payload.items():
             if not isinstance(data, dict):
                 continue
+            provider_key = str(key).lower()
             models_raw = data.get("models")
             if isinstance(models_raw, str):
                 models = [item.strip() for item in models_raw.split(',') if item.strip()]
@@ -626,8 +655,23 @@ def _load_from_file(cfg: AppConfig) -> None:
                 models = [str(item).strip() for item in models_raw if str(item).strip()]
             else:
                 models = []
+            defaults = DEFAULT_LLM_MODEL_OPTIONS.get(provider_key, {})
+            def _safe_int(value: object, fallback: int) -> int:
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    return fallback
+            rate_limit_per_minute = _safe_int(data.get("rate_limit_per_minute"), int(defaults.get("rate_limit_per_minute", 60) or 0))
+            rate_limit_burst = _safe_int(
+                data.get("rate_limit_burst"),
+                int(defaults.get("rate_limit_burst", defaults.get("rate_limit_per_minute", rate_limit_per_minute)) or rate_limit_per_minute or 0),
+            )
+            cache_ttl_seconds = _safe_int(
+                data.get("cache_ttl_seconds"),
+                int(defaults.get("cache_ttl_seconds", 180) or 0),
+            )
             provider = LLMProvider(
-                key=str(key).lower(),
+                key=provider_key,
                 title=str(data.get("title") or ""),
                 base_url=str(data.get("base_url") or ""),
                 api_key=data.get("api_key"),
@@ -637,7 +681,11 @@ def _load_from_file(cfg: AppConfig) -> None:
                 default_timeout=float(data.get("default_timeout", 30.0)),
                 prompt_template=str(data.get("prompt_template") or ""),
                 enabled=bool(data.get("enabled", True)),
-                mode=str(data.get("mode") or ("ollama" if str(key).lower() == "ollama" else "openai")),
+                mode=str(data.get("mode") or ("ollama" if provider_key == "ollama" else "openai")),
+                rate_limit_per_minute=max(0, rate_limit_per_minute),
+                rate_limit_burst=max(1, rate_limit_burst) if rate_limit_per_minute > 0 else max(0, rate_limit_burst),
+                cache_enabled=bool(data.get("cache_enabled", defaults.get("cache_enabled", True))),
+                cache_ttl_seconds=max(0, cache_ttl_seconds),
             )
             providers[provider.key] = provider
         if providers:

@@ -230,6 +230,41 @@ def render_llm_settings() -> None:
 
         enabled_val = st.checkbox("启用", value=provider_cfg.enabled, key=enabled_key)
         mode_val = st.selectbox("模式", options=["openai", "ollama"], index=0 if provider_cfg.mode == "openai" else 1, key=mode_key)
+        rate_key = f"provider_rate_{selected_provider}"
+        burst_key = f"provider_burst_{selected_provider}"
+        cache_enabled_key = f"provider_cache_enabled_{selected_provider}"
+        cache_ttl_key = f"provider_cache_ttl_{selected_provider}"
+        col_rate, col_burst = st.columns(2)
+        with col_rate:
+            rate_limit_val = st.number_input(
+                "限速 (次/分钟)",
+                min_value=0,
+                max_value=5000,
+                value=int(provider_cfg.rate_limit_per_minute or 0),
+                step=10,
+                key=rate_key,
+                help="0 表示不限制请求频率，适合本地或私有部署。",
+            )
+        with col_burst:
+            burst_limit_val = st.number_input(
+                "突发令牌数",
+                min_value=0,
+                max_value=5000,
+                value=int(provider_cfg.rate_limit_burst or max(1, provider_cfg.rate_limit_per_minute or 1)),
+                step=5,
+                key=burst_key,
+                help="控制瞬时突发的最大请求数，建议不低于限速值。",
+            )
+        cache_enabled_val = st.checkbox("启用响应缓存", value=provider_cfg.cache_enabled, key=cache_enabled_key)
+        cache_ttl_val = st.number_input(
+            "缓存有效期(秒)",
+            min_value=0,
+            max_value=3600,
+            value=int(provider_cfg.cache_ttl_seconds or 0),
+            step=30,
+            key=cache_ttl_key,
+            help="缓存相同请求的返回结果以降低成本；0 表示禁用。",
+        )
         st.markdown("可用模型：")
         if provider_cfg.models:
             st.code("\n".join(provider_cfg.models), language="text")
@@ -267,6 +302,19 @@ def render_llm_settings() -> None:
             provider_cfg.api_key = api_val.strip() or None
             provider_cfg.enabled = enabled_val
             provider_cfg.mode = mode_val
+            try:
+                provider_cfg.rate_limit_per_minute = max(0, int(rate_limit_val))
+            except (TypeError, ValueError):
+                provider_cfg.rate_limit_per_minute = 0
+            try:
+                provider_cfg.rate_limit_burst = max(0, int(burst_limit_val))
+            except (TypeError, ValueError):
+                provider_cfg.rate_limit_burst = provider_cfg.rate_limit_per_minute or 0
+            provider_cfg.cache_enabled = bool(cache_enabled_val)
+            try:
+                provider_cfg.cache_ttl_seconds = max(0, int(cache_ttl_val))
+            except (TypeError, ValueError):
+                provider_cfg.cache_ttl_seconds = 0
             providers[selected_provider] = provider_cfg
             cfg.llm_providers = providers
             cfg.sync_runtime_llm()

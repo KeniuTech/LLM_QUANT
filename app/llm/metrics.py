@@ -14,6 +14,7 @@ class _Metrics:
     total_calls: int = 0
     total_prompt_tokens: int = 0
     total_completion_tokens: int = 0
+    cache_hits: int = 0
     provider_calls: Dict[str, int] = field(default_factory=dict)
     model_calls: Dict[str, int] = field(default_factory=dict)
     decisions: Deque[Dict[str, object]] = field(default_factory=lambda: deque(maxlen=500))
@@ -62,6 +63,20 @@ def record_call(
     _notify_listeners()
 
 
+def record_cache_hit(provider: str, model: Optional[str] = None) -> None:
+    """Record a cache-hit event for observability."""
+
+    normalized_provider = (provider or "unknown").lower()
+    normalized_model = (model or "").strip()
+    with _LOCK:
+        _METRICS.cache_hits += 1
+        if normalized_provider:
+            _METRICS.provider_calls.setdefault(normalized_provider, _METRICS.provider_calls.get(normalized_provider, 0))
+        if normalized_model:
+            _METRICS.model_calls.setdefault(normalized_model, _METRICS.model_calls.get(normalized_model, 0))
+    _notify_listeners()
+
+
 def snapshot(reset: bool = False) -> Dict[str, object]:
     """Return a snapshot of current metrics. Optionally reset counters."""
 
@@ -70,6 +85,7 @@ def snapshot(reset: bool = False) -> Dict[str, object]:
             "total_calls": _METRICS.total_calls,
             "total_prompt_tokens": _METRICS.total_prompt_tokens,
             "total_completion_tokens": _METRICS.total_completion_tokens,
+            "cache_hits": _METRICS.cache_hits,
             "provider_calls": dict(_METRICS.provider_calls),
             "model_calls": dict(_METRICS.model_calls),
             "decision_action_counts": dict(_METRICS.decision_action_counts),
@@ -86,6 +102,7 @@ def snapshot(reset: bool = False) -> Dict[str, object]:
             _METRICS.total_calls = 0
             _METRICS.total_prompt_tokens = 0
             _METRICS.total_completion_tokens = 0
+            _METRICS.cache_hits = 0
             _METRICS.provider_calls.clear()
             _METRICS.model_calls.clear()
             _METRICS.decision_action_counts.clear()

@@ -12,21 +12,25 @@ import requests
 from .context import ContextManager, Message
 from .templates import TemplateRegistry
 from .cost import configure_cost_limits, get_cost_controller, budget_available
+from .cache import build_cache_key, is_cacheable, llm_cache
+from .rate_limit import RateLimiter
 
 from app.utils.config import (
     DEFAULT_LLM_BASE_URLS,
     DEFAULT_LLM_MODELS,
     DEFAULT_LLM_TEMPERATURES,
     DEFAULT_LLM_TIMEOUTS,
+    DEFAULT_LLM_MODEL_OPTIONS,
     LLMConfig,
     LLMEndpoint,
     get_config,
 )
-from app.llm.metrics import record_call, record_template_usage
+from app.llm.metrics import record_call, record_cache_hit, record_template_usage
 from app.utils.logging import get_logger
 
 LOGGER = get_logger(__name__)
 LOG_EXTRA = {"stage": "llm"}
+RATE_LIMITER = RateLimiter()
 
 class LLMError(RuntimeError):
     """Raised when LLM provider returns an error response."""
@@ -122,6 +126,17 @@ def resolve_endpoint(endpoint: LLMEndpoint) -> Dict[str, object]:
     timeout = endpoint.timeout
     prompt_template = endpoint.prompt_template
 
+    def _safe_int(value: object, fallback: int) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return fallback
+
+    rate_limit_per_minute = 0
+    rate_limit_burst = 0
+    cache_enabled = True
+    cache_ttl_seconds = 0
+
     if provider_cfg:
         if not provider_cfg.enabled:
             raise LLMError(f"Provider {provider_key} 已被禁用")
@@ -134,6 +149,15 @@ def resolve_endpoint(endpoint: LLMEndpoint) -> Dict[str, object]:
             timeout = provider_cfg.default_timeout
         prompt_template = prompt_template or (provider_cfg.prompt_template or None)
         mode = provider_cfg.mode or ("ollama" if provider_key == "ollama" else "openai")
+        rate_limit_per_minute = max(0, _safe_int(provider_cfg.rate_limit_per_minute, 0))
+        rate_limit_burst = provider_cfg.rate_limit_burst
+        rate_limit_burst = _safe_int(rate_limit_burst, rate_limit_per_minute or 0)
+        if rate_limit_per_minute > 0:
+            rate_limit_burst = max(1, rate_limit_burst or rate_limit_per_minute)
+        else:
+            rate_limit_burst = max(0, rate_limit_burst)
+        cache_enabled = bool(provider_cfg.cache_enabled)
+        cache_ttl_seconds = max(0, _safe_int(provider_cfg.cache_ttl_seconds, 0))
     else:
         base_url = base_url or _default_base_url(provider_key)
         model = model or _default_model(provider_key)
@@ -143,6 +167,15 @@ def resolve_endpoint(endpoint: LLMEndpoint) -> Dict[str, object]:
         if timeout is None:
             timeout = DEFAULT_LLM_TIMEOUTS.get(provider_key, 30.0)
         mode = "ollama" if provider_key == "ollama" else "openai"
+        defaults = DEFAULT_LLM_MODEL_OPTIONS.get(provider_key, {})
+        rate_limit_per_minute = max(0, _safe_int(defaults.get("rate_limit_per_minute"), 0))
+        rate_limit_burst = _safe_int(defaults.get("rate_limit_burst"), rate_limit_per_minute or 0)
+        if rate_limit_per_minute > 0:
+            rate_limit_burst = max(1, rate_limit_burst or rate_limit_per_minute)
+        else:
+            rate_limit_burst = max(0, rate_limit_burst)
+        cache_enabled = bool(defaults.get("cache_enabled", True))
+        cache_ttl_seconds = max(0, _safe_int(defaults.get("cache_ttl_seconds"), 0))
 
     return {
         "provider_key": provider_key,
@@ -153,6 +186,10 @@ def resolve_endpoint(endpoint: LLMEndpoint) -> Dict[str, object]:
         "temperature": max(0.0, min(float(temperature), 2.0)),
         "timeout": max(5.0, float(timeout)),
         "prompt_template": prompt_template,
+        "rate_limit_per_minute": rate_limit_per_minute,
+        "rate_limit_burst": rate_limit_burst,
+        "cache_enabled": cache_enabled,
+        "cache_ttl_seconds": cache_ttl_seconds,
     }
 
 
@@ -201,6 +238,38 @@ def call_endpoint_with_messages(
     temperature = resolved["temperature"]
     timeout = resolved["timeout"]
     api_key = resolved["api_key"]
+    rate_limit_per_minute = max(0, int(resolved.get("rate_limit_per_minute") or 0))
+    rate_limit_burst = max(0, int(resolved.get("rate_limit_burst") or 0))
+    cache_enabled = bool(resolved.get("cache_enabled", True))
+    cache_ttl_seconds = max(0, int(resolved.get("cache_ttl_seconds") or 0))
+
+    if rate_limit_per_minute > 0:
+        if rate_limit_burst <= 0:
+            rate_limit_burst = rate_limit_per_minute
+        wait_time = RATE_LIMITER.acquire(provider_key, rate_limit_per_minute, rate_limit_burst)
+        if wait_time > 0:
+            LOGGER.debug(
+                "LLM 请求触发限速：provider=%s wait=%.3fs",
+                provider_key,
+                wait_time,
+                extra=LOG_EXTRA,
+            )
+            time.sleep(wait_time)
+
+    cache_store = llm_cache()
+    cache_allowed = (
+        cache_enabled
+        and cache_ttl_seconds > 0
+        and cache_store.enabled
+        and is_cacheable(resolved, messages, tools)
+    )
+    cache_key: Optional[str] = None
+    if cache_allowed:
+        cache_key = build_cache_key(provider_key, resolved, messages, tools, tool_choice)
+        cached_payload = cache_store.get(cache_key)
+        if cached_payload is not None:
+            record_cache_hit(provider_key, model)
+            return cached_payload
 
     cfg = get_config()
     cost_cfg = getattr(cfg, "llm_cost", None)
@@ -261,6 +330,8 @@ def call_endpoint_with_messages(
         # Ollama may return `tool_calls` under message.tool_calls when tools are used.
         # Return the raw response so callers can handle either OpenAI-like responses or
         # Ollama's message structure with `tool_calls`.
+        if cache_allowed and cache_key:
+            cache_store.set(cache_key, data, ttl=cache_ttl_seconds)
         return data
 
     if not api_key:
@@ -298,6 +369,8 @@ def call_endpoint_with_messages(
                 model,
                 extra=LOG_EXTRA,
             )
+    if cache_allowed and cache_key:
+        cache_store.set(cache_key, data, ttl=cache_ttl_seconds)
     return data
 
 
