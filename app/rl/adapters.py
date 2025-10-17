@@ -7,6 +7,10 @@ from typing import Dict, Iterable, List, Mapping, Sequence, Tuple
 import numpy as np
 
 from app.backtest.decision_env import DecisionEnv
+from app.utils.logging import get_logger
+
+LOGGER = get_logger(__name__)
+LOG_EXTRA = {"stage": "decision_env"}
 
 
 @dataclass
@@ -26,6 +30,13 @@ class DecisionEnvAdapter:
         else:
             self._keys = list(self.observation_keys)
             self._last_reset_obs = None
+        LOGGER.debug(
+            "初始化 DecisionEnvAdapter obs_dim=%s action_dim=%s keys=%s",
+            len(self._keys),
+            self.env.action_dim,
+            self._keys,
+            extra=LOG_EXTRA,
+        )
 
     @property
     def action_dim(self) -> int:
@@ -38,12 +49,24 @@ class DecisionEnvAdapter:
     def reset(self) -> Tuple[np.ndarray, Dict[str, float]]:
         raw = self.env.reset()
         self._last_reset_obs = raw
+        LOGGER.debug(
+            "环境重置完成 episode=%s",
+            raw.get("episode"),
+            extra=LOG_EXTRA,
+        )
         return self._to_array(raw), raw
 
     def step(
         self, action: Sequence[float]
     ) -> Tuple[np.ndarray, float, bool, Mapping[str, object], Mapping[str, float]]:
         obs_dict, reward, done, info = self.env.step(action)
+        LOGGER.debug(
+            "环境执行动作 action=%s reward=%.4f done=%s",
+            [round(float(a), 4) for a in action],
+            reward,
+            done,
+            extra=LOG_EXTRA,
+        )
         return self._to_array(obs_dict), reward, done, info, obs_dict
 
     def _to_array(self, payload: Mapping[str, float]) -> np.ndarray:

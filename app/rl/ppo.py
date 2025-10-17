@@ -10,7 +10,12 @@ import torch
 from torch import nn
 from torch.distributions import Beta
 
+from app.utils.logging import get_logger
+
 from .adapters import DecisionEnvAdapter
+
+LOGGER = get_logger(__name__)
+LOG_EXTRA = {"stage": "rl_ppo"}
 
 
 def _init_layer(layer: nn.Module, std: float = 1.0) -> nn.Module:
@@ -168,6 +173,15 @@ class PPOTrainer:
         if config.seed is not None:
             torch.manual_seed(config.seed)
             np.random.seed(config.seed)
+        LOGGER.info(
+            "初始化 PPOTrainer obs_dim=%s action_dim=%s total_timesteps=%s rollout=%s device=%s",
+            obs_dim,
+            action_dim,
+            config.total_timesteps,
+            config.rollout_steps,
+            config.device,
+            extra=LOG_EXTRA,
+        )
 
     def train(self) -> TrainingSummary:
         cfg = self.config
@@ -180,6 +194,14 @@ class PPOTrainer:
         diagnostics: List[Dict[str, float]] = []
         current_return = 0.0
         current_length = 0
+        LOGGER.info(
+            "开始 PPO 训练 total_timesteps=%s rollout_steps=%s epochs=%s minibatch=%s",
+            cfg.total_timesteps,
+            cfg.rollout_steps,
+            cfg.epochs,
+            cfg.minibatch_size,
+            extra=LOG_EXTRA,
+        )
 
         while timesteps < cfg.total_timesteps:
             rollout.reset()
@@ -203,6 +225,14 @@ class PPOTrainer:
                 if done:
                     episode_rewards.append(current_return)
                     episode_lengths.append(current_length)
+                    LOGGER.info(
+                        "episode 完成 reward=%.4f length=%s episodes=%s timesteps=%s",
+                        episode_rewards[-1],
+                        episode_lengths[-1],
+                        len(episode_rewards),
+                        timesteps,
+                        extra=LOG_EXTRA,
+                    )
                     current_return = 0.0
                     current_length = 0
                     next_obs_array, _ = self.adapter.reset()
@@ -216,7 +246,17 @@ class PPOTrainer:
             with torch.no_grad():
                 next_value = self.critic(obs.unsqueeze(0)).squeeze(0).item()
             rollout.finish(last_value=next_value, gamma=cfg.gamma, gae_lambda=cfg.gae_lambda)
+            LOGGER.debug(
+                "完成样本收集 batch_size=%s timesteps=%s remaining=%s",
+                rollout._pos,
+                timesteps,
+                cfg.total_timesteps - timesteps,
+                extra=LOG_EXTRA,
+            )
 
+            last_policy_loss = None
+            last_value_loss = None
+            last_entropy = None
             for _ in range(cfg.epochs):
                 for (mb_obs, mb_actions, mb_log_probs, mb_adv, mb_returns, _) in rollout.get_minibatches(
                     cfg.minibatch_size
@@ -241,6 +281,9 @@ class PPOTrainer:
                     value_loss.backward()
                     nn.utils.clip_grad_norm_(self.critic.parameters(), cfg.max_grad_norm)
                     self.value_optimizer.step()
+                    last_policy_loss = float(policy_loss.detach().cpu())
+                    last_value_loss = float(value_loss.detach().cpu())
+                    last_entropy = float(entropy.mean().detach().cpu())
 
                     diagnostics.append(
                         {
@@ -249,13 +292,30 @@ class PPOTrainer:
                             "entropy": float(entropy.mean().detach().cpu()),
                         }
                     )
+            LOGGER.info(
+                "优化轮次完成 timesteps=%s/%s policy_loss=%.4f value_loss=%.4f entropy=%.4f",
+                timesteps,
+                cfg.total_timesteps,
+                last_policy_loss if last_policy_loss is not None else 0.0,
+                last_value_loss if last_value_loss is not None else 0.0,
+                last_entropy if last_entropy is not None else 0.0,
+                extra=LOG_EXTRA,
+            )
 
-        return TrainingSummary(
+        summary = TrainingSummary(
             timesteps=timesteps,
             episode_rewards=episode_rewards,
             episode_lengths=episode_lengths,
             diagnostics=diagnostics,
         )
+        LOGGER.info(
+            "PPO 训练结束 timesteps=%s episodes=%s mean_reward=%.4f",
+            summary.timesteps,
+            len(summary.episode_rewards),
+            float(np.mean(summary.episode_rewards)) if summary.episode_rewards else 0.0,
+            extra=LOG_EXTRA,
+        )
+        return summary
 
 
 def train_ppo(adapter: DecisionEnvAdapter, config: PPOConfig) -> TrainingSummary:

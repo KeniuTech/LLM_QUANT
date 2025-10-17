@@ -4,7 +4,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional
 
+from app.utils.logging import get_logger
+
 from .base import AgentAction
+
+LOGGER = get_logger(__name__)
+LOG_EXTRA = {"stage": "decision_belief"}
 
 
 @dataclass
@@ -46,12 +51,21 @@ def revise_beliefs(belief_updates: Dict[str, "BeliefUpdate"], default_action: Ag
         "votes": {action.value: count for action, count in action_votes.items()},
         "reasons": reasons,
     }
-    return BeliefRevisionResult(
+    result = BeliefRevisionResult(
         consensus_action=consensus_action,
         consensus_confidence=consensus_confidence,
         conflicts=conflicts,
         notes=notes,
     )
+    LOGGER.debug(
+        "信念修正完成 consensus=%s confidence=%.3f conflicts=%s vote_counts=%s",
+        result.consensus_action.value if result.consensus_action else None,
+        result.consensus_confidence,
+        result.conflicts,
+        notes["votes"],
+        extra=LOG_EXTRA,
+    )
+    return result
 
 
 # avoid circular import typing

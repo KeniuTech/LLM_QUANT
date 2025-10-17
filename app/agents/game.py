@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from math import log
 from typing import Dict, Iterable, List, Mapping, Optional, Tuple
 
+from app.utils.logging import get_logger
+
 from .base import Agent, AgentAction, AgentContext, UtilityMatrix
 from .departments import DepartmentContext, DepartmentDecision, DepartmentManager
 from .registry import weight_map
@@ -18,6 +20,10 @@ from .protocols import (
     ProtocolHost,
     RoundSummary,
 )
+
+
+LOGGER = get_logger(__name__)
+LOG_EXTRA = {"stage": "decision_workflow"}
 
 
 ACTIONS: Tuple[AgentAction, ...] = (
@@ -188,9 +194,30 @@ class DecisionWorkflow:
         self.norm_weights: Dict[str, float] = {}
         self.filtered_utilities: Dict[AgentAction, Dict[str, float]] = {}
         self.belief_revision: Optional[BeliefRevisionResult] = None
+        LOGGER.debug(
+            "初始化决策流程 ts_code=%s trade_date=%s method=%s agents=%s departments=%s",
+            context.ts_code,
+            context.trade_date,
+            method,
+            len(self.agent_list),
+            bool(self.department_manager),
+            extra=LOG_EXTRA,
+        )
 
     def run(self) -> Decision:
+        LOGGER.debug(
+            "执行决策流程 ts_code=%s method=%s feasible=%s",
+            self.context.ts_code,
+            self.method,
+            [action.value for action in self.feasible_actions],
+            extra=LOG_EXTRA,
+        )
         if not self.feasible_actions:
+            LOGGER.warning(
+                "无可行动作，回退到 HOLD ts_code=%s",
+                self.context.ts_code,
+                extra=LOG_EXTRA,
+            )
             return Decision(
                 action=AgentAction.HOLD,
                 confidence=0.0,
@@ -201,6 +228,13 @@ class DecisionWorkflow:
 
         self._evaluate_departments()
         action, confidence = self._select_action()
+        LOGGER.debug(
+            "初步动作选择完成 ts_code=%s action=%s confidence=%.3f",
+            self.context.ts_code,
+            action.value,
+            confidence,
+            extra=LOG_EXTRA,
+        )
         risk_assessment = self._apply_risk(action)
         exec_action = self._finalize_execution(action, risk_assessment)
         self._finalize_conflicts(exec_action)
@@ -210,7 +244,7 @@ class DecisionWorkflow:
             self.department_votes,
         )
 
-        return Decision(
+        decision = Decision(
             action=action,
             confidence=confidence,
             target_weight=target_weight_for_action(action),
@@ -224,6 +258,16 @@ class DecisionWorkflow:
             belief_updates=self.belief_updates,
             belief_revision=self.belief_revision,
         )
+        LOGGER.info(
+            "决策完成 ts_code=%s action=%s confidence=%.3f review=%s risk_status=%s",
+            self.context.ts_code,
+            decision.action.value,
+            decision.confidence,
+            decision.requires_review,
+            risk_assessment.status,
+            extra=LOG_EXTRA,
+        )
+        return decision
 
     def _evaluate_departments(self) -> None:
         if not self.department_manager:
@@ -236,7 +280,19 @@ class DecisionWorkflow:
             market_snapshot=dict(getattr(self.context, "market_snapshot", {}) or {}),
             raw=dict(getattr(self.context, "raw", {}) or {}),
         )
+        LOGGER.debug(
+            "开始部门评估 ts_code=%s departments=%s",
+            self.context.ts_code,
+            list(self.department_manager.agents.keys()),
+            extra=LOG_EXTRA,
+        )
         self.department_decisions = self.department_manager.evaluate(dept_context)
+        LOGGER.debug(
+            "部门评估完成 ts_code=%s decisions=%s",
+            self.context.ts_code,
+            list(self.department_decisions.keys()),
+            extra=LOG_EXTRA,
+        )
         if self.department_decisions:
             self.department_round = self.host.start_round(
                 self.host_trace,
@@ -285,11 +341,32 @@ class DecisionWorkflow:
             )
 
         if self.method == "vote":
-            return vote(self.filtered_utilities, self.norm_weights)
+            action, confidence = vote(self.filtered_utilities, self.norm_weights)
+            LOGGER.debug(
+                "采用投票机制 ts_code=%s action=%s confidence=%.3f",
+                self.context.ts_code,
+                action.value,
+                confidence,
+                extra=LOG_EXTRA,
+            )
+            return action, confidence
 
         action, confidence = nash_bargain(self.filtered_utilities, self.norm_weights, hold_scores)
         if action not in self.feasible_actions:
-            return vote(self.filtered_utilities, self.norm_weights)
+            LOGGER.debug(
+                "纳什解不可行，改用投票 ts_code=%s invalid_action=%s",
+                self.context.ts_code,
+                action.value,
+                extra=LOG_EXTRA,
+            )
+            action, confidence = vote(self.filtered_utilities, self.norm_weights)
+        LOGGER.debug(
+            "纳什解计算完成 ts_code=%s action=%s confidence=%.3f",
+            self.context.ts_code,
+            action.value,
+            confidence,
+            extra=LOG_EXTRA,
+        )
         return action, confidence
 
     def _apply_risk(self, action: AgentAction) -> RiskAssessment:
@@ -306,6 +383,17 @@ class DecisionWorkflow:
             self.department_round.notes.setdefault("department_votes", dict(self.department_votes))
             self.department_round.outcome = action.value
             self.host.finalize_round(self.department_round)
+
+        LOGGER.debug(
+            "风险评估结果 ts_code=%s action=%s status=%s reason=%s conflict=%s votes=%s",
+            self.context.ts_code,
+            action.value,
+            assessment.status,
+            assessment.reason,
+            conflict_flag,
+            dict(self.department_votes),
+            extra=LOG_EXTRA,
+        )
 
         if assessment.status != "ok":
             self.risk_round = self.host.ensure_round(
@@ -398,12 +486,28 @@ class DecisionWorkflow:
         )
         self.host.finalize_round(self.execution_round)
         self.execution_round.notes.setdefault("target_weight", exec_weight)
+        LOGGER.info(
+            "执行阶段结论 ts_code=%s final_action=%s original=%s status=%s target_weight=%.4f review=%s",
+            self.context.ts_code,
+            exec_action.value,
+            action.value,
+            exec_status,
+            exec_weight,
+            requires_review,
+            extra=LOG_EXTRA,
+        )
         return exec_action
 
     def _finalize_conflicts(self, exec_action: AgentAction) -> None:
         self.host.close(self.host_trace)
         self.belief_revision = revise_beliefs(self.belief_updates, exec_action)
         if self.belief_revision.conflicts:
+            LOGGER.warning(
+                "发现信念冲突 ts_code=%s conflicts=%s",
+                self.context.ts_code,
+                self.belief_revision.conflicts,
+                extra=LOG_EXTRA,
+            )
             conflict_round = self.host.ensure_round(
                 self.host_trace,
                 agenda="conflict_resolution",
@@ -436,15 +540,35 @@ def decide(
     department_manager: Optional[DepartmentManager] = None,
     department_context: Optional[DepartmentContext] = None,
 ) -> Decision:
+    agent_list = list(agents)
+    LOGGER.debug(
+        "进入多智能体决策 ts_code=%s trade_date=%s agents=%s method=%s",
+        context.ts_code,
+        context.trade_date,
+        len(agent_list),
+        method,
+        extra=LOG_EXTRA,
+    )
     workflow = DecisionWorkflow(
         context,
-        agents,
+        agent_list,
         weights,
         method,
         department_manager,
         department_context,
     )
-    return workflow.run()
+    decision = workflow.run()
+    LOGGER.info(
+        "完成多智能体决策 ts_code=%s trade_date=%s action=%s confidence=%.3f review=%s method=%s",
+        context.ts_code,
+        context.trade_date,
+        decision.action.value,
+        decision.confidence,
+        decision.requires_review,
+        method,
+        extra=LOG_EXTRA,
+    )
+    return decision
 
 
 def _department_scores(decision: DepartmentDecision) -> Dict[AgentAction, float]:
