@@ -93,9 +93,10 @@ class BacktestSession:
 class BacktestEngine:
     """Runs the multi-agent game inside a daily event-driven loop."""
 
-    def __init__(self, cfg: BtConfig) -> None:
+    def __init__(self, cfg: BtConfig, *, persist_results: bool = True) -> None:
         self.cfg = cfg
         self.agents = default_agents()
+        self.persist_results = bool(persist_results)
         app_cfg = get_config()
         weight_config = app_cfg.agent_weights.as_dict() if app_cfg.agent_weights else {}
         if weight_config:
@@ -571,6 +572,9 @@ class BacktestEngine:
                 1.0,
             )
         )
+
+        if not self.persist_results:
+            return
 
         try:
             with db_session() as conn:
