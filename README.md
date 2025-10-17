@@ -1,106 +1,95 @@
-# 多智能体量化投资个人助理
+# 多智能体量化投资助手 🤖📈
 
-面向 A 股日线级别的多智能体投资研究平台，整合数据采集、因子工程、部门化 LLM 决策、强化学习调参与可视化展示，帮助投研团队快速搭建可落地的策略助手。
+[![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/release/python-3100/) [![License](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE) [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](#)
 
-## 快速了解
+> 一个前沿的多智能体投资研究平台，针对A股日频数据，集成数据采集、因子工程、多智能体大语言模型决策、强化学习调优及丰富的可视化，加速可部署策略开发。
 
-- **端到端闭环**：从行情/新闻抓取、特征存储到多智能体协同决策、回测评估与可视化一体化。
-- **多角色博弈**：主持、预测、风险、执行等角色按轮次协同，支持 LLM 与规则代理混合。
-- **强化学习调参**：`DecisionEnv` 将回测引擎包装为 RL 环境，已接入 PPO/SAC 等连续动作算法。
-- **风险优先**：风险回合可调整最终指令并记录风控证据，提供复核与告警通道。
-- **模块化扩展**：数据层、因子库、代理、Prompt、实验脚本均以独立模块维护，便于替换或二次开发。
+---
 
-## 系统构成
-
-- **数据管线**（`app/ingest`, `app/utils/data_access.py`）  
-  TuShare/RSS 拉取与限频处理，`DataBroker` 统一提供行情、特征与派生字段，支持健康监控与回退。
-
-- **因子与特征**（`app/features`）  
-  `compute_factors()` 负责批量计算与持久化，包含动量、估值、情绪、风险等因子，并预留增量模式与公式校验。
-
-- **多智能体协作**（`app/agents`）  
-  规则代理与部门 LLM 通过 `DepartmentManager`、`ProtocolHost` 参与博弈，风险回合可否决或调整仓位。
-
-- **强化学习/优化**（`app/backtest/decision_env.py`, `scripts/train_ppo.py` 等）  
-  将参数搜索、权重调节、提示版本选择统一抽象为动作，回测指标写入 `tuning_results` 便于对比。
-
-- **可视化 UI**（`app/ui/streamlit_app.py`）  
-  今日计划、回测复盘、监控、自检页面提供策略轨迹、风险监控、实验结果与配置管理。
-
-架构调用链示意可参考 `docs/architecture_call_graph.md`。
-
-## 快速开始
-
-### 1. 环境准备
-
-- Python 3.10+（建议使用虚拟环境）
-- TuShare Token（环境变量 `TUSHARE_TOKEN`）
-- 可选：LLM 供应商 API Key（`LLM_API_KEY` 等，具体参见 `config.json` 中的 provider 定义）
+## 🚀 快速开始
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate           # Windows 使用 .venv\Scripts\activate
+# 使用 conda 创建并激活环境
+conda create -n llm-quant python=3.10
+conda activate llm-quant
+
+# 安装依赖
 pip install -r requirements.txt
 
-export TUSHARE_TOKEN="your-token"   # 必填
-export LLM_API_KEY="your-api-key"   # 如需调用 LLM
-```
-
-### 2. 初始化数据与回测
-
-```bash
-# 拉取最新行情、特征或新闻（示例脚本，可按需修改参数）
-python scripts/run_ingestion_job.py --mode daily --date 2024-01-05
-
-# 运行示例决策环境，验证 RL 闭环
-python scripts/run_decision_env_example.py
-```
-
-### 3. 启动 Streamlit 应用
-
-```bash
+# 启动 Streamlit 可视化界面（所有任务均在前端完成）
 streamlit run app/ui/streamlit_app.py
 ```
 
-应用启动后可在侧边栏配置 LLM Provider、提示模板或监控指标；今日计划页会读取 `agent_utils`、`portfolio_*` 等表展示最新决策。
+> ⚙️ 环境变量（如 TUSHARE_TOKEN、LLM API Key）可在 Streamlit 配置界面统一维护，无需手动 `export`。
 
-## 典型工作流
+---
 
-1. **数据补全**：定时运行 `scripts/run_ingestion_job.py`，确保行情、基本面、新闻数据齐备。  
-2. **因子计算**：按交易日触发 `compute_factors()`（可通过脚本或定时任务），结果写入 SQLite。  
-3. **代理决策**：规则代理 + LLM 部门协商输出交易建议，风险回合进行复核。  
-4. **回测与调参**：使用 `scripts/train_ppo.py`、`scripts/run_bandit_optimization.py` 等脚本探索参数空间，成果写入 `tuning_results`。  
-5. **可视化复盘**：Streamlit 展示多版本策略表现、风险事件与日志明细，支持“一键重评估”等待办项。  
-6. **上线前验证**：沿线下回测 → 前向测试 → 影子运行的节奏推进，必要时接入外部告警。
+## 🌟 特色功能
 
-## 自动化与实验工具
+| 功能                   | 描述                                                                                     |
+|------------------------|------------------------------------------------------------------------------------------|
+| **端到端流水线**        | 从市场/新闻数据采集到多智能体决策、回测及可视化                                         |
+| **多智能体协作**        | 主持人、预测者、风险管理者、执行者等角色轮次交互；支持大语言模型与规则混合               |
+| **强化学习调优**        | 将回测引擎封装为强化学习环境（`DecisionEnv`），兼容PPO/SAC等算法                         |
+| **风险优先设计**        | 风险轮次可调整或否决交易，记录证据，支持复核和告警                                       |
+| **模块化与可扩展性**    | 独立的数据、因子、智能体、提示词及实验模块，便于定制                                    |
 
-- `scripts/train_ppo.py`：使用 PPO 在 `DecisionEnv` 上训练策略。  
-- `scripts/run_bandit_optimization.py`：黑箱调参示例。  
-- `scripts/apply_best_weights.py`：将实验权重写回配置。  
-- `scripts/render_architecture_diagram.py`：根据代码结构渲染架构图。  
-- `scripts/migrations/`：数据库迁移脚本与示例。
+---
 
-更多示例请查看 `scripts/README` 或脚本内联说明。
+## 🏗 架构概览
 
-## 文档索引
-
-- 工作项总览：`docs/TODO.md`  
-- 多智能体原理：`docs/principles/multi_agent_decision.md`  
-- 强化学习与调参原理：`docs/principles/reinforcement_learning_tuning.md`  
-- 风险控制原理：`docs/principles/risk_management.md`  
-- 架构调用示意：`docs/architecture_call_graph.md`
-
-上述文档保持与代码同步，请在功能迭代后一并更新。
-
-## 路线图与贡献
-
-- 当前路线图统一维护在 `docs/TODO.md`。欢迎在 Issue 或 PR 中反馈新的需求与优先级。  
-- 修改代码前建议阅读 `app/utils/config.py`、`app/agents/game.py`、`app/backtest/engine.py` 了解关键路径。  
-- 提交代码请附带必要的单元测试：
-
-```bash
-pytest
+```plaintext
++---------------------+       +-----------------------+       +----------------------+
+|  数据流水线         | <---> |  因子与特征计算       | <---> |  多智能体系统         |
+| (app/ingest, utils)  |       |                       |       | (app/agents)          |
++---------------------+       +-----------------------+       +----------------------+
+         |                                                         |
+         |                                                         |
+         v                                                         v
++---------------------+                                   +----------------------+
+| 强化学习与优化      |                                   | 可视化与界面          |
+| (app/backtest)      |                                   | (app/ui/streamlit_app)|
++---------------------+                                   +----------------------+
 ```
 
-如有新的模块或实验脚本，请在对应文档与工作项中补充说明，确保团队成员可以快速上手。
+> 详细调用图见 [`docs/architecture_call_graph.md`](docs/architecture_call_graph.md)。
+
+---
+
+## 🎯 演示
+
+体验交互式演示，实时策略规划、风险监控与回测复盘：
+
+[🔗 演示链接占位符](#)
+
+---
+
+## 📚 文档
+
+- **多智能体原则：** [`docs/principles/multi_agent_decision.md`](docs/principles/multi_agent_decision.md)  
+- **强化学习调优：** [`docs/principles/reinforcement_learning_tuning.md`](docs/principles/reinforcement_learning_tuning.md)  
+- **风险管理：** [`docs/principles/risk_management.md`](docs/principles/risk_management.md)  
+- **架构调用图：** [`docs/architecture_call_graph.md`](docs/architecture_call_graph.md)  
+- **项目TODO与路线图：** [`docs/TODO.md`](docs/TODO.md)
+
+---
+
+## 🛠 典型工作流程
+
+1. **环境配置：** 通过 Streamlit「系统设置」页填入 TuShare、LLM 等凭据，并在同页管理数据根目录、日志级别等参数。  
+2. **数据补全：** 在「今日计划 → 数据自检」中一键触发行情、基本面、新闻拉取与健康检查。  
+3. **因子与特征：** 使用「回测与复盘 → 因子计算」面板选择交易日及股票池，实时查看进度与校验报告。  
+4. **多智能体决策：** 「今日计划」页直接发起多轮博弈，风险部门结论与对话全量保存，可即时复核。  
+5. **回测与调优：** 「实验调参」与「回测与复盘」页提供 PPO、贝叶斯优化等实验入口，支持参数可视化比对。  
+6. **可视化与监控：** 借助「投资池/仓位」「风险预警」等看板实时掌握仓位、事件、日志；完成线下验证后再推进实盘。
+
+---
+
+## 📜 许可证
+
+本项目基于 [MIT License](./LICENSE) 开源。
+
+---
+
+
+*怀揣对多智能体协作、强化学习及透明投资策略的热情构建。*
