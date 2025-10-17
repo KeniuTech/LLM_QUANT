@@ -1401,23 +1401,36 @@ def fetch_hk_daily(start: date, end: date, ts_code: str) -> Iterable[Dict]:
     return _df_to_records(df, _TABLE_COLUMNS["hk_daily"])
 
 
+# def fetch_us_daily(start: date, end: date, ts_code: str) -> Iterable[Dict]:
+#     client = _ensure_client()
+#     start_str = _format_date(start)
+#     end_str = _format_date(end)
+#     LOGGER.info(
+#         "拉取美股日线：%s %s-%s",
+#         ts_code,
+#         start_str,
+#         end_str,
+#         extra=LOG_EXTRA,
+#     )
+#     df = _fetch_paginated(
+#         "us_daily",
+#         {"ts_code": ts_code, "start_date": start_str, "end_date": end_str},
+#         limit=4000,
+#     )
+#     return _df_to_records(df, _TABLE_COLUMNS["us_daily"])
+
+
 def fetch_us_daily(start: date, end: date, ts_code: str) -> Iterable[Dict]:
-    client = _ensure_client()
-    start_str = _format_date(start)
-    end_str = _format_date(end)
+    """Disabled fetch: 美股日线拉取已停用，返回空结果。"""
+
     LOGGER.info(
-        "拉取美股日线：%s %s-%s",
+        "美股日线拉取已禁用，跳过 %s %s-%s",
         ts_code,
-        start_str,
-        end_str,
+        _format_date(start),
+        _format_date(end),
         extra=LOG_EXTRA,
     )
-    df = _fetch_paginated(
-        "us_daily",
-        {"ts_code": ts_code, "start_date": start_str, "end_date": end_str},
-        limit=4000,
-    )
-    return _df_to_records(df, _TABLE_COLUMNS["us_daily"])
+    return []
 
 
 __all__ = [

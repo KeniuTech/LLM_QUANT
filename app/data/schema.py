@@ -115,6 +115,7 @@ SCHEMA_STATEMENTS: Iterable[str] = (
       suspend_timing TEXT,
       resume_timing TEXT,
       reason TEXT,
+      reason_type TEXT,
       PRIMARY KEY (ts_code, suspend_date)
     );
     """,
