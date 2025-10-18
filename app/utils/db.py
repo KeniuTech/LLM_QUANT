@@ -14,12 +14,14 @@ def get_connection(read_only: bool = False) -> sqlite3.Connection:
 
     db_path: Path = get_config().data_paths.database
     uri = f"file:{db_path}?mode={'ro' if read_only else 'rw'}"
+    connect_kwargs = {"timeout": 30.0}
     if not db_path.exists() and not read_only:
         # Ensure directory exists before first write.
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(db_path)
+        conn = sqlite3.connect(db_path, **connect_kwargs)
     else:
-        conn = sqlite3.connect(uri, uri=True)
+        conn = sqlite3.connect(uri, uri=True, **connect_kwargs)
+    conn.execute("PRAGMA busy_timeout = 30000")
     conn.row_factory = sqlite3.Row
     return conn
 
