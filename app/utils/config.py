@@ -6,7 +6,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, Optional
+from typing import Dict, Iterable, List, Mapping, Optional, Set
 
 
 LOGGER = logging.getLogger(__name__)
@@ -567,6 +567,7 @@ class AppConfig:
     departments: Dict[str, DepartmentSettings] = field(default_factory=_default_departments)
     portfolio: PortfolioSettings = field(default_factory=PortfolioSettings)
     alert_channels: Dict[str, AlertChannelSettings] = field(default_factory=dict)
+    disabled_ingest_tables: Set[str] = field(default_factory=set)
 
     def resolve_llm(self, route: Optional[str] = None) -> LLMConfig:
         return self.llm
@@ -626,6 +627,16 @@ def _load_from_file(cfg: AppConfig) -> None:
         cfg.force_refresh = bool(payload.get("force_refresh"))
     if "auto_update_data" in payload:
         cfg.auto_update_data = bool(payload.get("auto_update_data"))
+    disabled_tables_raw = payload.get("disabled_ingest_tables")
+    if isinstance(disabled_tables_raw, list):
+        cfg.disabled_ingest_tables = {
+            str(item).strip().lower()
+            for item in disabled_tables_raw
+            if isinstance(item, str) and item.strip()
+        }
+    elif isinstance(disabled_tables_raw, str):
+        normalized = disabled_tables_raw.strip().lower()
+        cfg.disabled_ingest_tables = {normalized} if normalized else set()
     log_level_raw = payload.get("log_level")
     if isinstance(log_level_raw, str) and log_level_raw.strip():
         cfg.log_level = log_level_raw.strip()
@@ -942,6 +953,7 @@ def save_config(cfg: AppConfig | None = None) -> None:
         "force_refresh": cfg.force_refresh,
         "auto_update_data": cfg.auto_update_data,
         "decision_method": cfg.decision_method,
+        "disabled_ingest_tables": sorted(cfg.disabled_ingest_tables),
         "rss_sources": cfg.rss_sources,
         "agent_weights": cfg.agent_weights.as_dict(),
         "portfolio": {
@@ -1054,6 +1066,14 @@ def _load_env_defaults(cfg: AppConfig) -> None:
         if tags_raw:
             channel.tags = [tag.strip() for tag in tags_raw.split(",") if tag.strip()]
         cfg.alert_channels[key] = channel
+
+    disabled_tables_env = os.getenv("LLM_QUANT_DISABLED_TABLES")
+    if disabled_tables_env:
+        cfg.disabled_ingest_tables = {
+            part.strip().lower()
+            for part in disabled_tables_env.split(",")
+            if part.strip()
+        }
 
     cfg.sync_runtime_llm()
 

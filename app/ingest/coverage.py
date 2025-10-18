@@ -8,6 +8,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence
 
 from app.data.schema import initialize_database
 from app.utils.db import db_session
+from app.utils.config import get_config
 from app.utils.logging import get_logger
 
 from .api_client import (
@@ -177,6 +178,15 @@ def ensure_data_coverage(
     initialize_database()
     start_str = _format_date(start)
     end_str = _format_date(end)
+    cfg = get_config()
+    disabled_tables = {
+        name.strip().lower()
+        for name in getattr(cfg, "disabled_ingest_tables", set())
+        if isinstance(name, str) and name.strip()
+    }
+
+    def _is_disabled(table: str) -> bool:
+        return table.lower() in disabled_tables
 
     extra_steps = 0
     if include_limits:
@@ -256,6 +266,9 @@ def ensure_data_coverage(
         *,
         targets: Optional[Iterable[str]] = None,
     ) -> None:
+        if _is_disabled(table):
+            LOGGER.info("表 %s 已在禁用列表，跳过拉取", table, extra=LOG_EXTRA)
+            return
         date_col = date_cols.get(table, "trade_date")
         incremental = table in incremental_tables
         sig = signature(fetch_fn)
