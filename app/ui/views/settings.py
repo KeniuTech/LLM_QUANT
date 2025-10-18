@@ -90,6 +90,10 @@ def render_config_overview() -> None:
 
     LOGGER.info("渲染配置概览页", extra=LOG_EXTRA)
     cfg = get_config()
+    st.warning(
+        "本页配置项保存后需重启服务才能生效；运行中的数据任务请在重启后再执行。",
+        icon="⚠️",
+    )
 
     st.subheader("核心配置概览")
     col1, col2, col3 = st.columns(3)
