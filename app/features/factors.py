@@ -15,9 +15,7 @@ from app.utils.db import db_session
 from app.utils.logging import get_logger
 # 导入扩展因子模块
 from app.features.extended_factors import ExtendedFactors
-from app.features.sentiment_factors import SentimentFactors
 from app.features.value_risk_factors import ValueRiskFactors
-from app.ingest.news import prepare_news_for_factors
 # 导入因子验证功能
 from app.features.validation import check_data_sufficiency, check_data_sufficiency_for_zero_window, detect_outliers
 # 导入UI进度状态管理
@@ -100,10 +98,6 @@ DEFAULT_FACTORS: List[FactorSpec] = [
     FactorSpec("market_regime", 0),  # 市场状态因子
     FactorSpec("trend_strength", 0),  # 趋势强度因子
     # 情绪因子
-    FactorSpec("sent_momentum", 20),  # 新闻情感动量
-    FactorSpec("sent_impact", 0),    # 新闻影响力
-    FactorSpec("sent_market", 20),   # 市场情绪指数
-    FactorSpec("sent_divergence", 0),  # 行业情绪背离度
     # 风险和估值因子
     FactorSpec("risk_penalty", 0),  # 风险惩罚因子
 ]
@@ -161,10 +155,6 @@ def compute_factors(
     if not universe:
         LOGGER.info("无可用标的生成因子 trade_date=%s", trade_date_str, extra=LOG_EXTRA)
         return []
-
-    if any(spec.name.startswith("sent_") for spec in specs):
-        # 情绪因子需要依赖最新的新闻情绪/热度评分，先确保新闻数据落库
-        prepare_news_for_factors(trade_date, lookback_days=7)
 
     if skip_existing:
         # 检查所有因子名称
@@ -921,12 +911,8 @@ def _compute_security_factors(
             # 检查是否为扩展因子
             from app.features.extended_factors import EXTENDED_FACTORS
             extended_factor_names = [spec.name for spec in EXTENDED_FACTORS]
-            
-            # 检查是否为情绪因子
-            sentiment_factor_names = ["sent_momentum", "sent_impact", "sent_market", "sent_divergence"]
-            
-            if spec.name in extended_factor_names or spec.name in sentiment_factor_names:
-                # 扩展因子和情绪因子将在后续统一计算，这里不记录日志
+            if spec.name in extended_factor_names:
+                # 扩展因子将在后续统一计算，这里不记录日志
                 pass
             else:
                 LOGGER.info(
@@ -940,12 +926,6 @@ def _compute_security_factors(
     calculator = ExtendedFactors()
     extended_factors = calculator.compute_all_factors(close_series, volume_series, ts_code, trade_date)
     results.update(extended_factors)
-    
-    # 计算情感因子
-    sentiment_calculator = SentimentFactors()
-    sentiment_factors = sentiment_calculator.compute_stock_factors(broker, ts_code, trade_date)
-    if sentiment_factors:
-        results.update(sentiment_factors)
     
     # 计算风险和估值因子
     value_risk_calculator = ValueRiskFactors()

@@ -20,8 +20,6 @@ _GAME_SCOPE_MAP: Dict[GameStructure, Set[str]] = {
         "daily.high",
         "daily_basic.turnover_rate",
         "daily_basic.volume_ratio",
-        "factors.sent_momentum",
-        "factors.sent_market",
     },
     GameStructure.BAYESIAN: {
         "daily.close",
@@ -29,7 +27,6 @@ _GAME_SCOPE_MAP: Dict[GameStructure, Set[str]] = {
         "factors.mom_20",
         "factors.mom_60",
         "factors.val_multiscore",
-        "factors.sent_divergence",
     },
     GameStructure.CUSTOM: {
         "factors.risk_penalty",

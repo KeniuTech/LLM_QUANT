@@ -22,6 +22,12 @@ SCHEMA_STATEMENTS: Iterable[str] = (
     );
     """,
     """
+    CREATE TABLE IF NOT EXISTS ingest_state (
+        source TEXT PRIMARY KEY,
+        last_published TEXT
+    );
+    """,
+    """
     CREATE TABLE IF NOT EXISTS stock_basic (
       ts_code TEXT PRIMARY KEY,
       symbol TEXT,
@@ -599,6 +605,7 @@ SCHEMA_STATEMENTS: Iterable[str] = (
 )
 
 REQUIRED_TABLES = (
+    "ingest_state",
     "stock_basic",
     "daily",
     "daily_basic",

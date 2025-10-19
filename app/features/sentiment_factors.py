@@ -65,107 +65,13 @@ class SentimentFactors:
         Returns:
             因子名称到因子值的映射字典
         """
-        results = {}
-        
-        try:
-            # 获取历史新闻数据
-            news_data = broker.get_news_data(
-                ts_code,
-                trade_date,
-                limit=30  # 保留足够历史以计算动量
-            )
-            
-            if not news_data:
-                LOGGER.debug(
-                    "无新闻数据 code=%s date=%s",
-                    ts_code,
-                    trade_date,
-                    extra=LOG_EXTRA
-                )
-                return {name: None for name in self.factor_specs}
-                
-            # 提取序列数据
-            sentiment_series = [row["sentiment"] for row in news_data]
-            heat_series = [row["heat"] for row in news_data]
-            entity_counts = [
-                len(row["entities"].split(",")) if row["entities"] else 0
-                for row in news_data
-            ]
-            
-            # 1. 计算新闻情感动量
-            results["sent_momentum"] = news_sentiment_momentum(
-                sentiment_series,
-                window=self.factor_specs["sent_momentum"]
-            )
-            
-            # 2. 计算新闻影响力
-            # 使用最新一条新闻的数据
-            results["sent_impact"] = news_impact_score(
-                sentiment=sentiment_series[0],
-                heat=heat_series[0],
-                entity_count=entity_counts[0]
-            )
-            
-            # 3. 计算市场情绪指数
-            # 获取成交量数据
-            volume_data = broker.fetch_latest(
-                ts_code,
-                trade_date,
-                fields=["daily_basic.volume_ratio"]
-            )
-            if volume_data and "daily_basic.volume_ratio" in volume_data:
-                volume_ratio = volume_data["daily_basic.volume_ratio"]
-                # 使用单个成交量比率值
-                results["sent_market"] = market_sentiment_index(
-                    sentiment_series,
-                    heat_series,
-                    [volume_ratio],  # 转换为列表
-                    window=self.factor_specs["sent_market"]
-                )
-            else:
-                results["sent_market"] = None
-                
-            # 4. 计算行业情绪背离度
-            industry = broker._lookup_industry(ts_code)
-            if industry:
-                industry_sent = broker._derived_industry_sentiment(
-                    industry,
-                    trade_date
-                )
-                if industry_sent is not None:
-                    # 获取同行业股票的情感得分
-                    peer_sents = []
-                    for peer in broker.get_industry_stocks(industry):
-                        if peer != ts_code:
-                            peer_data = broker.get_news_data(
-                                peer,
-                                trade_date,
-                                limit=1
-                            )
-                            if peer_data:
-                                peer_sents.append(peer_data[0]["sentiment"])
-                                
-                    results["sent_divergence"] = industry_sentiment_divergence(
-                        industry_sent,
-                        peer_sents
-                    )
-                else:
-                    results["sent_divergence"] = None
-            else:
-                results["sent_divergence"] = None
-                
-        except Exception as e:
-            LOGGER.error(
-                "计算情绪因子出错 code=%s date=%s error=%s",
-                ts_code,
-                trade_date,
-                str(e),
-                exc_info=True,
-                extra=LOG_EXTRA
-            )
-            return {name: None for name in self.factor_specs}
-            
-        return results
+        LOGGER.debug(
+            "新闻因子计算已禁用，返回空结果 code=%s date=%s",
+            ts_code,
+            trade_date,
+            extra=LOG_EXTRA,
+        )
+        return {name: None for name in self.factor_specs}
             
     def compute_batch(
         self,

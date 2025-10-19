@@ -37,6 +37,8 @@ _LANGUAGE_CANONICAL: Dict[str, str] = {
     "chinese": "zh",
 }
 
+_LAST_INGEST_STATS: Dict[str, int] = {"fetched": 0, "deduped": 0, "inserted": 0}
+
 
 @dataclass
 class GdeltSourceConfig:
@@ -381,6 +383,21 @@ def fetch_gdelt_articles(
     return items
 
 
+def _update_last_published_state(items: Sequence[rss_ingest.RssItem]) -> None:
+    latest_by_source: Dict[str, datetime] = {}
+    for item in items:
+        metadata = item.metadata or {}
+        source_key = str(metadata.get("source_key", ""))
+        if not source_key:
+            continue
+        current = latest_by_source.get(source_key)
+        published = item.published
+        if current is None or published > current:
+            latest_by_source[source_key] = published
+    for source_key, timestamp in latest_by_source.items():
+        _save_last_published(source_key, timestamp)
+
+
 def ingest_configured_gdelt(
     start: Optional[DateLike] = None,
     end: Optional[DateLike] = None,
@@ -398,7 +415,6 @@ def ingest_configured_gdelt(
     end_dt = _ensure_datetime(end, start_of_day=False) if end else None
 
     aggregated: List[rss_ingest.RssItem] = []
-    latest_by_source: Dict[str, datetime] = {}
     fetched = 0
     for config in sources:
         source_start = start_dt
@@ -424,26 +440,22 @@ def ingest_configured_gdelt(
         LOGGER.info("GDELT 来源 %s 返回 %s 条记录", config.label, len(items), extra=LOG_EXTRA)
 
     if not aggregated:
+        _LAST_INGEST_STATS.update({"fetched": 0, "deduped": 0, "inserted": 0})
         return 0
 
     deduped = rss_ingest.deduplicate_items(aggregated)
     if not deduped:
         LOGGER.info("GDELT 数据全部为重复项，跳过落库", extra=LOG_EXTRA)
+        _update_last_published_state(aggregated)
+        _LAST_INGEST_STATS.update({"fetched": fetched, "deduped": 0, "inserted": 0})
         return 0
 
     inserted = rss_ingest.save_news_items(deduped)
     if inserted:
-        latest_by_source.clear()
-        for item in deduped:
-            source_key = str(item.metadata.get("source_key", "") if item.metadata else "")
-            if not source_key:
-                continue
-            current = latest_by_source.get(source_key)
-            candidate = item.published
-            if current is None or candidate > current:
-                latest_by_source[source_key] = candidate
-        for source_key, timestamp in latest_by_source.items():
-            _save_last_published(source_key, timestamp)
+        _update_last_published_state(deduped)
+    else:
+        _update_last_published_state(aggregated)
+    _LAST_INGEST_STATS.update({"fetched": fetched, "deduped": len(deduped), "inserted": inserted})
     LOGGER.info(
         "GDELT 新闻落库完成 fetched=%s deduped=%s inserted=%s",
         fetched,
@@ -454,9 +466,16 @@ def ingest_configured_gdelt(
     return inserted
 
 
+def get_last_ingest_stats() -> Dict[str, int]:
+    """Return a copy of the most recent ingestion stats."""
+
+    return dict(_LAST_INGEST_STATS)
+
+
 __all__ = [
     "GdeltSourceConfig",
     "resolve_gdelt_sources",
     "fetch_gdelt_articles",
     "ingest_configured_gdelt",
+    "get_last_ingest_stats",
 ]

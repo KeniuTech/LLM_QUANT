@@ -24,8 +24,5 @@ def test_required_fields_include_precomputed_factors(isolated_db):
         "factors.volume_ratio_score",
         "factors.val_multiscore",
         "factors.risk_penalty",
-        "factors.sent_momentum",
-        "factors.sent_market",
-        "factors.sent_divergence",
     }
     assert expected_fields.issubset(required)

@@ -89,6 +89,7 @@ def render_tests() -> None:
     )
     if st.button("运行 GDELT 新闻测试"):
         from app.ingest.news import ingest_latest_news
+        from app.ingest.gdelt import get_last_ingest_stats
 
         LOGGER.info(
             "点击 GDELT 新闻测试按钮 days=%s force=%s",
@@ -99,7 +100,15 @@ def render_tests() -> None:
         with st.spinner("正在抓取 GDELT 新闻..."):
             try:
                 count = ingest_latest_news(days_back=news_days, force=force_news)
-                st.success(f"GDELT 新闻测试完成，新增 {count} 条新闻记录。")
+                stats = get_last_ingest_stats()
+                fetched = stats.get("fetched", 0)
+                deduped = stats.get("deduped", 0)
+                inserted = stats.get("inserted", count)
+                st.success(
+                    f"GDELT 新闻测试完成：抓取 {fetched} 条，去重后 {deduped} 条，新增 {inserted} 条。"
+                )
+                if inserted == 0 and fetched:
+                    st.info("提示：所有抓取新闻已存在于数据库，本次未新增记录。")
             except Exception as exc:  # noqa: BLE001
                 LOGGER.exception("GDELT 新闻测试失败", extra=LOG_EXTRA)
                 st.error(f"GDELT 新闻测试失败：{exc}")

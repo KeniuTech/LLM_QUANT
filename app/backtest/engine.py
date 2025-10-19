@@ -165,9 +165,6 @@ class BacktestEngine:
             "factors.volume_ratio_score",
             "factors.val_multiscore",
             "factors.risk_penalty",
-            "factors.sent_momentum",
-            "factors.sent_market",
-            "factors.sent_divergence",
         }
         selected_structures = (
             cfg.game_structures

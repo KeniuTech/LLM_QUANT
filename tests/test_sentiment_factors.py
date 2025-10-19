@@ -85,12 +85,8 @@ def test_compute_stock_factors():
         "20251001"
     )
     
-    assert "sent_momentum" in factors
-    assert "sent_impact" in factors
-    assert "sent_market" in factors
-    assert "sent_divergence" in factors
-    
-    assert factors["sent_impact"] > 0
+    assert all(name in factors for name in ("sent_momentum", "sent_impact", "sent_market", "sent_divergence"))
+    assert all(value is None for value in factors.values())
     
     # 测试无数据的情况
     factors = calculator.compute_stock_factors(
@@ -120,7 +116,7 @@ def test_compute_batch(tmp_path):
     ts_codes = ["000001.SZ", "000002.SZ", "600000.SH"]
     calculator.compute_batch(broker, ts_codes, "20251001")
     
-    # 验证数据已保存
+    # 验证未写入任何情绪因子数据
     from app.utils.db import db_session
     with db_session() as conn:
         rows = conn.execute(
@@ -128,6 +124,4 @@ def test_compute_batch(tmp_path):
             ("20251001",)
         ).fetchall()
         
-    # 应该只有一个股票有数据
-    assert len(rows) == 1
-    assert rows[0]["ts_code"] == "000001.SZ"
+    assert rows == []
