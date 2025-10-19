@@ -44,6 +44,7 @@ from .api_client import (
     fetch_us_daily,
     save_records,
 )
+from .gdelt import ingest_configured_gdelt
 
 LOGGER = get_logger(__name__)
 
@@ -172,6 +173,7 @@ def ensure_data_coverage(
     ts_codes: Optional[Sequence[str]] = None,
     include_limits: bool = True,
     include_extended: bool = True,
+    include_news: bool = True,
     force: bool = False,
     progress_hook: Callable[[str, float], None] | None = None,
 ) -> None:
@@ -193,6 +195,9 @@ def ensure_data_coverage(
         extra_steps += 1
     if include_extended:
         extra_steps += 4
+    news_enabled = include_news and not _is_disabled("news")
+    if news_enabled:
+        extra_steps += 1
     total_steps = 5 + extra_steps
     current_step = 0
 
@@ -357,6 +362,17 @@ def ensure_data_coverage(
         advance("拉取港/美股行情数据（已暂时关闭）")
         _save_with_codes("hk_daily", fetch_hk_daily, targets=HK_CODES)
         _save_with_codes("us_daily", fetch_us_daily, targets=US_CODES)
+
+    if news_enabled:
+        advance("拉取 GDELT 新闻数据")
+        try:
+            ingest_configured_gdelt(
+                start=start,
+                end=end,
+                incremental=not force,
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("GDELT 新闻拉取失败：%s", exc, extra=LOG_EXTRA)
 
     if progress_hook:
         progress_hook("数据覆盖检查完成", 1.0)

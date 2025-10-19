@@ -10,3 +10,4 @@ feedparser>=6.0
 arch>=6.1.0
 scipy>=1.11.0
 torch>=2.3.0
+gdeltdoc>=0.1.7

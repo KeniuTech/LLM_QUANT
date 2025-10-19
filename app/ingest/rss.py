@@ -120,6 +120,7 @@ class RssItem:
     stock_mentions: List[StockMention] = field(default_factory=list)
     industries: List[str] = field(default_factory=list)
     important_keywords: List[str] = field(default_factory=list)
+    metadata: Dict[str, object] = field(default_factory=dict)
     
     def __post_init__(self):
         """Initialize company mapper if not already initialized."""
@@ -481,14 +482,20 @@ def deduplicate_items(items: Iterable[RssItem]) -> List[RssItem]:
         if key in seen:
             continue
         seen.add(key)
-        
+        preassigned_codes = list(item.ts_codes or [])
         # 提取实体和相关信息
         item.extract_entities()
         
         # 如果找到了相关股票，则保留这条新闻
         if item.stock_mentions:
             unique.append(item)
-            
+            continue
+
+        # 否则如果配置了预设股票代码，则保留这些代码
+        if preassigned_codes:
+            if not item.ts_codes:
+                item.ts_codes = preassigned_codes
+            unique.append(item)
     return unique
 
 
@@ -514,16 +521,16 @@ def save_news_items(items: Iterable[RssItem]) -> int:
             industry_count=len(item.industries)
         )
         # 构建包含更多信息的entities对象
-        entities = json.dumps(
-            {
-                "ts_codes": list(base_codes),
-                "source_url": item.link,
-                "industries": item.industries,  # 添加行业信息
-                "important_keywords": item.important_keywords,  # 添加重要关键词
-                "text_length": len(text_payload),  # 添加文本长度信息
-            },
-            ensure_ascii=False,
-        )
+        entity_payload = {
+            "ts_codes": list(base_codes),
+            "source_url": item.link,
+            "industries": item.industries,  # 添加行业信息
+            "important_keywords": item.important_keywords,  # 添加重要关键词
+            "text_length": len(text_payload),  # 添加文本长度信息
+        }
+        if item.metadata:
+            entity_payload["metadata"] = dict(item.metadata)
+        entities = json.dumps(entity_payload, ensure_ascii=False)
         resolved_codes = base_codes or (None,)
         for ts_code in resolved_codes:
             row_id = item.id if ts_code is None else f"{item.id}::{ts_code}"

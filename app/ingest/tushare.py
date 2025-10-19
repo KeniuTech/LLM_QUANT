@@ -58,6 +58,7 @@ def run_ingestion(
     *,
     include_limits: bool = True,
     include_extended: bool = True,
+    include_news: bool = True,
     post_tasks: Optional[Iterable[PostTask]] = None,
 ) -> None:
     """Execute a TuShare ingestion job with optional post processing hooks."""
@@ -71,6 +72,7 @@ def run_ingestion(
                 ts_codes=job.ts_codes,
                 include_limits=include_limits,
                 include_extended=include_extended,
+                include_news=include_news,
                 force=True,
             )
             logger.update_metadata(job.as_dict())
@@ -103,4 +105,3 @@ __all__ = [
     "ensure_data_coverage",
     "run_ingestion",
 ]
-

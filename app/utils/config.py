@@ -548,6 +548,23 @@ def _default_rss_sources() -> Dict[str, object]:
     }
 
 
+def _default_gdelt_sources() -> Dict[str, object]:
+    return {
+        "global_market_watch": {
+            "enabled": False,
+            "label": "Global Market Watch",
+            "filters": {
+                "timespan": "24h",
+                "keyword": "\"stock market\" OR 股票",
+                "language": ["en", "zh"],
+                "num_records": 75,
+            },
+            "ts_codes": [],
+            "keywords": [],
+        }
+    }
+
+
 @dataclass
 class AppConfig:
     """User configurable settings persisted in a simple structure."""
@@ -567,6 +584,7 @@ class AppConfig:
     departments: Dict[str, DepartmentSettings] = field(default_factory=_default_departments)
     portfolio: PortfolioSettings = field(default_factory=PortfolioSettings)
     alert_channels: Dict[str, AlertChannelSettings] = field(default_factory=dict)
+    gdelt_sources: Dict[str, object] = field(default_factory=_default_gdelt_sources)
     disabled_ingest_tables: Set[str] = field(default_factory=set)
 
     def resolve_llm(self, route: Optional[str] = None) -> LLMConfig:
@@ -650,6 +668,20 @@ def _load_from_file(cfg: AppConfig) -> None:
             if isinstance(value, dict):
                 default_rss[str(key)] = value
     cfg.rss_sources = default_rss
+
+    gdelt_payload = payload.get("gdelt_sources")
+    default_gdelt = _default_gdelt_sources()
+    if isinstance(gdelt_payload, dict):
+        sanitized: Dict[str, object] = {}
+        for key, value in gdelt_payload.items():
+            if isinstance(value, dict):
+                sanitized[str(key)] = value
+        if sanitized:
+            cfg.gdelt_sources = sanitized
+        else:
+            cfg.gdelt_sources = default_gdelt
+    else:
+        cfg.gdelt_sources = default_gdelt
 
     weights_payload = payload.get("agent_weights")
     if isinstance(weights_payload, dict):
@@ -953,6 +985,7 @@ def save_config(cfg: AppConfig | None = None) -> None:
         "force_refresh": cfg.force_refresh,
         "auto_update_data": cfg.auto_update_data,
         "decision_method": cfg.decision_method,
+        "gdelt_sources": cfg.gdelt_sources,
         "disabled_ingest_tables": sorted(cfg.disabled_ingest_tables),
         "rss_sources": cfg.rss_sources,
         "agent_weights": cfg.agent_weights.as_dict(),

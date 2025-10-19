@@ -374,6 +374,12 @@ SCHEMA_STATEMENTS: Iterable[str] = (
     CREATE INDEX IF NOT EXISTS idx_news_code ON news(ts_code, pub_time DESC);
     """,
     """
+    CREATE TABLE IF NOT EXISTS ingest_state (
+      source TEXT PRIMARY KEY,
+      last_published TEXT
+    );
+    """,
+    """
     CREATE TABLE IF NOT EXISTS heat_daily (
       scope TEXT,
       key TEXT,
