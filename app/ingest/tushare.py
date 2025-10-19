@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Callable, Iterable, List, Optional, Sequence
 
-from app.features.factors import compute_factor_range
+from app.features.factors import compute_factors_incremental
 from app.utils import alerts
 from app.utils.logging import get_logger
 
@@ -44,11 +44,10 @@ def _default_post_tasks(job: FetchJob) -> List[PostTask]:
 
 def _run_factor_backfill(job: FetchJob) -> None:
     LOGGER.info("开始计算因子：%s", job.name, extra=LOG_EXTRA)
-    compute_factor_range(
-        job.start,
-        job.end,
+    compute_factors_incremental(
         ts_codes=job.ts_codes,
-        skip_existing=False,
+        skip_existing=True,
+        persist=True,
     )
     alerts.clear_warnings("Factors")
 

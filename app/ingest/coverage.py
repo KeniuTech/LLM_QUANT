@@ -209,6 +209,17 @@ def ensure_data_coverage(
             progress_hook(message, progress)
         LOGGER.info(message, extra=LOG_EXTRA)
 
+    if news_enabled:
+        advance("拉取 GDELT 新闻数据")
+        try:
+            ingest_configured_gdelt(
+                start=start,
+                end=end,
+                incremental=not force,
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("GDELT 新闻拉取失败：%s", exc, extra=LOG_EXTRA)
+
     advance("准备股票基础信息与交易日历")
     ensure_stock_basic()
     ensure_trade_calendar(start, end)
@@ -362,17 +373,6 @@ def ensure_data_coverage(
         advance("拉取港/美股行情数据（已暂时关闭）")
         _save_with_codes("hk_daily", fetch_hk_daily, targets=HK_CODES)
         _save_with_codes("us_daily", fetch_us_daily, targets=US_CODES)
-
-    if news_enabled:
-        advance("拉取 GDELT 新闻数据")
-        try:
-            ingest_configured_gdelt(
-                start=start,
-                end=end,
-                incremental=not force,
-            )
-        except Exception as exc:  # noqa: BLE001
-            LOGGER.warning("GDELT 新闻拉取失败：%s", exc, extra=LOG_EXTRA)
 
     if progress_hook:
         progress_hook("数据覆盖检查完成", 1.0)

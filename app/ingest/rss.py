@@ -7,7 +7,7 @@ import sqlite3
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 from urllib.parse import urlparse, urljoin
 from xml.etree import ElementTree as ET
 
@@ -472,31 +472,62 @@ def _fetch_feed_items(
     return items
 
 
-def deduplicate_items(items: Iterable[RssItem]) -> List[RssItem]:
-    """Drop duplicate stories by link/id fingerprint and process entities."""
+def _canonical_link(item: RssItem) -> str:
+    link = (item.link or "").strip().lower()
+    if link:
+        return link
+    if item.id:
+        return item.id
+    fingerprint = f"{item.title}|{item.published.isoformat() if item.published else ''}"
+    return hashlib.sha1(fingerprint.encode("utf-8")).hexdigest()
 
-    seen = set()
-    unique: List[RssItem] = []
+
+def _is_gdelt_item(item: RssItem) -> bool:
+    metadata = item.metadata or {}
+    return metadata.get("source_type") == "gdelt" or bool(metadata.get("source_key"))
+
+
+def deduplicate_items(items: Iterable[RssItem]) -> List[RssItem]:
+    """Drop duplicate stories by canonical link while preferring GDELT sources."""
+
+    selected: Dict[str, RssItem] = {}
+    order: List[str] = []
+
     for item in items:
-        key = item.id or item.link
-        if key in seen:
-            continue
-        seen.add(key)
         preassigned_codes = list(item.ts_codes or [])
         # 提取实体和相关信息
         item.extract_entities()
-        
-        # 如果找到了相关股票，则保留这条新闻
-        if item.stock_mentions:
-            unique.append(item)
-            continue
 
-        # 否则如果配置了预设股票代码，则保留这些代码
-        if preassigned_codes:
+        keep = False
+        if _is_gdelt_item(item):
+            keep = True
+        elif item.stock_mentions:
+            keep = True
+        elif preassigned_codes:
             if not item.ts_codes:
                 item.ts_codes = preassigned_codes
-            unique.append(item)
-    return unique
+            keep = True
+
+        if not keep:
+            continue
+
+        key = _canonical_link(item)
+        existing = selected.get(key)
+        if existing is None:
+            selected[key] = item
+            order.append(key)
+            continue
+
+        if _is_gdelt_item(item) and not _is_gdelt_item(existing):
+            selected[key] = item
+        elif _is_gdelt_item(item) == _is_gdelt_item(existing):
+            if item.published and existing.published:
+                if item.published > existing.published:
+                    selected[key] = item
+            else:
+                selected[key] = item
+
+    return [selected[key] for key in order if key in selected]
 
 
 def save_news_items(items: Iterable[RssItem]) -> int:
@@ -507,6 +538,7 @@ def save_news_items(items: Iterable[RssItem]) -> int:
     rows: List[Tuple[object, ...]] = []
 
     processed = 0
+    gdelt_urls: Set[str] = set()
     for item in items:
         text_payload = f"{item.title}\n{item.summary}"
         sentiment = _estimate_sentiment(text_payload)
@@ -530,6 +562,8 @@ def save_news_items(items: Iterable[RssItem]) -> int:
         }
         if item.metadata:
             entity_payload["metadata"] = dict(item.metadata)
+            if _is_gdelt_item(item) and item.link:
+                gdelt_urls.add(item.link.strip())
         entities = json.dumps(entity_payload, ensure_ascii=False)
         resolved_codes = base_codes or (None,)
         for ts_code in resolved_codes:
@@ -556,9 +590,19 @@ def save_news_items(items: Iterable[RssItem]) -> int:
     inserted = 0
     try:
         with db_session() as conn:
+            if gdelt_urls:
+                conn.executemany(
+                    """
+                    DELETE FROM news
+                    WHERE url = ?
+                      AND (json_extract(entities, '$.metadata.source_type') IS NULL
+                           OR json_extract(entities, '$.metadata.source_type') != 'gdelt')
+                    """,
+                    [(url,) for url in gdelt_urls],
+                )
             conn.executemany(
                 """
-                INSERT OR IGNORE INTO news
+                INSERT OR REPLACE INTO news
                 (id, ts_code, pub_time, source, title, summary, url, entities, sentiment, heat)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,

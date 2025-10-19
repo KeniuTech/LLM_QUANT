@@ -24,8 +24,8 @@ FACTOR_LIMITS = {
     # 估值评分类因子：标准化评分，限制在 -3到3 (Z-score标准化范围)
     "val_": (-3.0, 3.0),
     
-    # 量价类因子：成交量比率，限制在 0-10倍
-    "volume_": (0, 10.0),
+    # 量价类因子：成交量比率，允许 -1 到 10（考虑相关性类因子）
+    "volume_": (-1.0, 10.0),
     "volume_ratio": (0, 10.0),
     
     # 市场状态类因子：标准化状态指标，限制在 -3到3
@@ -52,8 +52,8 @@ FACTOR_LIMITS = {
     # 风险类因子：风险惩罚因子
     "risk_": (0, 1.0),
     
-    # 价格比率类因子：价格与均线比率，限制在 0.5-2.0 (50%-200%)
-    "price_ma_": (0.5, 2.0),
+    # 价格比率类因子：价格与均线比率，扩大到 0.2-5.0 以涵盖极端波动
+    "price_ma_": (0.2, 5.0),
     
     # 成交量比率类因子：成交量与均线比率，限制在 0.1-10.0
     "volume_ma_": (0.1, 10.0),
@@ -97,7 +97,7 @@ def validate_factor_value(
     exact_matches = {
         # 技术指标精确范围
         "tech_rsi_14": (0, 100.0),           # RSI指标范围 0-100
-        "tech_macd_signal": (-5, 5),     # MACD信号范围
+        "tech_macd_signal": (-20, 20),     # MACD信号范围（扩大以适配极端行情）
         "tech_bb_position": (-3.0, 3.0),     # 布林带位置，标准差倍数
         "tech_obv_momentum": (-10.0, 10.0),  # OBV动量标准化
         "tech_pv_trend": (-1.0, 1.0),       # 量价趋势相关性
@@ -108,8 +108,8 @@ def validate_factor_value(
         "trend_price_channel": (-1.0, 1.0),     # 价格通道位置
         
         # 波动率指标精确范围
-        "vol_garch": (0, 50),               # GARCH波动率预测，限制在50%以内
-        "vol_range_pred": (0, 20),          # 波动率范围预测，限制在20%以内
+        "vol_garch": (0, 400),               # GARCH波动率预测，限制在更宽范围
+        "vol_range_pred": (0, 100),          # 波动率范围预测
         "vol_regime": (0, 1.0),              # 波动率状态，0-1之间
         
         # 微观结构精确范围
@@ -120,6 +120,7 @@ def validate_factor_value(
         "sent_impact": (0, 1.0),             # 情绪影响度
         "sent_divergence": (-1.0, 1.0),      # 情绪分歧度
         "volume_price_diverge": (-1.0, 1.0), # 量价背离度
+        "volume_price_corr": (-1.0, 1.0),    # 量价相关性
     }
     
     # 检查精确匹配
@@ -127,26 +128,26 @@ def validate_factor_value(
         min_val, max_val = exact_matches[name]
         if min_val <= value <= max_val:
             return value
-        else:
-            LOGGER.warning(
-                "因子值超出精确范围 factor=%s value=%f range=[%f,%f] ts_code=%s date=%s",
-                name, value, min_val, max_val, ts_code, trade_date,
-                extra=LOG_EXTRA
-            )
-            return None
+        clipped = max(min(value, max_val), min_val)
+        LOGGER.warning(
+            "因子值超出精确范围 factor=%s value=%f range=[%f,%f] ts_code=%s date=%s -> clipped=%f",
+            name, value, min_val, max_val, ts_code, trade_date, clipped,
+            extra=LOG_EXTRA,
+        )
+        return clipped
     
     # 检查前缀模式匹配
     for prefix, (min_val, max_val) in FACTOR_LIMITS.items():
         if name.startswith(prefix):
             if min_val <= value <= max_val:
                 return value
-            else:
-                LOGGER.warning(
-                    "因子值超出前缀范围 factor=%s value=%f range=[%f,%f] ts_code=%s date=%s",
-                    name, value, min_val, max_val, ts_code, trade_date,
-                    extra=LOG_EXTRA
-                )
-                return None
+            clipped = max(min(value, max_val), min_val)
+            LOGGER.warning(
+                "因子值超出前缀范围 factor=%s value=%f range=[%f,%f] ts_code=%s date=%s -> clipped=%f",
+                name, value, min_val, max_val, ts_code, trade_date, clipped,
+                extra=LOG_EXTRA,
+            )
+            return clipped
     
     # 如果没有匹配，使用更严格的默认范围
     default_min, default_max = -5.0, 5.0
@@ -157,13 +158,14 @@ def validate_factor_value(
             extra=LOG_EXTRA
         )
         return value
-    else:
-        LOGGER.warning(
-            "因子值超出默认范围 factor=%s value=%f range=[%f,%f] ts_code=%s date=%s",
-            name, value, default_min, default_max, ts_code, trade_date,
-            extra=LOG_EXTRA
-        )
-        return None
+
+    clipped = max(min(value, default_max), default_min)
+    LOGGER.warning(
+        "因子值超出默认范围 factor=%s value=%f range=[%f,%f] ts_code=%s date=%s -> clipped=%f",
+        name, value, default_min, default_max, ts_code, trade_date, clipped,
+        extra=LOG_EXTRA,
+    )
+    return clipped
 
 def detect_outliers(
     values: Dict[str, float],

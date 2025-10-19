@@ -214,7 +214,7 @@ def _build_rss_item(record: Dict[str, object], config: GdeltSourceConfig) -> Opt
         source = config.label or "GDELT"
     source = source.strip()
 
-    fingerprint = f"{url}|{published.isoformat()}"
+    fingerprint = f"{url}|{published.isoformat()}|{config.key}"
     article_id = hashlib.blake2s(fingerprint.encode("utf-8"), digest_size=16).hexdigest()
 
     return rss_ingest.RssItem(
@@ -227,6 +227,7 @@ def _build_rss_item(record: Dict[str, object], config: GdeltSourceConfig) -> Opt
         metadata={
             "source_key": config.key,
             "source_label": config.label,
+            "source_type": "gdelt",
         },
     )
 
@@ -418,7 +419,10 @@ def ingest_configured_gdelt(
     fetched = 0
     for config in sources:
         source_start = start_dt
-        if incremental:
+        effective_incremental = incremental
+        if start_dt is not None or end_dt is not None:
+            effective_incremental = False
+        elif incremental:
             last_seen = _load_last_published(config.key)
             if last_seen:
                 candidate = last_seen + timedelta(seconds=1)
@@ -429,10 +433,21 @@ def ingest_configured_gdelt(
             config.label,
             source_start.isoformat() if source_start else None,
             end_dt.isoformat() if end_dt else None,
-            incremental,
+            effective_incremental,
             extra=LOG_EXTRA,
         )
-        items = fetch_gdelt_articles(config, start=source_start, end=end_dt)
+
+        items: List[rss_ingest.RssItem] = []
+        if source_start and end_dt and source_start <= end_dt:
+            chunk_start = source_start
+            while chunk_start <= end_dt:
+                chunk_end = min(chunk_start + timedelta(days=1) - timedelta(seconds=1), end_dt)
+                chunk_items = fetch_gdelt_articles(config, start=chunk_start, end=chunk_end)
+                if chunk_items:
+                    items.extend(chunk_items)
+                chunk_start = chunk_end + timedelta(seconds=1)
+        else:
+            items = fetch_gdelt_articles(config, start=source_start, end=end_dt)
         if not items:
             continue
         aggregated.extend(items)
