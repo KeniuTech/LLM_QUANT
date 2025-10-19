@@ -17,6 +17,7 @@ from app.utils.logging import get_logger
 from app.features.extended_factors import ExtendedFactors
 from app.features.sentiment_factors import SentimentFactors
 from app.features.value_risk_factors import ValueRiskFactors
+from app.ingest.news import prepare_news_for_factors
 # 导入因子验证功能
 from app.features.validation import check_data_sufficiency, check_data_sufficiency_for_zero_window, detect_outliers
 # 导入UI进度状态管理
@@ -160,6 +161,10 @@ def compute_factors(
     if not universe:
         LOGGER.info("无可用标的生成因子 trade_date=%s", trade_date_str, extra=LOG_EXTRA)
         return []
+
+    if any(spec.name.startswith("sent_") for spec in specs):
+        # 情绪因子需要依赖最新的新闻情绪/热度评分，先确保新闻数据落库
+        prepare_news_for_factors(trade_date, lookback_days=7)
 
     if skip_existing:
         # 检查所有因子名称

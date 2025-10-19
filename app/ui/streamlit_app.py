@@ -13,7 +13,7 @@ if str(ROOT) not in sys.path:
 
 from app.data.schema import initialize_database
 from app.ingest.checker import run_boot_check
-from app.ingest.rss import ingest_configured_rss
+from app.ingest.news import ingest_latest_news
 from app.ui.portfolio_config import render_portfolio_config
 from app.ui.progress_state import render_factor_progress
 from app.ui.shared import LOGGER, LOG_EXTRA, render_tuning_backtest_hints
@@ -58,15 +58,15 @@ def main() -> None:
                     progress_hook=progress_hook,
                     force_refresh=False,
                 )
-                rss_count = ingest_configured_rss(hours_back=24, max_items_per_feed=50)
+                news_count = ingest_latest_news(days_back=1, force=False)
                 LOGGER.info(
-                    "自动数据更新完成：日线数据覆盖%s-%s，RSS新闻%s条",
+                    "自动数据更新完成：日线数据覆盖%s-%s，GDELT新闻%s条",
                     report.start,
                     report.end,
-                    rss_count,
+                    news_count,
                     extra=LOG_EXTRA,
                 )
-                st.success(f"✅ 自动数据更新完成：获取RSS新闻 {rss_count} 条")
+                st.success(f"✅ 自动数据更新完成：获取 GDELT 新闻 {news_count} 条")
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("自动数据更新失败", extra=LOG_EXTRA)
             st.error(f"❌ 自动数据更新失败：{exc}")

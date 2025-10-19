@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import sqlite3
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone
@@ -22,6 +23,19 @@ from . import rss as rss_ingest
 LOGGER = get_logger(__name__)
 LOG_EXTRA = {"stage": "gdelt_ingest"}
 DateLike = Union[date, datetime]
+
+_LANGUAGE_CANONICAL: Dict[str, str] = {
+    "en": "en",
+    "eng": "en",
+    "english": "en",
+    "zh": "zh",
+    "zho": "zh",
+    "zh-cn": "zh",
+    "zh-hans": "zh",
+    "zh-hant": "zh",
+    "zh_tw": "zh",
+    "chinese": "zh",
+}
 
 
 @dataclass
@@ -227,28 +241,132 @@ def fetch_gdelt_articles(
         LOGGER.warning("未安装 gdeltdoc，跳过 GDELT 拉取", extra=LOG_EXTRA)
         return []
 
-    filters_kwargs = dict(config.filters)
-    filters_kwargs.setdefault("num_records", config.num_records)
-    if start:
+    base_filters = dict(config.filters)
+    base_filters.setdefault("num_records", config.num_records)
+    original_timespan = base_filters.get("timespan")
+    filters_kwargs = dict(base_filters)
+
+    def _strip_quotes(token: str) -> str:
+        stripped = token.strip()
+        if (stripped.startswith('"') and stripped.endswith('"')) or (stripped.startswith("'") and stripped.endswith("'")):
+            return stripped[1:-1].strip()
+        return stripped
+
+    def _normalize_keywords(value: object) -> object:
+        if isinstance(value, str):
+            parts = [part.strip() for part in re.split(r"\s+OR\s+", value) if part.strip()]
+            if len(parts) <= 1:
+                return _strip_quotes(value)
+            normalized = [_strip_quotes(part) for part in parts]
+            return normalized
+        if isinstance(value, (list, tuple, set)):
+            normalized = [_strip_quotes(str(item)) for item in value if str(item).strip()]
+            return normalized
+        return value
+
+    def _sanitize(filters: Dict[str, object]) -> Dict[str, object]:
+        cleaned = dict(filters)
+        def _normalise_sequence_field(field: str, mapping: Optional[Dict[str, str]] = None) -> None:
+            value = cleaned.get(field)
+            if isinstance(value, (list, tuple, set)):
+                items: List[str] = []
+                for token in value:
+                    if not token:
+                        continue
+                    token_str = str(token).strip()
+                    if not token_str:
+                        continue
+                    mapped = mapping.get(token_str.lower(), token_str) if mapping else token_str
+                    if mapped not in items:
+                        items.append(mapped)
+                if not items:
+                    cleaned.pop(field, None)
+                elif len(items) == 1:
+                    cleaned[field] = items[0]
+                else:
+                    cleaned[field] = items
+            elif isinstance(value, str):
+                stripped = value.strip()
+                if not stripped:
+                    cleaned.pop(field, None)
+                elif mapping:
+                    cleaned[field] = mapping.get(stripped.lower(), stripped)
+                else:
+                    cleaned[field] = stripped
+            elif value is None:
+                cleaned.pop(field, None)
+
+        _normalise_sequence_field("language", _LANGUAGE_CANONICAL)
+        _normalise_sequence_field("country")
+        _normalise_sequence_field("domain")
+        _normalise_sequence_field("domain_exact")
+
+        keyword_value = cleaned.get("keyword")
+        if keyword_value is not None:
+            normalized_keyword = _normalize_keywords(keyword_value)
+            if isinstance(normalized_keyword, list):
+                if not normalized_keyword:
+                    cleaned.pop("keyword", None)
+                elif len(normalized_keyword) == 1:
+                    cleaned["keyword"] = normalized_keyword[0]
+                else:
+                    cleaned["keyword"] = normalized_keyword
+            elif isinstance(normalized_keyword, str):
+                cleaned["keyword"] = normalized_keyword
+            else:
+                cleaned.pop("keyword", None)
+
+        return cleaned
+
+    if start or end:
         filters_kwargs.pop("timespan", None)
+    if start:
         filters_kwargs["start_date"] = start
     if end:
-        filters_kwargs.pop("timespan", None)
         filters_kwargs["end_date"] = end
 
-    try:
-        filter_obj = Filters(**filters_kwargs)
-    except Exception as exc:  # noqa: BLE001 - guard misconfigured filters
-        LOGGER.error("GDELT 过滤器解析失败 key=%s err=%s", config.key, exc, extra=LOG_EXTRA)
-        return []
+    filters_kwargs = _sanitize(filters_kwargs)
 
     client = GdeltDoc()
-    try:
-        df = client.article_search(filter_obj)
-    except Exception as exc:  # noqa: BLE001 - network/service issues
-        LOGGER.warning("GDELT 请求失败 key=%s err=%s", config.key, exc, extra=LOG_EXTRA)
-        return []
 
+    def _run_query(kwargs: Dict[str, object]) -> Optional[pd.DataFrame]:
+        try:
+            filter_obj = Filters(**kwargs)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.error("GDELT 过滤器解析失败 key=%s err=%s", config.key, exc, extra=LOG_EXTRA)
+            return None
+        try:
+            return client.article_search(filter_obj)
+        except Exception as exc:  # noqa: BLE001
+            message = str(exc)
+            if "Invalid/Unsupported Language" in message and kwargs.get("language"):
+                LOGGER.warning(
+                    "GDELT 语言过滤不被支持，移除后重试 key=%s languages=%s",
+                    config.key,
+                    kwargs.get("language"),
+                    extra=LOG_EXTRA,
+                )
+                retry_kwargs = dict(kwargs)
+                retry_kwargs.pop("language", None)
+                return _run_query(retry_kwargs)
+            LOGGER.warning("GDELT 请求失败 key=%s err=%s", config.key, exc, extra=LOG_EXTRA)
+            return None
+
+    df = _run_query(filters_kwargs)
+    if df is None or df.empty:
+        if (start or end) and original_timespan:
+            fallback_kwargs = dict(base_filters)
+            fallback_kwargs["timespan"] = original_timespan
+            fallback_kwargs.pop("start_date", None)
+            fallback_kwargs.pop("end_date", None)
+            fallback_kwargs = _sanitize(fallback_kwargs)
+            LOGGER.info(
+                "GDELT 无匹配结果，尝试使用 timespan 回退 key=%s timespan=%s",
+                config.key,
+                original_timespan,
+                extra=LOG_EXTRA,
+            )
+            df = _run_query(fallback_kwargs)
     if df is None or df.empty:
         LOGGER.info("GDELT 无匹配结果 key=%s", config.key, extra=LOG_EXTRA)
         return []

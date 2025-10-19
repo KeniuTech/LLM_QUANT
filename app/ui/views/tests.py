@@ -71,61 +71,39 @@ def render_tests() -> None:
 
     st.divider()
 
-    st.subheader("RSS 数据测试")
-    st.write("用于验证 RSS 配置是否能够正常抓取新闻并写入数据库。")
-    rss_url = st.text_input(
-        "测试 RSS 地址",
-        value="https://rsshub.app/cls/depth/1000",
-        help="留空则使用默认配置的全部 RSS 来源。",
-    ).strip()
-    rss_hours = int(
+    st.subheader("新闻数据测试（GDELT）")
+    st.write("用于验证 GDELT 配置是否能够正常抓取新闻并写入数据库。")
+    news_days = int(
         st.number_input(
-            "回溯窗口（小时）",
+            "回溯窗口（天）",
             min_value=1,
-            max_value=168,
-            value=24,
-            step=6,
-            help="仅抓取最近指定小时内的新闻。",
+            max_value=30,
+            value=1,
+            step=1,
+            help="按天抓取最近区间的新闻。",
         )
     )
-    rss_limit = int(
-        st.number_input(
-            "单源抓取条数",
-            min_value=1,
-            max_value=200,
-            value=50,
-            step=10,
-        )
+    force_news = st.checkbox(
+        "强制重新抓取（忽略增量状态）",
+        value=False,
     )
-    if st.button("运行 RSS 测试"):
-        from app.ingest import rss as rss_ingest
+    if st.button("运行 GDELT 新闻测试"):
+        from app.ingest.news import ingest_latest_news
 
         LOGGER.info(
-            "点击 RSS 测试按钮 rss_url=%s hours=%s limit=%s",
-            rss_url,
-            rss_hours,
-            rss_limit,
+            "点击 GDELT 新闻测试按钮 days=%s force=%s",
+            news_days,
+            force_news,
             extra=LOG_EXTRA,
         )
-        with st.spinner("正在抓取 RSS 新闻..."):
+        with st.spinner("正在抓取 GDELT 新闻..."):
             try:
-                if rss_url:
-                    items = rss_ingest.fetch_rss_feed(
-                        rss_url,
-                        hours_back=rss_hours,
-                        max_items=rss_limit,
-                    )
-                    count = rss_ingest.save_news_items(items)
-                else:
-                    count = rss_ingest.ingest_configured_rss(
-                        hours_back=rss_hours,
-                        max_items_per_feed=rss_limit,
-                    )
-                st.success(f"RSS 测试完成，新增 {count} 条新闻记录。")
+                count = ingest_latest_news(days_back=news_days, force=force_news)
+                st.success(f"GDELT 新闻测试完成，新增 {count} 条新闻记录。")
             except Exception as exc:  # noqa: BLE001
-                LOGGER.exception("RSS 测试失败", extra=LOG_EXTRA)
-                st.error(f"RSS 测试失败：{exc}")
-                alerts.add_warning("RSS", "RSS 测试执行失败", str(exc))
+                LOGGER.exception("GDELT 新闻测试失败", extra=LOG_EXTRA)
+                st.error(f"GDELT 新闻测试失败：{exc}")
+                alerts.add_warning("GDELT", "GDELT 新闻测试执行失败", str(exc))
                 update_dashboard_sidebar()
 
     st.divider()

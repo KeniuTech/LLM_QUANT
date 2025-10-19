@@ -5,7 +5,7 @@ import os
 import sqlite3
 import time
 from collections import defaultdict, deque
-from datetime import date
+from datetime import date, datetime, timedelta
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 import pandas as pd
@@ -264,6 +264,112 @@ def _record_exists(
     with db_session(read_only=True) as conn:
         row = conn.execute(query, params).fetchone()
     return row is not None
+
+
+def _parse_date_str(value: str) -> Optional[date]:
+    try:
+        return datetime.strptime(value, "%Y%m%d").date()
+    except (TypeError, ValueError):
+        return None
+
+
+def _increment_date_str(value: str) -> str:
+    parsed = _parse_date_str(value)
+    if parsed is None:
+        return value
+    return _format_date(parsed + timedelta(days=1))
+
+
+def _infer_exchange(ts_code: Optional[str]) -> str:
+    if not ts_code:
+        return "SSE"
+    if ts_code.endswith(".SZ"):
+        return "SZSE"
+    if ts_code.endswith(".BJ"):
+        return "BSE"
+    return "SSE"
+
+
+def _trading_dates_for_range(start_str: str, end_str: str, ts_code: Optional[str] = None) -> List[str]:
+    start_dt = _parse_date_str(start_str)
+    end_dt = _parse_date_str(end_str)
+    if start_dt is None or end_dt is None or start_dt > end_dt:
+        return []
+    exchange = _infer_exchange(ts_code)
+    trade_dates = _load_trade_dates(start_dt, end_dt, exchange=exchange)
+    if not trade_dates and exchange != "SSE":
+        trade_dates = _load_trade_dates(start_dt, end_dt, exchange="SSE")
+    return trade_dates
+
+
+def _distinct_dates(
+    table: str,
+    date_col: str,
+    start_str: str,
+    end_str: str,
+    ts_code: Optional[str] = None,
+) -> Set[str]:
+    sql = f"SELECT DISTINCT {date_col} AS trade_date FROM {table} WHERE {date_col} BETWEEN ? AND ?"
+    params: List[object] = [start_str, end_str]
+    if ts_code:
+        sql += " AND ts_code = ?"
+        params.append(ts_code)
+    try:
+        with db_session(read_only=True) as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+    except sqlite3.OperationalError:
+        return set()
+    return {str(row["trade_date"]) for row in rows if row["trade_date"]}
+
+
+def _first_missing_date(
+    table: str,
+    date_col: str,
+    start_str: str,
+    end_str: str,
+    ts_code: Optional[str] = None,
+) -> Optional[str]:
+    trade_calendar = _trading_dates_for_range(start_str, end_str, ts_code=ts_code)
+    if not trade_calendar:
+        return None
+    existing = _distinct_dates(table, date_col, start_str, end_str, ts_code=ts_code)
+    for trade_date in trade_calendar:
+        if trade_date not in existing:
+            return trade_date
+    return None
+
+
+def _latest_existing_date(
+    table: str,
+    date_col: str,
+    *,
+    start_str: Optional[str] = None,
+    end_str: Optional[str] = None,
+    ts_code: Optional[str] = None,
+) -> Optional[str]:
+    sql = f"SELECT MAX({date_col}) AS max_date FROM {table}"
+    clauses: List[str] = []
+    params: List[object] = []
+    if start_str:
+        clauses.append(f"{date_col} >= ?")
+        params.append(start_str)
+    if end_str:
+        clauses.append(f"{date_col} <= ?")
+        params.append(end_str)
+    if ts_code:
+        clauses.append("ts_code = ?")
+        params.append(ts_code)
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
+    try:
+        with db_session(read_only=True) as conn:
+            row = conn.execute(sql, tuple(params)).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    if not row:
+        return None
+    value = row["max_date"]
+    return str(value) if value else None
 
 
 def _existing_suspend_dates(start_str: str, end_str: str, ts_code: str | None = None) -> Set[str]:
@@ -1089,6 +1195,21 @@ def fetch_suspensions(
     }
     if ts_code:
         params["ts_code"] = ts_code
+    if skip_existing:
+        resume_start = start_str
+        latest = _latest_existing_date(
+            "suspend",
+            "suspend_date",
+            start_str=start_str,
+            end_str=end_str,
+            ts_code=ts_code,
+        )
+        if latest and latest >= start_str:
+            resume_start = _increment_date_str(latest)
+        if resume_start > end_str:
+            LOGGER.info("停复牌信息已覆盖 %s-%s，跳过", start_str, end_str, extra=LOG_EXTRA)
+            return []
+        params["start_date"] = resume_start
     df = _fetch_paginated("suspend_d", params)
     if df.empty:
         return []
@@ -1195,6 +1316,25 @@ def fetch_stk_limit(
     params: Dict[str, object] = {"start_date": start_str, "end_date": end_str}
     if ts_code:
         params["ts_code"] = ts_code
+    if skip_existing:
+        resume_start = start_str
+        latest = _latest_existing_date(
+            "stk_limit",
+            "trade_date",
+            start_str=start_str,
+            end_str=end_str,
+            ts_code=ts_code,
+        )
+        if latest and latest >= start_str:
+            missing = _first_missing_date("stk_limit", "trade_date", start_str, latest, ts_code=ts_code)
+            if missing:
+                resume_start = missing
+            else:
+                resume_start = _increment_date_str(latest)
+        if resume_start > end_str:
+            LOGGER.info("涨跌停数据已覆盖 %s-%s，跳过", start_str, end_str, extra=LOG_EXTRA)
+            return []
+        params["start_date"] = resume_start
     df = _fetch_paginated("stk_limit", params, limit=4000)
     if df.empty:
         return []
